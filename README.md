@@ -41,6 +41,13 @@ instruments → tables) and shows it as a 3D tracker:
   MIDI SETTINGS and reads SYNC OUT. When it is not CLK+TRANSP+SPP it asks whether to set it
   (Edit held + Right on the value, checked after each step). The change stays in the loaded
   song until you save it on the M8.
+- **Sticky track headers**: the track title, its instrument and the column names stay at the top
+  of the view while the song scrolls under them (on the wall too, on one line with the front).
+- **Mute / solo** buttons (`M` `S`) in each track header hold the M8's MIDI notes through Web
+  MIDI to its USB MIDI port: a held note mutes or solos, its release ends it. Notes 12-19 mute
+  tracks 1-8, 20-27 solo them, on CC MAP CHAN (picked in *CC MAP CH*, 11 by default as on the
+  M8). The M8 does not report mutes back, so the buttons show the notes held from here; leaving
+  the page releases them. In yam8d the External Apps iframe allows `midi`.
 - **Another song loaded**: when the M8 shows another song than the one explored (another name on
   the Project view, or many different cells on the Song view), live updates, device markers and
   playheads pause until you explore it (or go back to the explored song).
@@ -156,6 +163,10 @@ playhead is not a poll behind. Measured on the device with the clock: about 6 on
 corrections in 50 steps, at step boundaries.
 
 ## Device facts (Model:02, firmware 6.5, checked live)
+
+- Track mute / solo over MIDI (2026-10-17, CC MAP CHAN 11): a held note 12-19 mutes track 1-8
+  (`M1`..`M8` next to the track list), 20-27 solos it (`S1`..; the other tracks then show `M`),
+  note off ends it. Notes 28-31 do nothing visible.
 
 - Content rows start on screen row 6; row 5 holds column headers.
 - Phrase titles can end with `^` as well as `*` (`PHRASE 27^`).

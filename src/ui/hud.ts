@@ -33,6 +33,9 @@ const h = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, te
 
 export class Hud {
   onAction: (action: Action) => void = () => {}
+  /** The mute / solo MIDI channel was changed (1..16). */
+  onChannel: (channel: number) => void = () => {}
+  private readonly channel = h('select', 'channel-select')
   private readonly status = h('div', 'status')
   private readonly summary = h('div', 'summary')
   private readonly buttons = new Map<Action, HTMLButtonElement>()
@@ -44,6 +47,8 @@ export class Hud {
   private readonly infoTab = h('div', 'info-tab')
   private readonly infoTabTitle = h('span', 'info-tab-title')
   private readonly infoBody = h('div', 'info-body')
+  /** The options panel: a tab on the left edge that slides out on hover, or stays out when clicked. */
+  private readonly menu = h('aside', 'menu')
   private readonly hoverLine = h('div', 'hover-line')
   private readonly toast = h('div', 'toast hidden')
   private readonly confirmBox = h('div', 'confirm hidden')
@@ -58,23 +63,30 @@ export class Hud {
     left.append(brand, this.status, this.summary)
 
     const tools = h('nav', 'tools')
+    // The options panel: a tab on the left edge with the settings used less often.
+    const menuBody = h('div', 'menu-body')
+    const button = (action: Action, label: string, title: string): HTMLButtonElement => {
+      const b = h('button', 'tool', label)
+      b.title = title
+      b.dataset.action = action
+      b.addEventListener('click', () => this.onAction(action))
+      this.buttons.set(action, b)
+      return b
+    }
     const group = (...items: [Action, string, string][]) => {
       const g = h('div', 'tool-group')
-      for (const [action, label, title] of items) {
-        const b = h('button', 'tool', label)
-        b.title = title
-        b.dataset.action = action
-        b.addEventListener('click', () => this.onAction(action))
-        this.buttons.set(action, b)
-        g.append(b)
-      }
+      for (const item of items) g.append(button(...item))
       tools.append(g)
+    }
+    const section = (heading: string, ...items: (HTMLElement | [Action, string, string])[]) => {
+      const list = h('div', 'menu-items')
+      for (const item of items) list.append(Array.isArray(item) ? button(...item) : item)
+      menuBody.append(h('div', 'menu-heading', heading), list)
     }
     group(['device', 'Connect M8', 'Connect to the M8 from this page (Web Serial, WebUSB or Web MIDI), with its audio'])
     this.setButton('device', { hidden: true })
     group(
       ['explore', 'Explore song', 'Walk song, chains, phrases, instruments and tables on the M8 (moves around, never edits)'],
-      ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'],
       ['follow', 'Follow M8', 'Highlight and follow what the M8 cursor is on'],
       ['autoselect', 'Auto select', 'Select what the M8 cursor is on and show what it means; instrument, FX, table and instrument panel cells turn the view (A)'],
     )
@@ -84,15 +96,26 @@ export class Hud {
       ['angle', 'Turn', 'Turn to see FX and tables (2)'],
       ['side', 'Side', 'Look along the wall (3)'],
       ['expand', 'Open all', 'Open the walls of every track (E)'],
+    )
+    group(['help', '?', 'Keys and mouse'])
+    section(
+      'VIEW',
       ['dramatic', 'Dramatic', 'Skewed, tilted camera angles for front, turn, side and the turns toward a wall (X)'],
       ['played', 'Played notes', 'Transposed phrases show the notes they play, in the transpose colour, instead of the notes written (T)'],
     )
-    group(
-      ['export', 'Export', 'Save the explored song as JSON'],
-      ['import', 'Import', 'Load a song JSON'],
-      ['demo', 'Demo', 'Show the demo song'],
-      ['help', '?', 'Keys and mouse'],
-    )
+    // The MIDI channel the track mute / solo buttons send on: the M8's CC MAP CHAN.
+    const channelLabel = h('label', 'tool channel', 'CC MAP CH ')
+    channelLabel.title = "MIDI channel of the track mute / solo buttons: CC MAP CHAN in the M8's MIDI Settings (11 by default)"
+    for (let ch = 1; ch <= 16; ch += 1) this.channel.append(new Option(String(ch), String(ch)))
+    this.channel.addEventListener('change', () => this.onChannel(Number(this.channel.value)))
+    channelLabel.append(this.channel)
+    section('M8', ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'], channelLabel)
+    section('SONG FILE', ['export', 'Export', 'Save the explored song as JSON'], ['import', 'Import', 'Load a song JSON'], ['demo', 'Demo', 'Show the demo song'])
+    const menuTab = h('div', 'menu-tab')
+    menuTab.append(h('span', 'menu-tab-kicker', 'OPTIONS'))
+    menuTab.title = 'Hover to open · click to keep open'
+    menuTab.addEventListener('click', () => this.menu.classList.toggle('pinned'))
+    this.menu.append(menuBody, menuTab)
     top.append(left, tools)
 
     const cancel = h('button', 'tool danger', 'Cancel')
@@ -137,7 +160,7 @@ export class Hud {
     this.infoTab.addEventListener('click', () => this.togglePin())
     this.info.append(this.infoTab, this.infoBody)
 
-    root.append(top, this.info, this.progress, this.confirmBox, this.toast, this.help, footer)
+    root.append(top, this.menu, this.info, this.progress, this.confirmBox, this.toast, this.help, footer)
     this.renderInfo(null)
   }
 
@@ -178,6 +201,10 @@ export class Hud {
     if (label != null) b.textContent = label
     // Hide the whole group when its only button is hidden
     if (hidden != null) (b.parentElement?.childElementCount === 1 ? b.parentElement : b)?.classList.toggle('hidden', hidden)
+  }
+
+  setChannel(channel: number): void {
+    this.channel.value = String(channel)
   }
 
   setActive(action: Action, active: boolean): void {

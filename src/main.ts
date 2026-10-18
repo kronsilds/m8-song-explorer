@@ -18,6 +18,7 @@ import {
 } from './m8/device'
 import { ExploreCancelled, readSongRows, viewOf } from './m8/driver'
 import { exploreSong } from './m8/explorer'
+import { DEFAULT_CHANNEL, MidiControl } from './m8/midiControl'
 import { PlaybackTracker } from './m8/playback'
 import { clientPort, type M8Port, withTimeout } from './m8/port'
 import { describeSelection } from './m8/semantics'
@@ -585,6 +586,44 @@ function togglePlayedNotes(): void {
   } catch {}
 }
 
+// Track mute / solo: a held MIDI note mutes or solos a track on the M8, its release ends it.
+// The buttons show the notes held from here (mutes and solos made on the M8 are not seen).
+const CHANNEL_KEY = 'm8-song-explorer:cc-map-channel'
+const midiControl = new MidiControl(
+  (() => {
+    try {
+      const ch = Number(localStorage.getItem(CHANNEL_KEY))
+      return ch >= 1 && ch <= 16 ? ch : DEFAULT_CHANNEL
+    } catch {
+      return DEFAULT_CHANNEL
+    }
+  })(),
+)
+const trackModes = { mute: Array<boolean>(8).fill(false), solo: Array<boolean>(8).fill(false) }
+hud.setChannel(midiControl.channel)
+hud.onChannel = (channel) => {
+  // The notes held on the old channel are released.
+  midiControl.channel = channel
+  trackModes.mute.fill(false)
+  trackModes.solo.fill(false)
+  world.setTrackModes(trackModes.mute, trackModes.solo)
+  try {
+    localStorage.setItem(CHANNEL_KEY, String(channel))
+  } catch {}
+}
+world.onTrackButton = (track, kind) => {
+  const on = !trackModes[kind][track]
+  midiControl.set(kind, track, on).then(
+    () => {
+      trackModes[kind][track] = on
+      world.setTrackModes(trackModes.mute, trackModes.solo)
+    },
+    (error: unknown) => hud.notify(`Could not ${on ? '' : 'un'}${kind} track ${track + 1}: ${error instanceof Error ? error.message : String(error)}`, 'warn'),
+  )
+}
+// Leaving the page lets go of every held mute and solo, so none stays stuck on the M8.
+window.addEventListener('pagehide', () => midiControl.releaseAll())
+
 hud.onAction = (action: Action) => {
   switch (action) {
     case 'device':
@@ -632,7 +671,7 @@ hud.onAction = (action: Action) => {
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey) return
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey) return
   // Space plays / stops the M8, as it does in yam8d.
   if (e.code === 'Space') {
     e.preventDefault()

@@ -122,8 +122,6 @@ export interface TrackLayout {
   cols: number
   wallLen: number
   wallExtent: number
-  /** Most played instrument name, as a label for the track. */
-  label: string | null
 }
 
 export class SongLayout {
@@ -187,7 +185,6 @@ export class SongLayout {
     const panels = new Map<number, Panel>()
     const order: Panel[] = []
     const links: Link[] = []
-    const plays = new Map<number, number>()
 
     const panelFor = (table: number, inst: number | null, row: number): Panel => {
       let panel = panels.get(table)
@@ -203,10 +200,6 @@ export class SongLayout {
     for (const instance of instances) {
       const phrase = this.model.phrases[instance.phrase]
       if (!phrase) continue
-      const eff = this.effective.get(instance.key) ?? []
-      phrase.steps.forEach((step, s) => {
-        if (step.note && eff[s] != null) plays.set(eff[s] as number, (plays.get(eff[s] as number) ?? 0) + 1)
-      })
       for (const ref of this.references(instance)) {
         const panel = panels.get(ref.table) ?? panelFor(ref.table, ref.inst, ref.row)
         panel.lastRow = Math.max(panel.lastRow, ref.row)
@@ -221,15 +214,9 @@ export class SongLayout {
       panel.shownY = panel.naturalY
     }
 
-    let label: string | null = null
-    let best = 0
-    for (const [inst, n] of plays) {
-      const name = this.model.instruments[inst]?.name
-      if (name && n > best) [label, best] = [name, n]
-    }
     const cols = this.columnsFor(order)
     const wallLen = wallLength(cols)
-    return { track, instances, panels: order, links, cols, wallLen, wallExtent: wallLen * Math.cos(WALL_ANGLE), label }
+    return { track, instances, panels: order, links, cols, wallLen, wallExtent: wallLen * Math.cos(WALL_ANGLE) }
   }
 
   /** Columns a wall needs: the most panels wanted together (a view's worth of rows around each), a column per few. */

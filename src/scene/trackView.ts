@@ -12,7 +12,9 @@ import {
   InstancedMesh,
   LineBasicMaterial,
   LineSegments,
+  MathUtils,
   Matrix4,
+  Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
   Vector3,
@@ -46,6 +48,12 @@ import { makeText, Rich, type TextBlock } from './text'
 
 /** A unit quad with its origin at the top-left corner. */
 const QUAD = new PlaneGeometry(1, 1).translate(0.5, -0.5, 0)
+
+/** Header extent around its column names line (group y 0): up over the title line, down under the names. */
+export const HEADER_TOP = ROW_H + 0.35
+const HEADER_BOTTOM = ROW_H + 0.4
+/** Character columns of the mute and solo buttons, on the TRACK line. */
+const BUTTON_COL = { mute: 9, solo: 11 } as const
 
 interface Rect {
   x: number
@@ -134,6 +142,19 @@ export class TrackView {
   private linkColorData = new Float32Array(0)
   /** Called when a panel's text finished laying out (to redraw). */
   onTextReady: () => void = () => {}
+  /** Track title, mute / solo buttons and column names: they stick to the top of the view (setHeaderY). */
+  readonly frontHeader = new Group()
+  readonly wallHeader = new Group()
+  /** Header y where the song starts, when nothing sticks. */
+  readonly headerY: number
+  private readonly headerTexts: { text: Text; wall: boolean }[] = []
+  /** Header background and bottom rule: shown once the header sticks over the rows. */
+  private readonly headerBacks: { material: { opacity: number }; wall: boolean; base: number }[]
+  /** How far the header shows its background (0 at its own place, 1 once stuck over the rows). */
+  private headerStuck = 0
+  /** Highest y a visible panel is shown at while gliding: just under the stuck header. */
+  panelCeiling = Number.POSITIVE_INFINITY
+  private readonly buttons = {} as Record<'mute' | 'solo', { box: Mesh; text: Text; on: boolean | null }>
 
   constructor(
     readonly layout: SongLayout,
@@ -268,44 +289,73 @@ export class TrackView {
     this.links.frustumCulled = false
     this.wall.add(this.links)
 
-    // --- headers ----------------------------------------------------------
+    // --- headers: one group on the front, one on the wall, moved together by setHeaderY ----
+    // Group y 0 is the top of the column names line, the same line on the front and the wall.
     const top = layout.rowY(0) + ROW_H * 1.9
-    this.blocks.push({
-      key: `hf:${t}`,
-      parent: this.front,
-      x: 0,
-      y: top + ROW_H * 2.4,
-      height: ROW_H * 3,
-      layer: 'static',
-      track: t,
-      build: () =>
-        new Rich()
-          .add(`TRACK ${t + 1}`, p.title)
-          .nl()
-          .add((track.label ?? '').slice(0, 12), p.label)
-          .nl()
-          .add('CH PH NOTE I', p.empty),
-    })
-    this.blocks.push({
-      key: `hw:${t}`,
-      parent: this.wall,
-      x: SIDE_U0,
-      y: top,
-      height: ROW_H,
-      layer: 'wall',
-      track: t,
-      build: () => new Rich().add('VL IN FX1   FX2   FX3', p.empty),
-    })
-    this.blocks.push({
-      key: `hp:${t}`,
-      parent: this.wall,
-      x: PANEL_U0,
-      y: top,
-      height: ROW_H,
-      layer: 'wall',
-      track: t,
-      build: () => new Rich().add('INSTRUMENTS · TABLES', p.empty),
-    })
+    this.headerY = top
+    this.frontHeader.position.y = top
+    this.wallHeader.position.y = top
+    this.front.add(this.frontHeader)
+    this.wall.add(this.wallHeader)
+    const frontBack = quads([{ x: -0.3, y: HEADER_TOP, w: FRONT_W + 0.6, h: HEADER_TOP + HEADER_BOTTOM, z: 0.05, color: p.background }], 0)
+    // The wall's header spans the FX columns and the panels, which slide under it.
+    const wallEnd = Math.max(SIDE_U0 + SIDE_CHARS * CHAR_W, track.wallLen) + 0.35
+    const wallBack = quads([{ x: SIDE_U0 - 0.35, y: 0.35, w: wallEnd - SIDE_U0 + 0.35, h: 0.35 + HEADER_BOTTOM, z: 0.05, color: p.background }], 0)
+    this.headerBacks = [
+      { material: frontBack.material as MeshBasicMaterial, wall: false, base: 0.97 },
+      { material: wallBack.material as MeshBasicMaterial, wall: true, base: 0.97 },
+    ]
+    frontBack.renderOrder = 4
+    wallBack.renderOrder = 4
+    this.frontHeader.add(frontBack)
+    this.wallHeader.add(wallBack)
+    // A rule along the header's bottom edge, separating it from the rows under it once stuck.
+    const ruleY = -HEADER_BOTTOM
+    const frontRule = segments([-0.3, ruleY, 0.055, FRONT_W + 0.3, ruleY, 0.055], p.bracket, 0)
+    const wallRule = segments([SIDE_U0 - 0.35, ruleY, 0.055, wallEnd, ruleY, 0.055], p.bracket, 0)
+    frontRule.renderOrder = 5
+    wallRule.renderOrder = 5
+    this.frontHeader.add(frontRule)
+    this.wallHeader.add(wallRule)
+    this.headerBacks.push(
+      { material: frontRule.material as LineBasicMaterial, wall: false, base: 1 },
+      { material: wallRule.material as LineBasicMaterial, wall: true, base: 1 },
+    )
+    const headerText = (rich: Rich, parent: Group, x: number, y: number, wall: boolean) => {
+      const text = makeText(rich)
+      text.position.set(x, y, 0.06)
+      text.renderOrder = 5
+      parent.add(text)
+      text.sync(() => this.onTextReady())
+      this.headerTexts.push({ text, wall })
+      return text
+    }
+    headerText(
+      new Rich()
+        .add(`TRACK ${t + 1}`, p.title)
+        .nl()
+        .add('CH PH NTE IN', p.empty),
+      this.frontHeader,
+      0,
+      ROW_H,
+      false,
+    )
+    headerText(new Rich().add('VL IN FX1   FX2   FX3', p.empty), this.wallHeader, SIDE_U0, 0, true)
+    headerText(new Rich().add('INSTRUMENTS · TABLES', p.empty), this.wallHeader, PANEL_U0, 0, true)
+    for (const kind of ['mute', 'solo'] as const) {
+      const col = BUTTON_COL[kind]
+      const box = new Mesh(QUAD, new MeshBasicMaterial({ transparent: true, depthWrite: false, side: DoubleSide }))
+      box.position.set((col - 0.3) * CHAR_W, ROW_H + 0.02, 0.065)
+      box.scale.set(1.6 * CHAR_W, ROW_H - 0.06, 1)
+      box.renderOrder = 5
+      this.frontHeader.add(box)
+      const text = makeText(new Rich().add(kind === 'mute' ? 'M' : 'S', p.label))
+      text.position.set(col * CHAR_W, ROW_H, 0.07)
+      text.renderOrder = 6
+      this.frontHeader.add(text)
+      this.buttons[kind] = { box, text, on: null }
+    }
+    this.setTrackModes(false, false)
 
     this.frontPanels = quads(frontRects, 0.9)
     this.front.add(this.trackMaterial(this.frontPanels, false))
@@ -341,6 +391,7 @@ export class TrackView {
     this.wall.visible = alpha > 0.01
     for (const { material, base } of this.wallMaterials) material.opacity = base * alpha
     this.applyBars()
+    this.applyHeader()
   }
 
   /** The front column steps back while another track's wall is looked at. */
@@ -349,6 +400,71 @@ export class TrackView {
     this.front.visible = alpha > 0.01
     for (const { material, base } of this.frontMaterials) material.opacity = base * alpha
     this.applyBars()
+    this.applyHeader()
+  }
+
+  /**
+   * Moves the header (front and wall together) to `y`, never above where the song starts.
+   * Below its own place it covers the rows scrolling under it. Returns true when it moved.
+   */
+  setHeaderY(y: number): boolean {
+    const at = Math.min(this.headerY, y)
+    if (Math.abs(at - this.frontHeader.position.y) < 1e-4) return false
+    this.frontHeader.position.y = at
+    this.wallHeader.position.y = at
+    this.headerStuck = MathUtils.clamp((this.headerY - at) / ROW_H, 0, 1)
+    this.applyHeader()
+    return true
+  }
+
+  /** Top of the header's column names line, where it is drawn now. */
+  get headerAt(): number {
+    return this.frontHeader.position.y
+  }
+
+  private applyHeader(): void {
+    if (!this.headerBacks) return
+    for (const { text, wall } of this.headerTexts) text.fillOpacity = wall ? this.wallAlpha : this.frontAlpha
+    for (const { material, wall, base } of this.headerBacks) material.opacity = base * this.headerStuck * (wall ? this.wallAlpha : this.frontAlpha)
+    for (const kind of ['mute', 'solo'] as const) {
+      const b = this.buttons[kind]
+      if (!b) continue
+      ;(b.box.material as MeshBasicMaterial).opacity = (b.on ? 0.95 : 0.6) * this.frontAlpha
+      b.text.fillOpacity = this.frontAlpha
+    }
+  }
+
+  /** Lights the mute and solo buttons. */
+  setTrackModes(mute: boolean, solo: boolean): void {
+    const p = this.palette
+    for (const [kind, on] of [
+      ['mute', mute],
+      ['solo', solo],
+    ] as const) {
+      const b = this.buttons[kind]
+      if (b.on === on) continue
+      b.on = on
+      ;(b.box.material as MeshBasicMaterial).color.set(on ? (kind === 'mute' ? p.tableLink : p.link) : p.panelHeader)
+      b.text.colorRanges = new Rich().add(kind === 'mute' ? 'M' : 'S', on ? p.background : p.label).ranges
+      b.text.sync(() => this.onTextReady())
+    }
+    this.applyHeader()
+  }
+
+  /** The button at a point of the front column (front coordinates), if any. */
+  buttonAt(x: number, y: number): 'mute' | 'solo' | null {
+    const top = this.headerAt + ROW_H + 0.1
+    if (y > top || y < top - ROW_H - 0.1) return null
+    for (const kind of ['mute', 'solo'] as const) {
+      const col = BUTTON_COL[kind]
+      if (x >= (col - 0.4) * CHAR_W && x <= (col + 1.4) * CHAR_W) return kind
+    }
+    return null
+  }
+
+  /** True when height y (front or wall coordinates) is under the header. */
+  inHeader(y: number): boolean {
+    return y <= this.headerAt + HEADER_TOP && y >= this.headerAt - HEADER_BOTTOM
   }
 
   /** Bars fade in as the text becomes too small to read. */
@@ -385,6 +501,8 @@ export class TrackView {
       } else {
         panel.shownY += (panel.y - panel.shownY) * glide
         panel.shownU += (panel.u - panel.shownU) * glide
+        // A gliding panel never rises over the stuck header (the header moves at once, panels lag).
+        if (panel.visible) panel.shownY = Math.min(panel.shownY, Math.max(panel.y, this.panelCeiling))
       }
       if (Math.abs(panel.y - panel.shownY) < 0.01) panel.shownY = panel.y
       if (Math.abs(panel.u - panel.shownU) < 0.01) panel.shownU = panel.u
@@ -565,6 +683,11 @@ export class TrackView {
 
   dispose(): void {
     for (const view of this.panels) view.text?.dispose()
+    for (const { text } of this.headerTexts) text.dispose()
+    for (const { box, text } of Object.values(this.buttons)) {
+      ;(box.material as MeshBasicMaterial).dispose()
+      text.dispose()
+    }
     this.group.traverse((o) => {
       const mesh = o as InstancedMesh
       if (mesh.isInstancedMesh || (o as LineSegments).isLineSegments) {

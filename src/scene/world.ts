@@ -29,6 +29,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import type { PhraseColumn, TableColumn } from '../m8/device'
+import type { TrackToggle } from '../m8/midiControl'
 import type { TrackPlayhead } from '../m8/playback'
 import { PHRASE_COLUMNS, type Selection, sameSelection, TABLE_COLUMNS } from '../model/selection'
 import { hex2, type PhraseInstance, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
@@ -55,7 +56,7 @@ import {
 import type { Palette } from './palette'
 import { CameraRig } from './rig'
 import { Rich, type TextBlock, TextPool } from './text'
-import { linkCurve, TrackView } from './trackView'
+import { HEADER_TOP, linkCurve, TrackView } from './trackView'
 
 const QUAD = new PlaneGeometry(1, 1).translate(0.5, -0.5, 0)
 /** Room between an open wall's far end and the next track's column. */
@@ -122,6 +123,9 @@ export class World {
   palette: Palette
   onSelect: (sel: Selection | null) => void = () => {}
   onHover: (sel: Selection | null) => void = () => {}
+  /** A track's mute or solo button was clicked. */
+  onTrackButton: (track: number, kind: TrackToggle) => void = () => {}
+  private modes = { muted: [] as boolean[], soloed: [] as boolean[] }
 
   private readonly root = new Group()
   private readonly spine = new Group()
@@ -196,6 +200,19 @@ export class World {
     loop()
   }
 
+  /**
+   * Screen height of the headers' top edge in the overview, as a fraction of the half view
+   * height above the centre: the height they stick at in every view.
+   */
+  private headerFraction(): number {
+    const half = this.visibleHalfHeight(this.overviewDistance())
+    return 0.9 + (ROW_H * 1.9 + HEADER_TOP - HEADER_H - ROW_H * 1.5) / half
+  }
+
+  private overviewDistance(): number {
+    return this.fitDistance((TRACKS * TRACK_PITCH + 6) * 1.04, 40)
+  }
+
   invalidate(): void {
     this.dirty = true
   }
@@ -250,6 +267,7 @@ export class World {
     for (const track of layout.tracks) {
       const view = new TrackView(layout, track, this.palette, this.playedNotes)
       view.onTextReady = () => this.invalidate()
+      view.setTrackModes(!!this.modes.muted[track.track], !!this.modes.soloed[track.track])
       view.group.position.x = track.track * TRACK_PITCH
       this.root.add(view.group)
       this.tracks.push(view)
@@ -346,7 +364,7 @@ export class World {
         const width = TRACKS * TRACK_PITCH + 6
         g.yaw = 0
         g.pitch = 0
-        g.distance = this.fitDistance(width * 1.04, 40)
+        g.distance = this.overviewDistance()
         g.target.set(width / 2 - 4, 0, 0)
         // Leave the title clear of the top bar.
         g.target.y = top + HEADER_H + ROW_H * 1.5 - this.visibleHalfHeight(g.distance) * 0.6
@@ -367,7 +385,8 @@ export class World {
       const extent = this.wallExtent(t)
       g.target.x = this.frontX(t, true) + FRONT_W + extent * (side ? 0.62 : 0.55)
       g.target.z = side ? -wallLen * 0.5 * Math.sin(WALL_ANGLE) : -6
-      g.distance = side ? this.fitDistance(wallLen + 8, 30) : this.fitDistance(extent * 2.4 + 18, 30)
+      // Far enough back to see a few panel columns and the front column beside the wall.
+      g.distance = side ? this.fitDistance(wallLen * 1.3 + 20, 44) : this.fitDistance(extent * 3.2 + 34, 44)
       if (this.dramatic) g.distance *= 0.86
     } else {
       g.target.z = 0
@@ -789,7 +808,7 @@ export class World {
     for (const view of this.tracks) {
       const t = view.track.track
       const front = this.localHit(view.front, ray)
-      if (front && front.point.x > -0.3 && front.point.x < FRONT_W + 0.2) {
+      if (front && front.point.x > -0.3 && front.point.x < FRONT_W + 0.2 && !view.inHeader(front.point.y)) {
         const row = layout.rowAtY(front.point.y)
         const inst = row == null ? null : layout.instanceAt(t, row)
         if (inst && row != null) {
@@ -808,6 +827,7 @@ export class World {
       if (!wall) continue
       const { x: u, y } = wall.point
       if (u >= SIDE_U0 - 0.3 && u <= SIDE_U0 + SIDE_CHARS * CHAR_W + 0.3) {
+        if (view.inHeader(y)) continue
         const row = layout.rowAtY(y)
         const inst = row == null ? null : layout.instanceAt(t, row)
         if (inst && row != null) {
@@ -831,6 +851,28 @@ export class World {
       }
     }
     return ((best ?? behind) as { sel: Selection } | null)?.sel ?? null
+  }
+
+  /** The mute or solo button under the pointer, nearest first. */
+  pickButton(clientX: number, clientY: number): { track: number; kind: TrackToggle } | null {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
+    this.raycaster.setFromCamera(ndc, this.camera)
+    let best: { track: number; kind: TrackToggle; distance: number } | null = null
+    for (const view of this.tracks) {
+      if (view.frontAlpha < 0.5) continue
+      const hit = this.localHit(view.front, this.raycaster.ray)
+      const kind = hit && view.buttonAt(hit.point.x, hit.point.y)
+      if (hit && kind && (!best || hit.distance < best.distance)) best = { track: view.track.track, kind, distance: hit.distance }
+    }
+    return best && { track: best.track, kind: best.kind }
+  }
+
+  /** Lights the mute and solo buttons of every track. */
+  setTrackModes(muted: boolean[], soloed: boolean[]): void {
+    this.modes = { muted: [...muted], soloed: [...soloed] }
+    this.tracks.forEach((view, t) => view.setTrackModes(!!muted[t], !!soloed[t]))
+    this.invalidate()
   }
 
   // ---------------------------------------------------------------------------
@@ -873,6 +915,7 @@ export class World {
       if (!hoverQueued) {
         requestAnimationFrame(() => {
           if (!hoverQueued) return
+          el.style.cursor = this.pickButton(hoverQueued.x, hoverQueued.y) ? 'pointer' : ''
           const sel = this.pick(hoverQueued.x, hoverQueued.y)
           hoverQueued = null
           if (!sameSelection(sel, this.hover)) {
@@ -887,7 +930,10 @@ export class World {
     el.addEventListener('pointerup', (e) => {
       const d = drag
       drag = null
-      if (d && !d.moved && d.button === 0) this.select(this.pick(e.clientX, e.clientY), { reveal: false })
+      if (!d || d.moved || d.button !== 0) return
+      const button = this.pickButton(e.clientX, e.clientY)
+      if (button) this.onTrackButton(button.track, button.kind)
+      else this.select(this.pick(e.clientX, e.clientY), { reveal: false })
     })
     el.addEventListener('pointerleave', () => {
       if (this.hover) {
@@ -897,6 +943,7 @@ export class World {
       }
     })
     el.addEventListener('dblclick', (e) => {
+      if (this.pickButton(e.clientX, e.clientY)) return
       const sel = this.pick(e.clientX, e.clientY)
       if (sel) this.select(sel, { focus: true })
     })
@@ -1045,14 +1092,18 @@ export class World {
     if (this.layout) {
       const half = this.visibleHalfHeight()
       const cy = this.rig.current.target.y
-      // Panels stick a little below the top of the view, clear of the headers and the top bar.
-      const stickTop = cy + half * 0.58
+      // Headers stick at the screen height they have in the overview; panels stick a little
+      // below the headers.
+      const headerTop = cy + half * this.headerFraction() - HEADER_TOP
       const textOn = (ROW_H / (2 * half)) * this.container.clientHeight > 5
       let moved = false
+      const stickTop = headerTop - ROW_H - 1.2
       for (const view of this.tracks) {
+        if (view.setHeaderY(headerTop)) busy = true
         if (view.wallAlpha > 0.01 || this.expandAll) {
           if (this.layout.stick(view.track.track, stickTop, cy - half * 0.92)) moved = true
         }
+        view.panelCeiling = stickTop
         if (view.updatePanels(dt, textOn)) moved = true
         if (view.wallAlpha > 0.01 && view.updateLinks(cy + half * 1.05, cy - half * 1.05)) busy = true
       }

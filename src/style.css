@@ -177,6 +177,23 @@ body,
   background: var(--device);
 }
 
+.tool.channel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+  color: var(--label);
+}
+
+.channel-select {
+  font: inherit;
+  color: var(--value);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 2px;
+}
+
 .tool.primary {
   color: var(--bg);
   background: var(--title);
@@ -189,17 +206,96 @@ body,
   font-weight: 700;
 }
 
+/* --- options panel (left edge) ----------------------------------------- */
+
+.menu {
+  --tab: 30px;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  display: flex;
+  align-items: flex-start;
+  /* Closed: only the tab shows on the left edge; hover (or a click on the tab) slides it out. */
+  transform: translate(calc(-100% + var(--tab)), -50%);
+  transition: transform 0.22s ease;
+  z-index: 2;
+}
+
+.menu:hover,
+.menu.pinned {
+  transform: translate(0, -50%);
+}
+
+.menu-tab {
+  flex: 0 0 var(--tab);
+  display: flex;
+  align-items: center;
+  padding: 14px 0;
+  writing-mode: vertical-rl;
+  cursor: pointer;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-right: 2px solid var(--line);
+  border-radius: 0 10px 10px 0;
+  backdrop-filter: blur(12px);
+}
+
+.menu.pinned .menu-tab {
+  border-right-color: var(--title);
+}
+
+.menu-tab-kicker {
+  font-size: 9px;
+  letter-spacing: 0.25em;
+  color: var(--label);
+}
+
+.menu-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 12px 14px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0 0 0 0;
+  backdrop-filter: blur(12px);
+}
+
+.menu-heading {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--label);
+  padding: 4px 4px 0;
+}
+
+.menu-heading:not(:first-child) {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.menu-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
 /* --- info panel ------------------------------------------------------- */
 
 .info {
   --tab: 30px;
   position: absolute;
   right: 0;
-  top: 118px;
+  /* Anchored low, under the sticky track headers and their mute / solo buttons. */
+  bottom: 40px;
   width: min(390px, calc(100% - 20px));
-  max-height: calc(100% - 170px);
+  max-height: calc(100% - 300px);
+  min-height: 0;
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   /* Closed: only the tab shows on the right edge; hover (or the pin) slides it out. */
   transform: translateX(calc(100% - var(--tab)));
   transition: transform 0.22s ease;
@@ -227,9 +323,8 @@ body,
   border-left: 2px solid var(--hot);
   border-radius: 10px 0 0 10px;
   backdrop-filter: blur(12px);
-  max-height: calc(100vh - 170px);
+  max-height: calc(100vh - 300px);
   overflow: hidden;
-  align-self: flex-start;
 }
 
 .info.empty .info-tab {
@@ -266,11 +361,12 @@ body,
   background: var(--glass);
   border: 1px solid var(--line);
   border-left: 0;
-  border-radius: 0 0 0 10px;
+  border-radius: 10px 0 0 0;
   backdrop-filter: blur(12px);
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: calc(100vh - 300px);
 }
 
 .info-head {
