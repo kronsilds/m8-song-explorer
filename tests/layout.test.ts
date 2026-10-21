@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { demoSong } from '../src/model/demo'
 import { type SongModel, TRACKS } from '../src/model/song'
-import { MAX_PANEL_COLS, PANEL_SPAN, SongLayout } from '../src/scene/layout'
+import { FACE_CHARS } from '../src/scene/instrumentFace'
+import { MAX_PANEL_COLS, PANEL_SPAN, type Panel, SongLayout } from '../src/scene/layout'
 
 /** The demo song with track 0's first phrase using `n` different instruments, one per step. */
 function crowded(n: number): SongModel {
@@ -48,10 +49,24 @@ describe('panel columns', () => {
     expect(layout.tracks[0].panels.map((p) => p.col)).toEqual(before)
   })
 
-  test('a track with few panels keeps one column', () => {
+  test('a track with few panels keeps one column, two when an instrument face may span them', () => {
     const layout = new SongLayout(demoSong())
-    for (const t of layout.tracks) expect(t.cols).toBeGreaterThanOrEqual(1)
-    const one = layout.tracks.find((t) => t.panels.length <= 3)
-    if (one) expect(one.cols).toBe(1)
+    for (const t of layout.tracks) {
+      const faces = t.panels.some((p) => layout.instrumentFace(p.instrument))
+      if (t.panels.length <= 2) expect(t.cols).toBe(faces ? 2 : 1)
+    }
+  })
+
+  test('a panel turned to its instrument face never takes the last column', () => {
+    const layout = new SongLayout(demoSong())
+    const track  = layout.tracks.find((t) => t.panels.some((p) => layout.instrumentFace(p.instrument)))
+    if (!track) throw new Error('the demo song has no instrument panel')
+    const panel = track.panels.find((p) => layout.instrumentFace(p.instrument)) as Panel
+    panel.chars = FACE_CHARS
+    panel.col   = track.cols - 1
+    const yTop  = layout.rowY(panel.row)
+    layout.stick(track.track, yTop, yTop - PANEL_SPAN * 3)
+    expect(panel.visible).toBe(true)
+    expect(panel.col).toBeLessThan(track.cols - 1)
   })
 })

@@ -5,7 +5,7 @@
 import { Matrix4, type Object3D, type PerspectiveCamera, type Ray, Raycaster, Vector2, type Vector3 } from 'three'
 import type { TrackToggle } from '../../m8/midiControl'
 import type { Selection } from '../../model/selection'
-import { placeAt } from '../instrumentFace'
+import { isTitlePlace, placeAt } from '../instrumentFace'
 import {
   CHAR_W,
   FRONT_W,
@@ -13,8 +13,7 @@ import {
   INST_COL,
   NOTE_COL,
   PANEL_FIELDS,
-  PANEL_ROWS,
-  PANEL_U0,
+  type Panel,
   ROW_H,
   SIDE_CHARS,
   SIDE_FIELDS,
@@ -90,6 +89,12 @@ export class ScenePicker {
       if (view.wallAlpha < MIN_WALL_ALPHA) continue
       const wall = this.hitPlane(view.wall, ray)
       if (wall) consider(this.wallCell(layout, view, wall.point), wall.distance)
+      // Panels turn out of the wall: each is met in its own plane.
+      for (const panel of layout.tracks[view.track.track].panels) {
+        if (panel.alpha <= MIN_PANEL_ALPHA) continue
+        const hit = this.hitPlane(view.faceFrame(panel), ray)
+        if (hit) consider(this.panelCell(layout, view, panel, hit.point), hit.distance)
+      }
     }
     return ((nearest ?? behind) as Hit<Selection> | null)?.value ?? null
   }
@@ -112,39 +117,34 @@ export class ScenePicker {
     }
   }
 
-  /** On the wall (u along it): the step details, else a panel. */
+  /** On the wall (u along it): the step details. */
   private wallCell(layout: SongLayout, view: TrackView, point: Vector3): Selection | null {
     const { x: u, y } = point
     const track       = view.track.track
-    if (u >= SIDE_U0 - 0.3 && u <= SIDE_U0 + SIDE_CHARS * CHAR_W + 0.3) {
-      if (view.inHeader(y)) return null
-      const row      = layout.rowAtY(y)
-      const instance = row == null ? null : layout.instanceAt(track, row)
-      if (!instance || row == null) return null
-      const column = fieldAt(SIDE_FIELDS, Math.floor((u - SIDE_U0) / CHAR_W), 'vel')
-      return {
-        kind: 'step',
-        instance,
-        step: row - instance.row,
-        column
-      }
+    if (u < SIDE_U0 - 0.3 || u > SIDE_U0 + SIDE_CHARS * CHAR_W + 0.3 || view.inHeader(y)) return null
+    const row      = layout.rowAtY(y)
+    const instance = row == null ? null : layout.instanceAt(track, row)
+    if (!instance || row == null) return null
+    const column = fieldAt(SIDE_FIELDS, Math.floor((u - SIDE_U0) / CHAR_W), 'vel')
+    return {
+      kind: 'step',
+      instance,
+      step: row - instance.row,
+      column
     }
-    if (u < PANEL_U0 - 0.5) return null
-    const panel = layout.tracks[track].panels.find(
-      (p) =>
-        p.alpha > MIN_PANEL_ALPHA &&
-        u >= p.shownU - 0.5 &&
-        u <= p.shownU + view.panelWidth(p) &&
-        y <= p.shownY + 0.3 &&
-        y > p.shownY - (view.shownFace(p) === 'inst' ? p.rows : PANEL_ROWS) * ROW_H,
-    )
-    if (!panel) return null
-    const line = Math.floor((panel.shownY - y) / ROW_H)
+  }
+
+  /** On a panel, at (x, y) in its face's frame (x from its first character, y from its title line). */
+  private panelCell(layout: SongLayout, view: TrackView, panel: Panel, point: Vector3): Selection | null {
+    const { x, y } = point
+    const track    = view.track.track
+    if (x < -0.5 || x > view.panelWidth(panel) || y > 0.3 || y <= -view.shownRows(panel) * ROW_H) return null
+    const line = Math.floor(-y / ROW_H)
     const face = view.shownFace(panel) === 'inst' && panel.instrument != null ? layout.instrumentFace(panel.instrument) : null
     if (face && panel.instrument != null) {
-      const place = placeAt(face, (u - panel.shownU) / CHAR_W, line)
+      const place = placeAt(face, x / CHAR_W, line)
       // Its title is the panel header.
-      if (!place || place.row === 0) return {
+      if (!place || isTitlePlace(place)) return {
         kind      : 'instrument',
         instrument: panel.instrument,
         table     : panel.table,
@@ -167,7 +167,7 @@ export class ScenePicker {
       table     : panel.table,
       track
     }
-    const column = fieldAt(PANEL_FIELDS, Math.floor((u - panel.shownU) / CHAR_W), 'transpose')
+    const column = fieldAt(PANEL_FIELDS, Math.floor(x / CHAR_W), 'transpose')
     return {
       kind      : 'table',
       table     : panel.table,
@@ -198,10 +198,10 @@ export class ScenePicker {
           kind
         }, hit.distance)
       }
-      if (view.wallAlpha >= MIN_WALL_ALPHA) {
-        const hit   = this.hitPlane(view.wall, ray)
-        const panel = hit && view.tabAt(hit.point.x, hit.point.y)
-        if (hit && panel) consider({
+      if (view.wallAlpha < MIN_WALL_ALPHA) continue
+      for (const panel of view.track.panels) {
+        const hit = this.hitPlane(view.panelGroup(panel), ray)
+        if (hit && view.onTab(panel, hit.point.x, hit.point.y)) consider({
           track,
           kind : 'flip',
           table: panel.table

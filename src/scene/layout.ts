@@ -43,10 +43,12 @@ export const PANEL_COL_W    = PANEL_CHARS * CHAR_W + 2
 const PANELS_PER_COL        = 2
 /** Rows around a panel's uses counted as "in view together" when sizing the wall. */
 const PANEL_VIEW_PAD_ROWS   = 24
+/** Rows between panels stacked in a column: room for the tab over the lower one's corner. */
+const PANEL_GAP_ROWS        = 1.75
 /** Room a panel takes on the wall, gap included. */
-export const PANEL_SPAN     = (PANEL_ROWS + 1.5) * ROW_H
+export const PANEL_SPAN     = (PANEL_ROWS + PANEL_GAP_ROWS) * ROW_H
 /** Room a panel of `rows` rows takes on the wall, gap included. */
-export const panelSpan      = (rows: number): number => (rows + 1.5) * ROW_H
+export const panelSpan      = (rows: number): number => (rows + PANEL_GAP_ROWS) * ROW_H
 
 /** Length of a wall that has `cols` columns of panels. */
 export const wallLength = (cols: number): number => PANEL_U0 + PANEL_CHARS * CHAR_W + 1 + (cols - 1) * PANEL_COL_W
@@ -253,7 +255,9 @@ export class SongLayout {
       panel.shownY   = panel.naturalY
     }
 
-    const cols    = this.columnsFor(panels)
+    // An instrument face takes two columns, so a wall with one has room for two.
+    const faces   = panels.some((panel) => this.instrumentFace(panel.instrument))
+    const cols    = Math.max(faces ? 2 : 1, this.columnsFor(panels))
     const wallLen = wallLength(cols)
     return {
       track,
@@ -287,7 +291,8 @@ export class SongLayout {
    * wall (the one where they are pushed down least, keeping the column they were in unless
    * another is clearly better), and are stacked down only when every column is taken.
    * Panels with no row near the view are hidden. A panel turned to its instrument face is
-   * placed first, so it takes the top of its column. Returns true when anything moved.
+   * placed first, so it takes the top of its column; it spans that column and the next one, so
+   * it never goes in the last. Returns true when anything moved.
    */
   stick(track: number, yTop: number, yBottom: number): boolean {
     const trackLayout = this.tracks[track]
@@ -304,12 +309,14 @@ export class SongLayout {
       const visible = firstY > yBottom - margin && lastY < yTop + margin
       let y         = panel.naturalY
       let col       = panel.col
+      const wide    = panel.chars > PANEL_CHARS && trackLayout.cols > 1
       if (visible) {
         // Held near the top while its first use is above the view; never below its last use.
         const wantedY = Math.max(Math.min(panel.naturalY, yTop), Math.min(lastY + span * 0.5, panel.naturalY))
         let bestScore = Number.NEGATIVE_INFINITY
-        for (let candidate = 0; candidate < trackLayout.cols; candidate += 1) {
-          const candidateY = Math.min(wantedY, columnCeilings[candidate])
+        for (let candidate = 0; candidate < trackLayout.cols - (wide ? 1 : 0); candidate += 1) {
+          const ceiling    = wide ? Math.min(columnCeilings[candidate], columnCeilings[candidate + 1]) : columnCeilings[candidate]
+          const candidateY = Math.min(wantedY, ceiling)
           // Staying put is worth half a panel, so scrolling does not shuffle the grid.
           const stayBonus  = panel.visible && candidate === panel.col ? span * 0.5 : 0
           const score      = candidateY + stayBonus - candidate * 1e-3
@@ -317,7 +324,7 @@ export class SongLayout {
         }
         columnCeilings[col] = y - span
         // A face wider than a column (the instrument face) takes room in the next one too.
-        if (panel.chars > PANEL_CHARS && col + 1 < trackLayout.cols) columnCeilings[col + 1] = Math.min(columnCeilings[col + 1], y - span)
+        if (wide) columnCeilings[col + 1] = Math.min(columnCeilings[col + 1], y - span)
       }
       if (visible !== panel.visible || col !== panel.col || Math.abs(y - panel.y) > 1e-3) moved = true
       panel.visible = visible

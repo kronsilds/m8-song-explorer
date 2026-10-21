@@ -2,7 +2,7 @@
 // instrument and table panels, links), its sticky header and the coloured bars shown when
 // zoomed out.
 
-import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, type MeshBasicMaterial, Vector3 } from 'three'
+import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, type MeshBasicMaterial, type Object3D, Vector3 } from 'three'
 import type { Text } from 'troika-three-text'
 import type { TrackToggle } from '../../m8/midiControl'
 import { fxColumn } from '../../model/columns'
@@ -31,7 +31,7 @@ import {
   WALL_HINGE,
 } from '../layout'
 import { mix, type Palette } from '../palette'
-import { type ColoredRect, easeFactor, lineSegments, rectangles } from '../shapes'
+import { type ColoredRect, easeFactor, lineSegments, rectangles, smoothstep } from '../shapes'
 import { disposeText, makeText, RichText, type TextBlock } from '../text'
 import { FACE_WIDTH, InstrumentFaceView } from './instrumentFaceView'
 import { LinkLines } from './linkLines'
@@ -45,21 +45,53 @@ const PANEL_BACKGROUND_OPACITY = 0.92
 const BAR_INSET                = ROW_H * 0.14
 const BAR_HEIGHT               = ROW_H * 0.72
 /** Ease rates per second of a panel's fade and glide. */
-const PANEL_FADE_RATE          = 6
-const PANEL_GLIDE_RATE         = 9
-/** Seconds a panel takes to turn over to its other face. */
-const FLIP_SECONDS             = 0.5
-/** How far a turning panel comes off the wall toward the viewer. */
-const FLIP_LIFT                = 1.2
+const PANEL_FADE_RATE          = 3
+const PANEL_GLIDE_RATE         = 15
+/** Seconds a panel takes to turn to its other face. */
+const FLIP_SECONDS             = 0.10
+/** Part of the flip the turn off the wall takes, and where the crossfade of the faces starts (it overlaps the end of the turn). */
+const TURN_END                 = 90.0
+const FADE_START               = 0.0
 /** The tab above a panel's top-right corner that turns it over: its width (characters) and height. */
 const TAB_CHARS                = 8
 const TAB_HEIGHT               = ROW_H * 0.95
-/** Left edge of a panel's background in its group: the hinge it turns on. */
-const PANEL_LEFT               = PANEL_U0 - 0.45
+/** A face's background reaches this far left of its first character and above its title line. */
+const FACE_PAD_LEFT            = 0.45
+const FACE_PAD_TOP             = 0.25
+/** How far a panel's tab reaches above its title line: panels stick that much lower under the header. */
+export const PANEL_TAB_ROOM    = FACE_PAD_TOP + TAB_HEIGHT
 const TABLE_WIDTH              = PANEL_CHARS * CHAR_W + 0.9
+const TABLE_HEIGHT             = PANEL_ROWS * ROW_H + 0.5
 
-/** Smooth start and end of a turn (t 0..1). */
-const easeInOut                = (t: number): number => t * t * (3 - 2 * t)
+/** Smooth start and end (t clamped to 0..1). */
+const easeInOut                = (t: number): number => {
+  const x = Math.min(1, Math.max(0, t))
+  return x * x * (3 - 2 * x)
+}
+
+/**
+ * Where a flip (0 the table, 1 the instrument face) is: how far the panel has turned from the
+ * wall's plane to the front's (0..1), and how far the table has faded into the instrument face
+ * (0..1). The faces swap once the panel faces the front, so turning back fades first, then turns.
+ */
+export function flipPose(flip: number): { turn: number; fade: number } {
+  return {
+    turn: easeInOut(flip / TURN_END),
+    fade: easeInOut((flip - FADE_START) / (1 - FADE_START))
+  }
+}
+
+/** How opaque a panel's table content (text, bars) is: it leaves in the first part of the crossfade. */
+const tableContentAlpha        = (panel: Panel): number => panel.alpha * (1 - smoothstep(0, 0.6, flipPose(panel.flip).fade))
+
+/**
+ * Scales a face's frame by (sx, sy) around the top-left corner of its background, which stays
+ * on the panel's left edge (its group's origin) and just above its title line.
+ */
+function placeFrame(frame: Group, sx: number, sy: number): void {
+  frame.scale.set(sx, sy, 1)
+  frame.position.set(FACE_PAD_LEFT * sx, FACE_PAD_TOP - FACE_PAD_TOP * sy, 0)
+}
 
 /** The notes column of the front, with a little room around it. */
 export const FRONT_NOTES_X = NOTE_COL * CHAR_W - 0.25
@@ -75,14 +107,18 @@ function velocityColor(palette: Palette, velocity: number | null): string {
 }
 
 /**
- * An instrument / table panel of the wall, in its own group moved by the sticky layout. Its
- * faces hang on a hinge at its left edge: the table, and the instrument face it turns over to.
+ * An instrument / table panel of the wall, in its own group moved by the sticky layout. The
+ * group's origin is the panel's left edge at its title line: it turns there, out of the wall
+ * until it faces the front, and the table crossfades there into the instrument face. Each face
+ * is drawn in a frame (x from its first character, y from its title line) that is scaled while
+ * they crossfade, so both fill the same growing or shrinking card.
  */
 interface PanelView {
   panel     : Panel
   group     : Group
-  hinge     : Group
+  tableFrame: Group
   tableFace : Group
+  instFrame : Group
   text      : Text | null
   background: MeshBasicMaterial
   bars      : MeshBasicMaterial
@@ -125,6 +161,7 @@ export class TrackView {
   faceGoal        : (panel: Panel) => PanelFace = () => 'table'
 
   private readonly text           : TrackTextBuilder
+  private readonly panelViews     = new Map<Panel, PanelView>()
   private readonly links          : LinkLines
   private readonly frontMaterials : FadingMaterial[] = []
   private readonly wallMaterials  : FadingMaterial[] = []
@@ -329,29 +366,35 @@ export class TrackView {
     const background     = rectangles(backgrounds, PANEL_BACKGROUND_OPACITY)
     const barMesh        = rectangles(bars, 0)
     const group          = new Group()
-    const hinge          = new Group()
+    const tableFrame     = new Group()
     const tableFace      = new Group()
-    hinge.position.x     = PANEL_LEFT
-    tableFace.position.x = -PANEL_LEFT
+    const instFrame      = new Group()
+    // The table is built at wall u PANEL_U0: its frame starts at its first character.
+    tableFace.position.x = -PANEL_U0
     tableFace.add(background, barMesh)
-    hinge.add(tableFace)
-    group.add(hinge)
-    group.position.set(panel.shownU - PANEL_U0, panel.shownY, 0)
+    tableFrame.add(tableFace)
+    group.add(tableFrame, instFrame)
+    placeFrame(tableFrame, 1, 1)
+    placeFrame(instFrame, 1, 1)
+    group.position.set(panel.shownU - FACE_PAD_LEFT, panel.shownY, 0)
     group.visible = false
     this.wall.add(group)
     const face = this.layout.instrumentFace(panel.instrument)
-    this.panels.push({
+    const view : PanelView = {
       panel,
       group,
-      hinge,
+      tableFrame,
       tableFace,
+      instFrame,
       text      : null,
       background: background.material as MeshBasicMaterial,
       bars      : barMesh.material as MeshBasicMaterial,
       face,
       faceView  : null,
       tab       : face ? this.buildTab(group) : null
-    })
+    }
+    this.panels.push(view)
+    this.panelViews.set(panel, view)
   }
 
   private buildTab(parent: Group): PanelTab {
@@ -374,26 +417,44 @@ export class TrackView {
     }
   }
 
-  /** Width of the face a panel shows, in scene units. */
+  /** Width of the face a panel shows, in its frame's units. */
   panelWidth(panel: Panel): number {
-    return panel.chars > PANEL_CHARS ? FACE_WIDTH : TABLE_WIDTH
+    return this.shownFace(panel) === 'inst' ? FACE_WIDTH : TABLE_WIDTH
   }
 
-  /** The face a panel shows now (it turns at half way). */
+  /** Rows of the face a panel shows. */
+  shownRows(panel: Panel): number {
+    const face = this.panelViews.get(panel)?.face
+    return this.shownFace(panel) === 'inst' && face ? face.rows : PANEL_ROWS
+  }
+
+  /** The face a panel shows now (they swap half way through the crossfade). */
   shownFace(panel: Panel): PanelFace {
-    return panel.flip >= 0.5 ? 'inst' : 'table'
+    return flipPose(panel.flip).fade >= 0.5 ? 'inst' : 'table'
   }
 
-  /** The tab of the panel at wall (u, y), when there is one. */
-  tabAt(u: number, y: number): Panel | null {
-    for (const view of this.panels) {
-      const { panel, tab } = view
-      if (!tab || panel.alpha < 0.5) continue
-      const left = panel.shownU - 0.45 + this.panelWidth(panel) - TAB_CHARS * CHAR_W
-      const top  = panel.shownY + 0.25 + TAB_HEIGHT
-      if (u >= left && u <= left + TAB_CHARS * CHAR_W && y <= top && y >= top - TAB_HEIGHT) return panel
-    }
-    return null
+  /**
+   * The frame a panel's face is drawn in (the shown face by default): x from its first
+   * character, y from its title line. It turns with the panel and scales while the faces crossfade.
+   */
+  faceFrame(panel: Panel, face = this.shownFace(panel)): Object3D {
+    const view = this.panelViews.get(panel)
+    if (!view) return this.wall
+    return face === 'inst' ? view.instFrame : view.tableFrame
+  }
+
+  /** The group a panel turns in: x from its left edge, y from its title line. */
+  panelGroup(panel: Panel): Object3D {
+    return this.panelViews.get(panel)?.group ?? this.wall
+  }
+
+  /** True when (x, y) in the panel's group is on its tab. */
+  onTab(panel: Panel, x: number, y: number): boolean {
+    const tab = this.panelViews.get(panel)?.tab
+    if (!tab || panel.alpha < 0.5) return false
+    const left = tab.group.position.x
+    const top  = tab.group.position.y + TAB_HEIGHT
+    return x >= left && x <= left + TAB_CHARS * CHAR_W && y <= top && y >= top - TAB_HEIGHT
   }
 
   /** Registers an object's material so its opacity follows the front's or the wall's fade. */
@@ -439,7 +500,7 @@ export class TrackView {
   private applyFades(): void {
     ;(this.frontBars.material as MeshBasicMaterial).opacity = this.barsAlpha * this.frontAlpha
     ;(this.wallBars.material as MeshBasicMaterial).opacity  = this.barsAlpha * this.wallAlpha
-    for (const view of this.panels) view.bars.opacity = this.barsAlpha * this.wallAlpha * view.panel.alpha
+    for (const view of this.panels) view.bars.opacity = this.barsAlpha * this.wallAlpha * tableContentAlpha(view.panel)
     this.header?.setFade(this.frontAlpha, this.wallAlpha)
   }
 
@@ -479,28 +540,60 @@ export class TrackView {
       const { panel } = view
       if (this.easePanel(panel, fade, glide)) busy = true
       if (this.turnPanel(view, dt)) busy = true
-      const alpha     = panel.alpha * this.wallAlpha
-      const showsInst = this.shownFace(panel) === 'inst'
-      view.group.position.set(panel.shownU - PANEL_U0, panel.shownY, 0)
-      view.group.visible      = alpha > 0.01
-      view.tableFace.visible  = !showsInst
-      view.background.opacity = PANEL_BACKGROUND_OPACITY * alpha
-      view.bars.opacity       = this.barsAlpha * alpha
-      this.updatePanelText(view, textOn && alpha > 0.01 && !showsInst, alpha)
-      if (showsInst && view.face && !view.faceView) {
-        view.faceView                  = new InstrumentFaceView(view.face, this.palette)
-        view.faceView.group.position.x = 0.45
-        view.hinge.add(view.faceView.group)
-      }
-      view.faceView?.setAlpha(showsInst ? alpha : 0, textOn, () => this.onTextReady())
-      this.updateTab(view, textOn, alpha)
+      const alpha = panel.alpha * this.wallAlpha
+      const pose  = flipPose(panel.flip)
+      view.group.position.set(panel.shownU - FACE_PAD_LEFT, panel.shownY, 0)
+      // The wall is turned WALL_ANGLE from the front: turning back as much faces the front.
+      view.group.rotation.y = -pose.turn * WALL_ANGLE
+      view.group.visible    = alpha > 0.01
+      const width           = this.cardSize(view, pose.fade)
+      this.updateTable(view, textOn, alpha, pose.fade)
+      this.updateInstrument(view, textOn, alpha, pose.fade)
+      this.updateTab(view, textOn, alpha, width)
     }
     return busy
   }
 
   /**
-   * Turns a panel toward the face the world wants: a quarter turn off the wall around its left
-   * edge, the faces swap edge-on, a quarter turn back. Returns true while it turns.
+   * Sizes both faces' frames to the card between the table's size and the instrument face's
+   * (`fade` 0..1), so the two fill the same card while they crossfade. Returns its width.
+   */
+  private cardSize(view: PanelView, fade: number): number {
+    const faceHeight = view.face ? view.face.rows * ROW_H + 0.5 : TABLE_HEIGHT
+    const width      = TABLE_WIDTH + (FACE_WIDTH - TABLE_WIDTH) * fade
+    const height     = TABLE_HEIGHT + (faceHeight - TABLE_HEIGHT) * fade
+    placeFrame(view.tableFrame, width / TABLE_WIDTH, height / TABLE_HEIGHT)
+    placeFrame(view.instFrame, width / FACE_WIDTH, height / faceHeight)
+    return view.face ? width : TABLE_WIDTH
+  }
+
+  /**
+   * The table face. Its content leaves first in the crossfade; its background stays until the
+   * instrument face's is in, so the card never thins out.
+   */
+  private updateTable(view: PanelView, textOn: boolean, alpha: number, fade: number): void {
+    const back              = alpha * (1 - smoothstep(0.5, 1, fade))
+    const content           = this.wallAlpha * tableContentAlpha(view.panel)
+    view.tableFrame.visible = back > 0.01
+    view.background.opacity = PANEL_BACKGROUND_OPACITY * back
+    view.bars.opacity       = this.barsAlpha * content
+    this.updatePanelText(view, textOn && content > 0.01, content)
+  }
+
+  /** The instrument face, made when first shown: its background comes in first, its content last. */
+  private updateInstrument(view: PanelView, textOn: boolean, alpha: number, fade: number): void {
+    const back = alpha * smoothstep(0, 0.5, fade)
+    if (back > 0.01 && view.face && !view.faceView) {
+      view.faceView = new InstrumentFaceView(view.face, this.palette)
+      view.instFrame.add(view.faceView.group)
+    }
+    view.faceView?.setAlpha(alpha * smoothstep(0.4, 1, fade), back, textOn, () => this.onTextReady())
+  }
+
+  /**
+   * Moves a panel's flip toward the face the world wants: it turns out of the wall to face the
+   * front, then the faces crossfade; turning back runs the same way in reverse. Returns true while
+   * it turns.
    */
   private turnPanel(view: PanelView, dt: number): boolean {
     const { panel } = view
@@ -508,24 +601,20 @@ export class TrackView {
     // The layout makes room for the face it turns to at once.
     panel.rows      = goal ? (view.face?.rows ?? PANEL_ROWS) : PANEL_ROWS
     panel.chars     = goal ? FACE_CHARS : PANEL_CHARS
-    if (panel.flip === goal && view.hinge.rotation.y === 0) return false
+    if (panel.flip === goal) return false
     const step = dt / FLIP_SECONDS
     panel.flip = goal > panel.flip ? Math.min(goal, panel.flip + step) : Math.max(goal, panel.flip - step)
     // A panel coming back from hidden shows its face at once.
     if (panel.alpha < 0.02) panel.flip = goal
-    const eased           = easeInOut(panel.flip)
-    const angle           = (eased < 0.5 ? eased : 1 - eased) * Math.PI
-    view.hinge.rotation.y = -angle
-    view.hinge.position.z = Math.sin(eased * Math.PI) * FLIP_LIFT
     return panel.flip !== goal
   }
 
-  /** The tab over the panel's top-right corner, named after the face a click turns to. */
-  private updateTab(view: PanelView, textOn: boolean, alpha: number): void {
+  /** The tab over the card's top-right corner (`width` wide), named after the face a click turns to. */
+  private updateTab(view: PanelView, textOn: boolean, alpha: number, width: number): void {
     const tab = view.tab
     if (!tab) return
     const label = this.shownFace(view.panel) === 'inst' ? '‹ TABLE' : 'INST ›'
-    tab.group.position.set(PANEL_LEFT + this.panelWidth(view.panel) - TAB_CHARS * CHAR_W, 0.25, 0)
+    tab.group.position.set(width - TAB_CHARS * CHAR_W, FACE_PAD_TOP, 0)
     tab.background.opacity = PANEL_BACKGROUND_OPACITY * alpha
     const wanted           = textOn && alpha > 0.01
     if (tab.text && (!wanted || tab.label !== label)) {

@@ -18,9 +18,12 @@ instruments → tables) and shows it as a 3D tracker:
 - **Instrument face**: an instrument's panel turns over (around its left edge, so its links stay
   put) to show the instrument itself: the Instrument view's rows where the device puts them, a bar
   after each level (PAN and DETUNE from the middle, FM operator levels as a meter under them), and
-  four modulator cards with the shape of each envelope, LFO or tracking range, in the slot's
-  colour. A parameter a modulator drives (its DEST) gets a mark in that colour under its bar. The
-  panel turns by itself while the M8 shows that instrument (Instrument or Inst. Mods view), and
+  on its right four modulator cards placed as on the Inst. Mods view (MOD1 / MOD2, MOD3 / MOD4),
+  each with its type, the shape of its envelope, LFO or tracking range in the slot's colour, its
+  destination and its values. The face is as tall as a table and spans two panel columns. A
+  parameter a modulator drives (its DEST) gets a mark in that colour under its bar. The
+  panel turns out of the wall to face the front, and its table crossfades into the instrument
+  face, by itself while the M8 shows that instrument (Instrument or Inst. Mods view), and
   back when it leaves; the `INST ›` / `‹ TABLE` tab above the panel, or key `I`, turns it by
   hand. Every value is a cell: the Selection panel explains it as the SDK reads it on the device,
   with what modulates it, or the whole modulator for a modulator value. With Auto select the M8

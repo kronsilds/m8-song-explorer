@@ -9,8 +9,8 @@ import { cellAt, instrumentCells, instrumentPage, modCells, modSlots } from '../
 import { modShape } from '../src/model/modShapes'
 import { INSTRUMENT_TEMPLATES, instrumentLines, instrumentModsLines, MOD_ROWS, storedScreen } from '../src/model/screens'
 import { usedItems } from '../src/model/song'
-import { layoutInstrumentFace, MOD_CURVE_ROWS, placeAt, placeOf } from '../src/scene/instrumentFace'
-import { SongLayout } from '../src/scene/layout'
+import { FACE_CHARS, isTitlePlace, layoutInstrumentFace, MOD_CARD_ROWS, MODS_X, placeAt, placeOf } from '../src/scene/instrumentFace'
+import { PANEL_ROWS, SongLayout } from '../src/scene/layout'
 import { FakeM8 } from './fakeM8'
 
 // Captured on the device (Model:02, fw 6.5, 2026-10-21): stored lines, title row first, no margin.
@@ -177,15 +177,45 @@ describe('instrument face', () => {
     const face       = layoutInstrumentFace(instrument)
     const page       = instrumentPage(instrument)
     for (const cell of page.cells) expect(placeOf(face, 'inst', cell.line, cell.x)).not.toBeNull()
-    // ATK of MOD2 is drawn as the curve of card 2.
-    const attack = page.slots[1].cells.ATK
-    const place  = placeOf(face, 'mods', attack.line, attack.x)
-    expect(place?.height).toBe(MOD_CURVE_ROWS)
-    expect(place?.cell.slot).toBe(2)
+    // Every modulator value is on its own card: MOD2 under MOD1 on the left, MOD3 / MOD4 on the right.
+    for (const cell of page.mods) {
+      const place = placeOf(face, 'mods', cell.line, cell.x)
+      const card  = face.cards.find((c) => c.slot.slot === cell.slot)
+      expect(place?.cell).toBe(cell)
+      expect(card && place && place.row >= card.row && place.row < card.row + MOD_CARD_ROWS).toBe(true)
+      expect(card && place && place.col >= card.col).toBe(true)
+    }
+    expect(face.cards.map((card) => [card.col > MODS_X, card.row > 0])).toEqual([[false, false], [false, true], [true, false], [true, true]])
+    // MOD1's title is a value of the card, not the instrument's title.
+    const mod1 = face.places.find((p) => p.cell.label === 'MOD1')
+    expect(mod1 && isTitlePlace(mod1)).toBe(false)
     // The CUTOFF value is under its own characters.
     const cutoff = face.places.find((p) => p.cell.label === 'CUTOFF')
     expect(cutoff && placeAt(face, cutoff.col + 0.5, cutoff.row)?.cell.label).toBe('CUTOFF')
     expect(face.cards.map((card) => card.active)).toEqual([true, true, false, false])
+  })
+
+  test('every type fits a face as tall as a table panel', () => {
+    const mods = instrumentModsLines(1, Object.keys(MOD_ROWS).slice(0, 4).map((type) => ({
+      type: `00${type}`,
+      rows: MOD_ROWS[type].map((label): [string, string] => [label, label === 'DEST' ? '01VOLUME' : '40'])
+    })))
+    for (const type of Object.keys(INSTRUMENT_TEMPLATES)) {
+      const instrument = {
+        id   : 1,
+        name : null,
+        type,
+        lines: instrumentLines(1, type, null),
+        mods
+      }
+      const face       = layoutInstrumentFace(instrument)
+      const page       = instrumentPage(instrument)
+      expect(face.rows).toBe(PANEL_ROWS)
+      expect(face.lines.length).toBe(PANEL_ROWS)
+      for (const line of face.lines) expect(line.reduce((n, [text]) => n + text.length, 0)).toBeLessThanOrEqual(FACE_CHARS)
+      for (const cell of [...page.cells, ...page.mods]) expect(placeOf(face, cell.screen, cell.line, cell.x)).not.toBeNull()
+      for (const place of face.places) expect(place.row + place.height).toBeLessThanOrEqual(PANEL_ROWS)
+    }
   })
 
   test('a parameter a modulator drives is marked with its slot', () => {

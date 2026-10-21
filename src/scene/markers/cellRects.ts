@@ -3,8 +3,9 @@
 import type { PhraseColumn } from '../../model/columns'
 import type { Selection } from '../../model/selection'
 import { ROWS_PER_PHRASE } from '../../model/song'
-import { placeOf } from '../instrumentFace'
+import { INST_CHARS, placeOf } from '../instrumentFace'
 import { CHAR_W, INST_COL, NOTE_COL, PANEL_CHARS, PANEL_FIELDS, type Panel, ROW_H, SIDE_FIELDS, SIDE_U0, type SongLayout } from '../layout'
+import { FACE_HEADER_WIDTH } from '../track/instrumentFaceView'
 import { FRONT_NOTES_W, FRONT_NOTES_X, type TrackView, WALL_STEPS_U, WALL_STEPS_W } from '../track/trackView'
 import type { CellRect } from './cellMarker'
 
@@ -63,29 +64,33 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
       }
       return [row, wallRow, fieldRect(view.wall, SIDE_U0 + start * CHAR_W, y, width)]
     }
+    // Panel cells are in the frame of the panel's face (x from its first character, y from its
+    // title line): they turn and scale with it.
     case 'table': {
       const panel = panelOf(selection.table)
       if (!panel) return []
-      const y              = panel.shownY - (selection.row + 2) * ROW_H
+      const frame          = view.faceFrame(panel, 'table')
+      const y              = -(selection.row + 2) * ROW_H
       const [start, width] = PANEL_FIELDS[selection.column]
       const tableRow       : CellRect = {
-        parent: view.wall,
-        x     : panel.shownU - 0.3,
+        parent: frame,
+        x     : -0.3,
         y,
         w     : PANEL_CHARS * CHAR_W + 0.6,
         h     : ROW_H
       }
-      return [tableRow, fieldRect(view.wall, panel.shownU + start * CHAR_W, y, width)]
+      return [tableRow, fieldRect(frame, start * CHAR_W, y, width)]
     }
     case 'instrument':
     case 'instParam': {
       const panel = panelOf(selection.table)
       if (!panel) return []
-      const header: CellRect = {
-        parent: view.wall,
-        x     : panel.shownU - 0.45,
-        y     : panel.shownY + 0.25,
-        w     : view.panelWidth(panel),
+      const frame  = view.faceFrame(panel)
+      const header : CellRect = {
+        parent: frame,
+        x     : -0.45,
+        y     : 0.25,
+        w     : view.shownFace(panel) === 'inst' ? FACE_HEADER_WIDTH : view.panelWidth(panel),
         h     : ROW_H * 2 + 0.35
       }
       if (selection.kind === 'instrument') return [header]
@@ -93,18 +98,18 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
       const face  = view.shownFace(panel) === 'inst' ? layout.instrumentFace(selection.instrument) : null
       const place = face ? placeOf(face, selection.screen, selection.line, selection.x) : null
       if (!place) return [header]
-      const y    = panel.shownY - place.row * ROW_H
+      const y    = -place.row * ROW_H
       const cell : CellRect = {
-        ...fieldRect(view.wall, panel.shownU + place.col * CHAR_W, y, place.width),
+        ...fieldRect(frame, place.col * CHAR_W, y, place.width),
         h: ROW_H * place.height
       }
       // A modulator value is marked on its card alone; a parameter with its row.
       if (selection.screen === 'mods') return [cell]
       return [{
-        parent: view.wall,
-        x     : panel.shownU - 0.3,
+        parent: frame,
+        x     : -0.3,
         y,
-        w     : view.panelWidth(panel) - 0.3,
+        w     : INST_CHARS * CHAR_W + 0.4,
         h     : ROW_H
       }, cell]
     }

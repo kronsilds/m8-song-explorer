@@ -11,6 +11,7 @@ import {
   LineBasicMaterial,
   LineSegments,
   MathUtils,
+  type Object3D,
   PerspectiveCamera,
   Scene,
   Vector3,
@@ -30,7 +31,7 @@ import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from
 import { CameraRig } from './camera/rig'
 import { type SceneButton, ScenePicker } from './input/picker'
 import { bindPointerControls, type PointerTarget } from './input/pointerControls'
-import { placeOf } from './instrumentFace'
+import { isTitlePlace, placeOf } from './instrumentFace'
 import { BAND_GAP, FRONT_W, HEADER_H, type Panel, ROW_H, SongLayout, TRACK_PITCH, WALL_ANGLE } from './layout'
 import { CellMarker, type CellRect } from './markers/cellMarker'
 import { cellRects } from './markers/cellRects'
@@ -39,7 +40,7 @@ import type { Palette } from './palette'
 import { easeFactor, linkCurve, smoothstep } from './shapes'
 import { RichText, type TextBlock, TextPool } from './text'
 import { HEADER_TOP } from './track/trackHeader'
-import { type PanelFace, TrackView } from './track/trackView'
+import { PANEL_TAB_ROOM, type PanelFace, TrackView } from './track/trackView'
 
 export type { ViewPreset } from './camera/cameraAngles'
 
@@ -501,9 +502,10 @@ export class World implements PointerTarget {
     const track = selectionTrack(selection)
     const point = new Vector3(rect.x + rect.w / 2, rect.y - rect.h / 2, 0)
     const view  = this.trackViews[track]
-    if (view && rect.parent === view.wall) {
-      view.wall.updateMatrix()
-      point.applyMatrix4(view.wall.matrix)
+    // Into the track's group (the wall, or a panel turned out of it), whose x is then where it settles.
+    for (let object: Object3D | null = rect.parent; view && object && object !== view.group; object = object.parent) {
+      object.updateMatrix()
+      point.applyMatrix4(object.matrix)
     }
     point.x += this.frontX(track, true)
     return point
@@ -621,7 +623,7 @@ export class World implements PointerTarget {
     let best      : typeof here | null = null
     let bestScore = Number.POSITIVE_INFINITY
     for (const place of face.places) {
-      if (same(place.cell) || place.row === 0) continue
+      if (same(place.cell) || isTitlePlace(place)) continue
       const rows    = place.row - here.row
       const columns = place.col - here.col
       if (rowDelta && Math.sign(rows) !== Math.sign(rowDelta)) continue
@@ -760,7 +762,8 @@ export class World implements PointerTarget {
     }
     // From the header of a panel showing its instrument face: onto its first value.
     const headerPanel = selection.kind === 'instrument' ? this.panelOf(selection.track, selection.table) : undefined
-    const headerFace  = headerPanel?.instrument != null && headerPanel.flip >= 0.5 ? this.layout?.instrumentFace(headerPanel.instrument) : null
+    const headerShows = headerPanel && this.trackViews[headerPanel.track]?.shownFace(headerPanel) === 'inst'
+    const headerFace  = headerShows && headerPanel.instrument != null ? this.layout?.instrumentFace(headerPanel.instrument) : null
     if (selection.kind === 'instrument' && headerFace && selection.instrument != null) {
       const first = headerFace.places.find((place) => place.row > 0)
       if (first) this.select({
@@ -954,9 +957,10 @@ export class World implements PointerTarget {
     let panelsMoved = false
     const half      = this.visibleHalfHeight()
     const centerY   = this.rig.current.target.y
-    // Headers stick at the screen height they have in the overview; panels stick a little below them.
+    // Headers stick at the screen height they have in the overview; panels stick a little below
+    // them, low enough for the tab over their corner to stay clear of the header.
     const headerTop = centerY + half * this.headerFraction() - HEADER_TOP
-    const panelTop  = headerTop - ROW_H - 1.2
+    const panelTop  = headerTop - ROW_H - 0.95 - PANEL_TAB_ROOM
     for (const view of this.trackViews) {
       if (view.setHeaderY(headerTop)) busy = true
       if ((view.wallAlpha > 0.01 || this.allWallsOpen) && layout.stick(view.track.track, panelTop, centerY - half * 0.92)) panelsMoved = true
