@@ -6,35 +6,42 @@
 export type TrackToggle = 'mute' | 'solo'
 
 // Checked on the M8 (Model:02, fw 6.5): mute C-0..G-0 (12-19), solo G#0..D#1 (20-27).
-const BASE: Record<TrackToggle, number> = { mute: 12, solo: 20 }
+const FIRST_NOTE             : Record<TrackToggle, number> = {
+  mute: 12,
+  solo: 20
+}
+
+const NOTE_ON       = 0x90
+const NOTE_OFF      = 0x80
+const FULL_VELOCITY = 0x7f
 
 /** The MIDI note that holds a track's mute or solo (track 0..7). */
-export const holdNote = (kind: TrackToggle, track: number): number => BASE[kind] + track
+export const holdNote        = (kind: TrackToggle, track: number): number => FIRST_NOTE[kind] + track
 
 /** M8 default of CC MAP CHAN. */
 export const DEFAULT_CHANNEL = 11
 
 export class MidiControl {
   /** MIDI channel 1..16: the M8's CC MAP CHAN. */
-  private ch: number
-  private output: MIDIOutput | null = null
-  private opening: Promise<MIDIOutput> | null = null
-  /** Notes held now, with the channel they went out on (released on that channel). */
-  private readonly held = new Map<number, number>()
+  private currentChannel     : number
+  private output             : MIDIOutput | null = null
+  private opening            : Promise<MIDIOutput> | null = null
+  /** Notes held now, with the channel nibble they went out on (released on that channel). */
+  private readonly heldNotes = new Map<number, number>()
 
   constructor(channel = DEFAULT_CHANNEL) {
-    this.ch = channel
+    this.currentChannel = channel
   }
 
   get channel(): number {
-    return this.ch
+    return this.currentChannel
   }
 
   /** Changes the channel; mutes and solos held on the old one are released first. */
   set channel(channel: number) {
-    if (channel === this.ch) return
+    if (channel === this.currentChannel) return
     this.releaseAll()
-    this.ch = channel
+    this.currentChannel = channel
   }
 
   /** Finds the M8's MIDI output (asks for Web MIDI access the first time). */
@@ -42,11 +49,12 @@ export class MidiControl {
     if (this.output?.state === 'connected') return this.output
     if (!('requestMIDIAccess' in navigator)) throw new Error('Web MIDI is not available in this browser')
     this.opening ??= (async () => {
-      const access = await navigator.requestMIDIAccess()
-      const out = [...access.outputs.values()].find((o) => o.name === 'M8') ?? [...access.outputs.values()].find((o) => /\bM8\b/.test(o.name ?? ''))
-      if (!out) throw new Error('no MIDI output named M8 (is the M8 plugged in over USB?)')
-      await out.open()
-      return out
+      const access  = await navigator.requestMIDIAccess()
+      const outputs = [...access.outputs.values()]
+      const m8      = outputs.find((output) => output.name === 'M8') ?? outputs.find((output) => /\bM8\b/.test(output.name ?? ''))
+      if (!m8) throw new Error('no MIDI output named M8 (is the M8 plugged in over USB?)')
+      await m8.open()
+      return m8
     })()
     try {
       this.output = await this.opening
@@ -58,22 +66,21 @@ export class MidiControl {
 
   /** Holds (on) or releases (off) the note of `kind` on `track`. */
   async set(kind: TrackToggle, track: number, on: boolean): Promise<void> {
-    const out = await this.open()
-    const note = holdNote(kind, track)
+    const output        = await this.open()
+    const note          = holdNote(kind, track)
+    const channelNibble = (this.currentChannel - 1) & 0x0f
     if (on) {
-      const ch = (this.ch - 1) & 0x0f
-      out.send([0x90 | ch, note, 0x7f])
-      this.held.set(note, ch)
+      output.send([NOTE_ON | channelNibble, note, FULL_VELOCITY])
+      this.heldNotes.set(note, channelNibble)
     } else {
-      const ch = this.held.get(note) ?? (this.ch - 1) & 0x0f
-      out.send([0x80 | ch, note, 0])
-      this.held.delete(note)
+      output.send([NOTE_OFF | (this.heldNotes.get(note) ?? channelNibble), note, 0])
+      this.heldNotes.delete(note)
     }
   }
 
   /** Releases every held note (all mutes and solos sent from here end). */
   releaseAll(): void {
-    if (this.output) for (const [note, ch] of this.held) this.output.send([0x80 | ch, note, 0])
-    this.held.clear()
+    if (this.output) for (const [note, channelNibble] of this.heldNotes) this.output.send([NOTE_OFF | channelNibble, note, 0])
+    this.heldNotes.clear()
   }
 }

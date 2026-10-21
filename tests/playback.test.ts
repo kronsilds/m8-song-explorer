@@ -3,31 +3,36 @@ import type { M8Screen } from '@yam8d/m8-sdk'
 import { PlaybackTracker } from '../src/m8/playback'
 import { demoSong } from '../src/model/demo'
 import { FIRST_CONTENT_ROW, phraseScreen, songScreen } from '../src/model/screens'
-import { buildTimeline, chainLength, ROWS_PER_PHRASE } from '../src/model/song'
+import { chainLength, ROWS_PER_PHRASE } from '../src/model/song'
+import { buildTimeline } from '../src/model/timeline'
 
-const model = demoSong()
+const model    = demoSong()
 const timeline = buildTimeline(model)
-const STEP_MS = 60000 / 120 / 4
+const STEP_MS  = 60000 / 120 / 4
 
 /** The Song view with a play marker before the cell of each playing track, as the M8 draws it. */
 function songWithMarkers(rows: (number | null)[], bpm = 120): M8Screen {
   const lines = songScreen(model, 0)
   rows.forEach((row, t) => {
     if (row == null) return
-    const y = FIRST_CONTENT_ROW + row
-    const chars = lines[y].split('')
+    const y          = FIRST_CONTENT_ROW + row
+    const chars      = lines[y].split('')
     chars[3 + 3 * t] = '>'
-    lines[y] = chars.join('')
+    lines[y]         = chars.join('')
   })
   lines[5] = `${lines[5].padEnd(33)}T>${String(bpm).padStart(3, '0')}`
-  return { width: 40, height: 24, lines }
+  return {
+    width : 40,
+    height: 24,
+    lines
+  }
 }
 
 /** The device draws the play marker in the blank after the step number ('F>---'). */
 function markStep(lines: string[], step: number): string[] {
   const out = [...lines]
-  const y = FIRST_CONTENT_ROW + step
-  out[y] = `${out[y].slice(0, 2)}>${out[y].slice(3)}`
+  const y   = FIRST_CONTENT_ROW + step
+  out[y]    = `${out[y].slice(0, 2)}>${out[y].slice(3)}`
   return out
 }
 
@@ -39,15 +44,18 @@ const bandRow = (songRow: number) => timeline.bands.find((b) => b.songRow === so
  */
 function simulate(options: { clockMsPerTick?: number; pollMs?: number; latencyMs?: number; bpm?: number }) {
   const { pollMs = 60, latencyMs = 25, bpm = 96 } = options
-  const stepMs = 60000 / bpm / 4
-  const tracker = new PlaybackTracker(model, timeline)
-  const kick = model.song[2][0] as number
-  const phraseId = model.chains[kick].rows[0].phrase as number
-  tracker.context = { songRow: 2, track: 0 }
-  const t0 = 1000.3
-  const trueStep = (ms: number) => Math.floor((ms - t0) / stepMs) % 16
-  let hits = 0
-  let checks = 0
+  const stepMs                                    = 60000 / bpm / 4
+  const tracker                                   = new PlaybackTracker(model, timeline)
+  const kick                                      = model.song[2][0] as number
+  const phraseId                                  = model.chains[kick].rows[0].phrase as number
+  tracker.context                                 = {
+    songRow: 2,
+    track  : 0
+  }
+  const t0                                        = 1000.3
+  const trueStep                                  = (ms: number) => Math.floor((ms - t0) / stepMs) % 16
+  let hits                                        = 0
+  let checks                                      = 0
   for (let ms = t0 + 7; ms < t0 + 16 * stepMs * 0.95; ms += pollMs) {
     // Like the host: clock events carry the time of their tick.
     if (options.clockMsPerTick) {
@@ -56,13 +64,17 @@ function simulate(options: { clockMsPerTick?: number; pollMs?: number; latencyMs
     }
     const shown = trueStep(ms - latencyMs)
     const lines = markStep(phraseScreen(model.phrases[phraseId]), shown)
-    lines[5] = `${lines[5].padEnd(33)}T>${String(bpm).padStart(3, '0')}`
-    if (shown >= 0) tracker.observe({ width: 40, height: 24, lines }, ms)
+    lines[5]    = `${lines[5].padEnd(33)}T>${String(bpm).padStart(3, '0')}`
+    if (shown >= 0) tracker.observe({
+      width : 40,
+      height: 24,
+      lines
+    }, ms)
     // Between readings, at odd times, compare with the truth.
     for (const probe of [ms + pollMs * 0.3, ms + pollMs * 0.7]) {
       if (probe - t0 < 4 * stepMs) continue // warm-up
       const head = tracker.playheads(probe)[0]
-      checks += 1
+      checks     += 1
       if (head?.row === bandRow(2) + trueStep(probe)) hits += 1
     }
   }
@@ -73,7 +85,10 @@ describe('PlaybackTracker', () => {
   test('readings narrow down when steps start: the playhead matches the M8, not a poll behind', () => {
     expect(simulate({})).toBeGreaterThan(0.95)
     expect(simulate({ clockMsPerTick: 60000 / 96 / 24 })).toBeGreaterThan(0.95)
-    expect(simulate({ pollMs: 100, latencyMs: 10 })).toBeGreaterThan(0.85)
+    expect(simulate({
+      pollMs   : 100,
+      latencyMs: 10
+    })).toBeGreaterThan(0.85)
   })
 
   test('song markers place each track at its song row, then it moves on at the tempo', () => {
@@ -81,14 +96,18 @@ describe('PlaybackTracker', () => {
     expect(tracker.observe(songWithMarkers([2, 2, 2, 2, 2, null, null, null]), 1000)).toBe(true)
     expect(tracker.bpm).toBe(120)
     const at = tracker.playheads(1000 + 10 * STEP_MS + 1)
-    expect(at[0]).toMatchObject({ row: bandRow(2) + 10, songRow: 2, exact: false })
+    expect(at[0]).toMatchObject({
+      row    : bandRow(2) + 10,
+      songRow: 2,
+      exact  : false
+    })
     expect(at[5]).toBeNull()
   })
 
   test('a track entering the next song row is exact from then on', () => {
     const tracker = new PlaybackTracker(model, timeline)
     tracker.observe(songWithMarkers([2]), 0)
-    const kick = model.song[2][0] as number
+    const kick   = model.song[2][0] as number
     const length = chainLength(model.chains[kick]) * ROWS_PER_PHRASE
     // Predicted to reach row 3 after `length` steps; the screen agrees a little later.
     tracker.observe(songWithMarkers([3]), length * STEP_MS + 40)
@@ -100,32 +119,55 @@ describe('PlaybackTracker', () => {
   test('the prediction walks past a chain end without the screen', () => {
     const tracker = new PlaybackTracker(model, timeline)
     tracker.observe(songWithMarkers([2]), 0)
-    const kick = model.song[2][0] as number
+    const kick   = model.song[2][0] as number
     const length = chainLength(model.chains[kick]) * ROWS_PER_PHRASE
     const [head] = tracker.playheads((length + 2) * STEP_MS + 1)
-    expect(head).toMatchObject({ row: bandRow(3) + 2, songRow: 3, exact: false })
+    expect(head).toMatchObject({
+      row    : bandRow(3) + 2,
+      songRow: 3,
+      exact  : false
+    })
   })
 
   test('a phrase view marker sets the exact step of the track playing that phrase', () => {
     const tracker = new PlaybackTracker(model, timeline)
     tracker.observe(songWithMarkers([2]), 0)
-    const kick = model.song[2][0] as number
+    const kick     = model.song[2][0] as number
     const phraseId = model.chains[kick].rows[0].phrase as number
-    const lines = phraseScreen(model.phrases[phraseId])
-    tracker.observe({ width: 40, height: 24, lines: markStep(lines, 9) }, 2 * STEP_MS)
+    const lines    = phraseScreen(model.phrases[phraseId])
+    tracker.observe({
+      width : 40,
+      height: 24,
+      lines : markStep(lines, 9)
+    }, 2 * STEP_MS)
     const [head] = tracker.playheads(2 * STEP_MS + 1)
     // One reading: the step is right, when it started is known to a step.
-    expect(head).toMatchObject({ row: bandRow(2) + 9, songRow: 2, exact: false })
+    expect(head).toMatchObject({
+      row    : bandRow(2) + 9,
+      songRow: 2,
+      exact  : false
+    })
   })
 
   test('a phrase on screen before any song view anchors the track the M8 came from', () => {
-    const tracker = new PlaybackTracker(model, timeline)
-    const bass = model.song[2][3] as number
-    const phraseId = model.chains[bass].rows[1].phrase as number
-    tracker.context = { songRow: 2, track: 3 }
-    tracker.observe({ width: 40, height: 24, lines: markStep(phraseScreen(model.phrases[phraseId]), 4) }, 0)
+    const tracker   = new PlaybackTracker(model, timeline)
+    const bass      = model.song[2][3] as number
+    const phraseId  = model.chains[bass].rows[1].phrase as number
+    tracker.context = {
+      songRow: 2,
+      track  : 3
+    }
+    tracker.observe({
+      width : 40,
+      height: 24,
+      lines : markStep(phraseScreen(model.phrases[phraseId]), 4)
+    }, 0)
     const heads = tracker.playheads(1)
-    expect(heads[3]).toMatchObject({ row: bandRow(2) + 16 + 4, songRow: 2, exact: false })
+    expect(heads[3]).toMatchObject({
+      row    : bandRow(2) + 16 + 4,
+      songRow: 2,
+      exact  : false
+    })
     expect(heads.filter(Boolean)).toHaveLength(1)
   })
 
@@ -154,8 +196,12 @@ describe('PlaybackTracker', () => {
     tracker.observe(songWithMarkers([2, 2, 2, 2, 2, null, null, null]), 0)
     const before = tracker.playheads(10 * STEP_MS).map((h) => h?.row)
     // ...then the M8 shows a phrase none of them plays, with no marker, for seconds.
-    const idle = phraseScreen(model.phrases[idlePhrase(2)])
-    for (let ms = 100; ms <= 6000; ms += 500) tracker.observe({ width: 40, height: 24, lines: idle }, ms)
+    const idle   = phraseScreen(model.phrases[idlePhrase(2)])
+    for (let ms = 100; ms <= 6000; ms += 500) tracker.observe({
+      width : 40,
+      height: 24,
+      lines : idle
+    }, ms)
     expect(tracker.playing).toBe(true)
     const after = tracker.playheads(10 * STEP_MS).map((h) => h?.row)
     expect(after).toEqual(before)
@@ -165,27 +211,39 @@ describe('PlaybackTracker', () => {
   test('a phrase that should be playing but shows no marker means stopped', () => {
     const tracker = new PlaybackTracker(model, timeline)
     tracker.observe(songWithMarkers([2]), 0)
-    const kick = model.song[2][0] as number
+    const kick     = model.song[2][0] as number
     const phraseId = model.chains[kick].rows[0].phrase as number
-    const lines = phraseScreen(model.phrases[phraseId])
-    tracker.observe({ width: 40, height: 24, lines }, 2 * STEP_MS)
+    const lines    = phraseScreen(model.phrases[phraseId])
+    tracker.observe({
+      width : 40,
+      height: 24,
+      lines
+    }, 2 * STEP_MS)
     expect(tracker.playing).toBe(true)
-    tracker.observe({ width: 40, height: 24, lines }, 2 * STEP_MS + 1000)
+    tracker.observe({
+      width : 40,
+      height: 24,
+      lines
+    }, 2 * STEP_MS + 1000)
     expect(tracker.playing).toBe(false)
   })
 
   test('with MIDI transport the Stop message ends the song, not missing markers', () => {
     const tracker = new PlaybackTracker(model, timeline)
-    const ms = (tick: number) => tick * 20
+    const ms      = (tick: number) => tick * 20
     tracker.clockTick(600, ms(600), 20)
     expect(tracker.transportStart(bandRow(3), ms(600))).toBe(true)
     // Even the phrase the kick plays shows no marker (the user is on its chain, say): kept.
-    const kick = model.song[3][0] as number
+    const kick     = model.song[3][0] as number
     const phraseId = model.chains[kick].rows[0].phrase as number
-    const lines = phraseScreen(model.phrases[phraseId])
+    const lines    = phraseScreen(model.phrases[phraseId])
     for (let tick = 601; tick < 700; tick += 6) {
       tracker.clockTick(tick, ms(tick), 20)
-      tracker.observe({ width: 40, height: 24, lines }, ms(tick))
+      tracker.observe({
+        width : 40,
+        height: 24,
+        lines
+      }, ms(tick))
     }
     expect(tracker.playing).toBe(true)
     expect(tracker.playheads(ms(700)).filter(Boolean).length).toBeGreaterThan(0)
@@ -195,7 +253,7 @@ describe('PlaybackTracker', () => {
 
   test('with MIDI transport the Song view without markers (playing rows off screen) keeps playing', () => {
     const tracker = new PlaybackTracker(model, timeline)
-    const ms = (tick: number) => tick * 20
+    const ms      = (tick: number) => tick * 20
     tracker.clockTick(600, ms(600), 20)
     expect(tracker.transportStart(bandRow(3), ms(600))).toBe(true)
     for (let tick = 601; tick < 800; tick += 6) {
@@ -219,15 +277,19 @@ describe('PlaybackTracker', () => {
 
   test('Song Position + Continue place every track at once, on the clock', () => {
     const tracker = new PlaybackTracker(model, timeline)
-    const ms = (tick: number) => tick * 20
+    const ms      = (tick: number) => tick * 20
     tracker.clockTick(600, ms(600), 20)
     // Play on song row 03: the M8 sends SPP = the timeline row where that song row starts.
     expect(tracker.transportStart(bandRow(3), ms(600))).toBe(true)
     // Step 0 starts on the first clock after Continue (601), step 5 on 601 + 30.
     tracker.clockTick(631, ms(631), 20)
-    const heads = tracker.playheads(ms(631) + 1)
+    const heads   = tracker.playheads(ms(631) + 1)
     const playing = model.song[3].map((c, t) => (c == null ? null : t)).filter((t) => t != null)
-    for (const t of playing) expect(heads[t as number]).toMatchObject({ row: bandRow(3) + 5, songRow: 3, exact: true })
+    for (const t of playing) expect(heads[t as number]).toMatchObject({
+      row    : bandRow(3) + 5,
+      songRow: 3,
+      exact  : true
+    })
     expect(heads.filter(Boolean)).toHaveLength(playing.length)
     // A position where no song row starts: nothing placed, the screen decides.
     expect(tracker.transportStart(bandRow(3) + 5, ms(700))).toBe(false)

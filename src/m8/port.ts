@@ -19,7 +19,7 @@ export interface M8Port {
 export class M8TimeoutError extends Error {}
 
 /** yam8d's navigateToView only answers once the view changes, so every call is bounded. */
-export const withTimeout = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> =>
+export const withTimeout          = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new M8TimeoutError(`${what} did not answer within ${ms} ms`)), ms)
     promise.then(
@@ -34,12 +34,15 @@ export const withTimeout = <T>(promise: Promise<T>, ms: number, what: string): P
     )
   })
 
-const CALL_TIMEOUT_MS = 4000
+const CALL_TIMEOUT_MS             = 4000
+const NAVIGATE_TO_VIEW_TIMEOUT_MS = 6000
 
+/** Adapts the SDK client to the port, every call bounded by a timeout. */
 export function clientPort(client: M8Client): M8Port {
+  /** Turned off once the host fails to report colours (yam8d before SDK 0.5). */
   let cellsSupported = true
   return {
-    getScreen: () => withTimeout(client.getScreen(), CALL_TIMEOUT_MS, 'getScreen'),
+    getScreen     : () => withTimeout(client.getScreen(), CALL_TIMEOUT_MS, 'getScreen'),
     getScreenCells: async () => {
       if (!cellsSupported) return null
       try {
@@ -49,11 +52,11 @@ export function clientPort(client: M8Client): M8Port {
         return null
       }
     },
-    getState: () => withTimeout(client.fetchState(), CALL_TIMEOUT_MS, 'getState'),
-    press: (keys) => withTimeout(client.sendKeyPress(keys), CALL_TIMEOUT_MS, `keys ${keys.join('+')}`),
-    keyDown: (keys) => withTimeout(client.sendKeyDown(keys), CALL_TIMEOUT_MS, `hold ${keys.join('+')}`),
-    keyUp: () => withTimeout(client.sendKeyUp(), CALL_TIMEOUT_MS, 'release keys'),
-    navigateTo: (x, y) => withTimeout(client.navigateTo(x, y), CALL_TIMEOUT_MS, `navigateTo(${x}, ${y})`),
-    navigateToView: (view) => withTimeout(client.navigateToView(view), 6000, `navigateToView(${view})`),
+    getState      : () => withTimeout(client.fetchState(), CALL_TIMEOUT_MS, 'getState'),
+    press         : (keys) => withTimeout(client.sendKeyPress(keys), CALL_TIMEOUT_MS, `keys ${keys.join('+')}`),
+    keyDown       : (keys) => withTimeout(client.sendKeyDown(keys), CALL_TIMEOUT_MS, `hold ${keys.join('+')}`),
+    keyUp         : () => withTimeout(client.sendKeyUp(), CALL_TIMEOUT_MS, 'release keys'),
+    navigateTo    : (x, y) => withTimeout(client.navigateTo(x, y), CALL_TIMEOUT_MS, `navigateTo(${x}, ${y})`),
+    navigateToView: (view) => withTimeout(client.navigateToView(view), NAVIGATE_TO_VIEW_TIMEOUT_MS, `navigateToView(${view})`)
   }
 }

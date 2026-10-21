@@ -1,44 +1,11 @@
-// Screen-level moves on the M8: read a view until it has settled, put the cursor on a
-// cell, page the song, step to an instrument or a table. Only arrows, Shift+arrows and
+// Screen-level moves on the M8: read a view until it has settled, put the cursor on a cell,
+// page the song, step to an instrument, table, scale or groove. Only arrows, Shift+arrows and
 // Option+arrows are pressed here, keys that move around and never change the song
 // (Option+Left/Right is avoided on the Song view, where it solos tracks).
 
-import {
-  type M8KeyName,
-  type M8Screen,
-  type M8ScreenCells,
-  parseGridScreen,
-  parseViewTitle,
-  SCREEN_MARGIN,
-} from '@yam8d/m8-sdk'
-import { FIRST_CONTENT_ROW, TITLE_ROW } from '../model/screens'
-import {
-  type Chain,
-  emptyFx,
-  type FxCell,
-  type Groove,
-  type Instrument,
-  type ObservedColors,
-  type Phrase,
-  type PhraseStep,
-  ROWS_PER_CHAIN,
-  type Scale,
-  ROWS_PER_PHRASE,
-  type Table,
-  type TableRow,
-  TRACKS,
-} from '../model/song'
+import type { M8KeyName, M8State } from '@yam8d/m8-sdk'
 import type { M8Port } from './port'
-
-export type ViewKind = 'song' | 'chain' | 'phrase' | 'inst' | 'table' | 'scale' | 'groove' | 'other'
-
-export interface ScreenView {
-  kind: ViewKind
-  /** Item number from the title (chain, phrase, instrument, table). */
-  id: number | null
-  title: string
-  screen: M8Screen
-}
+import { isPage, readSongRows, type ScreenView, songCellX, stableContent, viewOf } from './screen/screenReader'
 
 export class ExploreCancelled extends Error {
   constructor() {
@@ -50,347 +17,80 @@ export class M8MoveError extends Error {}
 
 /** Views yam8d can navigate between by name. */
 export const GRAPH_VIEWS = new Set([
-  'song', 'project', 'mixer', 'effectsettings', 'inst', 'table', 'phrase', 'chain', 'groove', 'scale', 'instmods', 'instrumentpool',
+  'song',
+  'project',
+  'mixer',
+  'effectsettings',
+  'inst',
+  'table',
+  'phrase',
+  'chain',
+  'groove',
+  'scale',
+  'instmods',
+  'instrumentpool',
 ])
 
-/** Right edge of the content the explorer reads; the track panel lives beyond it. */
-const CONTENT_COLUMNS = 30
-const LAST_CONTENT_ROW = 21
-
-export function titleOf(screen: M8Screen): string {
-  return (screen.lines[TITLE_ROW] ?? '').slice(SCREEN_MARGIN, CONTENT_COLUMNS).trim().toUpperCase()
-}
-
-export function viewOf(screen: M8Screen): ScreenView {
-  const title = titleOf(screen)
-  const word = title.split(/\s+/)[0] ?? ''
-  const kind: ViewKind =
-    word === 'SONG' || word === 'LIVE'
-      ? 'song'
-      : word === 'CHAIN'
-        ? 'chain'
-        : word === 'PHRASE'
-          ? 'phrase'
-          : word.startsWith('INST') && !word.startsWith('INSTRUMENT')
-            ? 'inst'
-            : word === 'TABLE'
-              ? 'table'
-              : word === 'SCALE'
-                ? 'scale'
-                : word === 'GROOVE'
-                  ? 'groove'
-                  : 'other'
-  const viewId =
-    kind === 'scale' || kind === 'groove'
-      ? (/^(?:SCALE|GROOVE)\s+([0-9A-F]{2})\b/.exec(title)?.[1] ?? null)
-      : kind === 'song' || kind === 'other'
-        ? null
-        : parseViewTitle(title).viewId
-  return { kind, id: viewId == null ? null : parseInt(viewId, 16), title, screen }
-}
-
-/** What has to stay unchanged between two reads for a screen to count as drawn. */
-const stableKey = (screen: M8Screen): string =>
-  screen.lines
-    .slice(TITLE_ROW, LAST_CONTENT_ROW + 1)
-    .map((l) => l.slice(SCREEN_MARGIN, CONTENT_COLUMNS))
-    .join('\n')
-
-const upper = (s: string) => s.toUpperCase()
-
-/** The M8 pads names with dashes up to their 12 characters ('DEMO2-------'). */
-const nameOf = (raw: string): string | null => upper(raw.trim().replace(/-+$/, '')) || null
-
-const fxOf = (cmd: { rawValue: string; isEmpty: boolean } | undefined, val: { hexValue: number | null } | undefined): FxCell =>
-  cmd && !cmd.isEmpty ? { cmd: upper(cmd.rawValue), val: val?.hexValue ?? null } : emptyFx()
-
-// ---------------------------------------------------------------------------
-// Reading views
-
-/** Song rows on screen: row number -> chains, with the screen row they are drawn on. */
-export function readSongRows(view: ScreenView): { row: number; screenRow: number; chains: (number | null)[] }[] {
-  if (view.kind !== 'song') return []
-  return parseGridScreen('song', view.screen).map((r) => ({
-    row: r.rowIndex as number,
-    screenRow: r.screenRow,
-    chains: Array.from({ length: TRACKS }, (_, t) => {
-      const f = r.fields[`track${t + 1}`]
-      return f && !f.isEmpty ? f.hexValue : null
-    }),
-  }))
-}
-
-const fullPage = (rows: { rowIndex: number | null }[], count: number) =>
-  rows.length === count && rows.every((r, i) => r.rowIndex === i)
-
-export function readChain(view: ScreenView): Chain | null {
-  if (view.kind !== 'chain' || view.id == null) return null
-  const rows = parseGridScreen('chain', view.screen)
-  if (!fullPage(rows, ROWS_PER_CHAIN)) return null
-  return {
-    id: view.id,
-    rows: rows.map((r) => ({
-      phrase: r.fields.phrase.isEmpty ? null : r.fields.phrase.hexValue,
-      transpose: r.fields.transpose.hexValue,
-    })),
-  }
-}
-
-export function readPhrase(view: ScreenView): Phrase | null {
-  if (view.kind !== 'phrase' || view.id == null) return null
-  const rows = parseGridScreen('phrase', view.screen)
-  if (!fullPage(rows, ROWS_PER_PHRASE)) return null
-  return {
-    id: view.id,
-    steps: rows.map((r): PhraseStep => {
-      const f = r.fields
-      return {
-        note: f.note.isEmpty ? null : upper(f.note.rawValue),
-        vel: f.vel.isEmpty ? null : f.vel.hexValue,
-        inst: f.inst.isEmpty ? null : f.inst.hexValue,
-        fx: [1, 2, 3].map((l) => fxOf(f[`fx${l}cmd`], f[`fx${l}val`])),
-      }
-    }),
-  }
-}
-
-export function readTable(view: ScreenView): Table | null {
-  if (view.kind !== 'table' || view.id == null) return null
-  const rows = parseGridScreen('table', view.screen)
-  if (!fullPage(rows, ROWS_PER_PHRASE)) return null
-  return {
-    id: view.id,
-    rows: rows.map((r): TableRow => {
-      const f = r.fields
-      return {
-        transpose: f.transpose.isEmpty ? null : f.transpose.hexValue,
-        volume: f.volume.isEmpty ? null : f.volume.hexValue,
-        fx: [1, 2, 3].map((l) => fxOf(f[`fx${l}cmd`], f[`fx${l}val`])),
-      }
-    }),
-  }
-}
-
-export function readInstrument(view: ScreenView): Instrument | null {
-  if (view.kind !== 'inst' || view.id == null) return null
-  const data = view.screen.lines.map((l) => l.slice(SCREEN_MARGIN, CONTENT_COLUMNS))
-  const typeLine = data.find((l) => /^TYPE\b/i.test(l))
-  if (!typeLine) return null
-  const nameLine = data.find((l) => /^NAME\b/i.test(l))
-  const name = nameLine?.slice(8, 20).trim() ?? ''
-  return {
-    id: view.id,
-    type: upper(typeLine.slice(8, 21).trim()) || null,
-    // The text stream is lower case; the M8 shows names upper case.
-    name: nameOf(name),
-    lines: data.slice(TITLE_ROW, LAST_CONTENT_ROW + 1).map((l) => l.trimEnd()),
-  }
-}
-
-export interface ProjectInfo {
-  name: string | null
-  tempo: number | null
-  /** TRANSPOSE as the raw byte. */
-  transpose: number | null
-  /** SCALE: the number and the key in front of the scale name ('00C CHROMATIC'). */
-  scale: number | null
-  key: number | null
-  /** GROOVE: the number in front of the groove name ('00DEFAULT'). */
-  groove: number | null
-}
-
-/** NAME, TEMPO, TRANSPOSE, GROOVE and SCALE of the Project view; null when the screen is not (yet) the Project view. */
-export function readProject(screen: M8Screen): ProjectInfo | null {
-  if (!/^PROJECT\b/.test(titleOf(screen))) return null
-  const data = screen.lines.map((l) => l.slice(SCREEN_MARGIN, CONTENT_COLUMNS))
-  const nameLine = data.find((l) => /^NAME\b/i.test(l))
-  if (!nameLine) return null
-  const name = nameLine.slice(13, 25).trim()
-  const tempo = parseFloat(data.find((l) => /^TEMPO\b/i.test(l))?.slice(13, 19) ?? '')
-  const valueOf = (label: RegExp) => upper(data.find((l) => label.test(l))?.slice(13) ?? '')
-  const hex = (text: string) => {
-    const m = /^([0-9A-F]{2})/.exec(text)
-    return m ? parseInt(m[1], 16) : null
-  }
-  const scale = valueOf(/^SCALE\b/i)
-  const key = /^[0-9A-F]{2}([A-G]#?)/.exec(scale)?.[1]
-  return {
-    name: nameOf(name),
-    tempo: Number.isNaN(tempo) ? null : tempo,
-    transpose: hex(valueOf(/^TRANSPOSE\b/i)),
-    scale: hex(scale),
-    key: key ? PITCHES.indexOf(key) : null,
-    groove: hex(valueOf(/^GROOVE\b/i)),
-  }
-}
-
-/**
- * The Groove view: rows 0-F with the ticks of each step ('06', '00' skips it, '--' ends the
- * loop), and the PPQ on row 0 (24, 48, 96 or 192) next to the swing ('50.0%'). The layout
- * comes from the SDK's view map; not yet checked on the device. Null until all 16 rows are drawn.
- */
-export function readGroove(view: ScreenView): Groove | null {
-  if (view.kind !== 'groove' || view.id == null) return null
-  const ticks: (number | null)[] = Array(16).fill(undefined)
-  let ppq: number | null = null
-  for (const line of view.screen.lines.slice(FIRST_CONTENT_ROW).map((l) => upper(l.slice(SCREEN_MARGIN, CONTENT_COLUMNS)))) {
-    // The play marker can take the blank after the row number ('0>06').
-    const m = /^([0-9A-F])[^0-9A-Z-]([0-9A-F]{2}|--)(.*)$/.exec(line)
-    if (!m) continue
-    const i = parseInt(m[1], 16)
-    if (ticks[i] !== undefined) continue
-    ticks[i] = m[2] === '--' ? null : parseInt(m[2], 16)
-    if (i === 0) {
-      const p = /(?:^|\s)(24|48|96|192)(?![\d.%])/.exec(m[3])
-      if (p) ppq = parseInt(p[1], 10)
-    }
-  }
-  if (ticks.some((t) => t === undefined)) return null
-  return { id: view.id, ticks, ppq }
-}
-
-const PITCHES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-
-/**
- * The Scale view: KEY (under the title), the 12 interval rows and NAME, found by their labels.
- * On the device (fw 6.5) an interval row reads 'C  ON 00.00' or 'C# ON 00.00', and a note out of
- * the scale 'C# -- -- --'. Null until all 12 interval rows are drawn.
- */
-export function readScale(view: ScreenView): Scale | null {
-  if (view.kind !== 'scale' || view.id == null) return null
-  const data = view.screen.lines.map((l) => upper(l.slice(SCREEN_MARGIN, CONTENT_COLUMNS)))
-  const notes: Scale['notes'] = []
-  for (const line of data) {
-    const m = /^([A-G])([-# ])\s*(ON|OFF|--)(?:\s*([+-]?\d+\.\d+))?/.exec(line)
-    if (!m) continue
-    const i = PITCHES.indexOf(`${m[1]}${m[2] === '#' ? '#' : ''}`)
-    if (i < 0 || notes[i]) continue
-    const offset = m[4] != null ? parseFloat(m[4]) : null
-    notes[i] = { enabled: m[3] === 'ON', offset: offset != null && !Number.isNaN(offset) ? offset : null }
-  }
-  if (PITCHES.some((_, i) => !notes[i])) return null
-  const key = /^KEY\s+([A-G]#?)/.exec(data.find((l) => /^KEY\b/.test(l)) ?? '')?.[1]
-  const name = /^NAME\s+(.*)$/.exec(data.find((l) => /^NAME\b/.test(l)) ?? '')?.[1] ?? ''
-  return { id: view.id, name: nameOf(name), notes, key: key ? PITCHES.indexOf(key) : null }
-}
-
-/** True when the view is a fully drawn page of that kind (and number). */
-export function isPage(view: ScreenView, kind: ViewKind, id?: number | null): boolean {
-  if (view.kind !== kind) return false
-  if (id != null && view.id !== id) return false
-  switch (kind) {
-    case 'song': {
-      const rows = readSongRows(view)
-      return rows.length > 0 && rows.every((r, i) => i === 0 || r.row === rows[i - 1].row + 1)
-    }
-    case 'chain':
-      return readChain(view) != null
-    case 'phrase':
-      return readPhrase(view) != null
-    case 'table':
-      return readTable(view) != null
-    case 'inst':
-      return readInstrument(view) != null
-    case 'scale':
-      return readScale(view) != null
-    case 'groove':
-      return readGroove(view) != null
-    default:
-      return true
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Colours the device uses for each column (learnt once per view kind)
-
-const COLOR_FIELDS: Record<string, { key: string; x: number }[]> = {
-  song: Array.from({ length: TRACKS }, (_, t) => ({ key: `track${t + 1}`, x: 3 + 3 * t })),
-  chain: [
-    { key: 'phrase', x: 2 },
-    { key: 'transpose', x: 5 },
-  ],
-  phrase: [
-    { key: 'note', x: 2 },
-    { key: 'vel', x: 6 },
-    { key: 'inst', x: 9 },
-    { key: 'fx1cmd', x: 12 },
-    { key: 'fx1val', x: 15 },
-    { key: 'fx2cmd', x: 18 },
-    { key: 'fx2val', x: 21 },
-    { key: 'fx3cmd', x: 24 },
-    { key: 'fx3val', x: 27 },
-  ],
-  table: [
-    { key: 'transpose', x: 2 },
-    { key: 'volume', x: 5 },
-    { key: 'fx1cmd', x: 8 },
-    { key: 'fx1val', x: 11 },
-    { key: 'fx2cmd', x: 14 },
-    { key: 'fx2val', x: 17 },
-    { key: 'fx3cmd', x: 20 },
-    { key: 'fx3val', x: 23 },
-  ],
-}
-
-const mostCommon = (values: (string | null | undefined)[]): string | undefined => {
-  const counts = new Map<string, number>()
-  for (const v of values) if (v) counts.set(v, (counts.get(v) ?? 0) + 1)
-  let best: string | undefined
-  let n = 0
-  for (const [v, c] of counts) if (c > n) [best, n] = [v, c]
-  return best
-}
-
-/** Which colour each column of a grid view is drawn in, filled and empty, plus row numbers, title and background. */
-export function learnColors(kind: ViewKind, cells: M8ScreenCells): ObservedColors[string] | null {
-  const fields = COLOR_FIELDS[kind]
-  if (!fields) return null
-  const rows = parseGridScreen(kind, cells)
-  if (rows.length === 0) return null
-  const out: ObservedColors[string] = {}
-  const fgAt = (y: number, x: number) => cells.fg[y]?.[x + SCREEN_MARGIN] ?? null
-  for (const { key, x } of fields) {
-    const filled = rows.filter((r) => r.fields[key] && !r.fields[key].isEmpty).map((r) => fgAt(r.screenRow, x))
-    const empty = rows.filter((r) => r.fields[key]?.isEmpty).map((r) => fgAt(r.screenRow, x))
-    out[key] = { filled: mostCommon(filled), empty: mostCommon(empty) }
-  }
-  out.rowIndex = { filled: mostCommon(rows.map((r) => fgAt(r.screenRow, 0))) }
-  const titleRow = cells.fg[TITLE_ROW] ?? []
-  out.title = { filled: mostCommon(titleRow.slice(SCREEN_MARGIN, 12)) }
-  out.background = { filled: mostCommon(cells.bg.slice(FIRST_CONTENT_ROW, LAST_CONTENT_ROW).flat()) }
-  return out
-}
-
-// ---------------------------------------------------------------------------
-// The driver
+export type NavigableView = 'song' | 'inst' | 'table' | 'scale' | 'groove'
+export type ItemView = 'inst' | 'table' | 'scale' | 'groove'
 
 export interface DriverOptions {
   /** Delay between two screen reads while waiting for a view to settle. */
-  pollMs?: number
+  pollMs?         : number
   /** How long a view may take to appear after a key. */
   settleTimeoutMs?: number
-  signal?: AbortSignal
-  log?: (message: string) => void
+  signal?         : AbortSignal
+  log?            : (message: string) => void
+}
+
+const DEFAULT_POLL_MS           = 30
+const DEFAULT_SETTLE_TIMEOUT_MS = 2000
+/** A view press is sent again at most this many times while the screen has not moved. */
+const PRESS_RETRIES             = 2
+const PRESS_RETRY_WAIT_MS       = 1200
+/** Option presses that leave dialogs and sub-views. */
+const MAX_SUB_VIEW_EXITS        = 5
+const SUB_VIEW_EXIT_WAIT_MS     = 250
+const GO_TO_VIEW_TIMEOUT_MS     = 4000
+const MAX_CURSOR_STEPS          = 40
+const CURSOR_MOVE_TIMEOUT_MS    = 600
+const VIEW_NAME_POLL_MS         = 40
+/** Song pages scrolled at most (256 rows, 16 a page, with room to spare). */
+const MAX_SONG_PAGES            = 24
+const SONG_PAGE_TIMEOUT_MS      = 1000
+const MAX_ITEM_STEPS            = 160
+const ITEM_STEP_TIMEOUT_MS      = 1200
+/** Option+Up/Down steps this many instruments or tables. */
+const BIG_STEP                  = 16
+
+const ITEM_NAMES                : Record<ItemView, string> = {
+  inst  : 'instrument',
+  table : 'table',
+  scale : 'scale',
+  groove: 'groove'
 }
 
 export class M8Driver {
-  readonly port: M8Port
-  private readonly pollMs: number
+  readonly port                   : M8Port
+  private readonly pollMs         : number
   private readonly settleTimeoutMs: number
-  private readonly signal?: AbortSignal
-  private readonly log: (message: string) => void
+  private readonly signal?        : AbortSignal
+  private readonly log            : (message: string) => void
   /** Option+Up/Down steps 16 items on Instrument and Table; turned off if the device disagrees. */
-  private bigSteps: Record<'inst' | 'table', boolean> = { inst: true, table: true }
-
-  constructor(port: M8Port, options: DriverOptions = {}) {
-    this.port = port
-    this.pollMs = options.pollMs ?? 30
-    this.settleTimeoutMs = options.settleTimeoutMs ?? 2000
-    this.signal = options.signal
-    this.log = options.log ?? (() => {})
+  private readonly bigStepsWork   : Record<'inst' | 'table', boolean> = {
+    inst : true,
+    table: true
   }
 
-  checkCancelled(): void {
+  constructor(port: M8Port, options: DriverOptions = {}) {
+    this.port            = port
+    this.pollMs          = options.pollMs ?? DEFAULT_POLL_MS
+    this.settleTimeoutMs = options.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
+    this.signal          = options.signal
+    this.log             = options.log ?? (() => {})
+  }
+
+  throwIfCancelled(): void {
     if (this.signal?.aborted) throw new ExploreCancelled()
   }
 
@@ -407,29 +107,25 @@ export class M8Driver {
    * the M8 draws a view over several frames, the title first.
    */
   async settle(accept: (view: ScreenView) => boolean, what: string, timeoutMs = this.settleTimeoutMs): Promise<ScreenView> {
-    const deadline = Date.now() + timeoutMs
-    let previous: string | null = null
-    let last: ScreenView | null = null
+    const deadline      = Date.now() + timeoutMs
+    let previousContent : string | null = null
     for (;;) {
-      this.checkCancelled()
+      this.throwIfCancelled()
       const view = await this.read()
-      last = view
       if (accept(view)) {
-        const key = stableKey(view.screen)
-        if (key === previous) return view
-        previous = key
+        const content = stableContent(view.screen)
+        if (content === previousContent) return view
+        previousContent = content
       } else {
-        previous = null
+        previousContent = null
       }
-      if (Date.now() > deadline) {
-        throw new M8MoveError(`waited ${timeoutMs} ms for ${what}; the M8 shows "${last?.title || 'no title'}"`)
-      }
+      if (Date.now() > deadline) throw new M8MoveError(`waited ${timeoutMs} ms for ${what}; the M8 shows "${view.title || 'no title'}"`)
       await this.sleep(this.pollMs)
     }
   }
 
   /** Same as settle, but null instead of an error when the view does not come. */
-  async maybeSettle(accept: (view: ScreenView) => boolean, what: string, timeoutMs: number): Promise<ScreenView | null> {
+  async settleOrNull(accept: (view: ScreenView) => boolean, what: string, timeoutMs: number): Promise<ScreenView | null> {
     try {
       return await this.settle(accept, what, timeoutMs)
     } catch (error) {
@@ -439,7 +135,7 @@ export class M8Driver {
   }
 
   async press(keys: M8KeyName[]): Promise<void> {
-    this.checkCancelled()
+    this.throwIfCancelled()
     await this.port.press(keys)
   }
 
@@ -449,15 +145,15 @@ export class M8Driver {
    * press by hand opened the phrase), so it is sent again, at most twice more, and only while
    * the screen still shows the view it was pressed on: a slow view is never skipped past.
    */
-  async pressTo(keys: M8KeyName[], accept: (view: ScreenView) => boolean, what: string, timeoutMs = this.settleTimeoutMs): Promise<ScreenView> {
-    const from = await this.read()
+  async pressToOpen(keys: M8KeyName[], accept: (view: ScreenView) => boolean, what: string, timeoutMs = this.settleTimeoutMs): Promise<ScreenView> {
+    const pressedOn = await this.read()
     await this.press(keys)
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const view = await this.maybeSettle(accept, what, Math.min(1200, timeoutMs))
-      if (view) return view
-      const here = await this.read()
-      if (here.kind !== from.kind || here.id !== from.id) break
-      this.log(`${keys.join('+')} on "${from.title}" did not open ${what}; pressing it again`)
+    for (let retry = 0; retry < PRESS_RETRIES; retry += 1) {
+      const opened = await this.settleOrNull(accept, what, Math.min(PRESS_RETRY_WAIT_MS, timeoutMs))
+      if (opened) return opened
+      const now = await this.read()
+      if (now.kind !== pressedOn.kind || now.id !== pressedOn.id) break
+      this.log(`${keys.join('+')} on "${pressedOn.title}" did not open ${what}; pressing it again`)
       await this.press(keys)
     }
     return this.settle(accept, what, timeoutMs)
@@ -465,21 +161,32 @@ export class M8Driver {
 
   /** Leaves dialogs and sub-views with Option until a view yam8d can navigate from. */
   async leaveSubViews(): Promise<void> {
-    for (let i = 0; i < 5; i += 1) {
+    for (let exit = 0; exit < MAX_SUB_VIEW_EXITS; exit += 1) {
       const state = await this.port.getState()
       if (GRAPH_VIEWS.has(state.viewName ?? '')) return
       this.log(`leaving "${state.viewName ?? 'dialog'}" (Option)`)
       await this.press(['opt'])
-      await this.sleep(250)
+      await this.sleep(SUB_VIEW_EXIT_WAIT_MS)
     }
   }
 
-  async gotoView(kind: 'song' | 'inst' | 'table' | 'scale' | 'groove'): Promise<ScreenView> {
+  async goToView(kind: NavigableView): Promise<ScreenView> {
     const here = await this.read()
     if (isPage(here, kind)) return here
     await this.leaveSubViews()
     await this.port.navigateToView(kind)
-    return this.settle((v) => isPage(v, kind), `the ${kind} view`, 4000)
+    return this.settle((view) => isPage(view, kind), `the ${kind} view`, GO_TO_VIEW_TIMEOUT_MS)
+  }
+
+  /** Waits until the SDK reports view `name` (the views without a title the explorer reads). */
+  async waitForViewName(name: string, timeoutMs = 3000): Promise<M8State> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const state = await this.port.getState()
+      if (state.viewName === name) return state
+      if (Date.now() > deadline) throw new M8MoveError(`expected the ${name} view, the M8 shows "${state.viewName ?? 'nothing'}"`)
+      await this.sleep(VIEW_NAME_POLL_MS)
+    }
   }
 
   /**
@@ -487,56 +194,57 @@ export class M8Driver {
    * yam8d's navigateTo does the walking; arrows finish the job if it stops short.
    */
   async moveCursor(x: number, y: number): Promise<void> {
-    this.checkCancelled()
+    this.throwIfCancelled()
     await this.port.navigateTo(x, y)
-    for (let i = 0; i < 40; i += 1) {
-      const pos = (await this.port.getState()).cursorPos
-      if (!pos) throw new M8MoveError('the cursor is not visible')
-      if (pos.x === x && pos.y === y) return
-      const key: M8KeyName = pos.y < y ? 'down' : pos.y > y ? 'up' : pos.x < x ? 'right' : 'left'
+    for (let step = 0; step < MAX_CURSOR_STEPS; step += 1) {
+      const position = (await this.port.getState()).cursorPos
+      if (!position) throw new M8MoveError('the cursor is not visible')
+      if (position.x === x && position.y === y) return
+      const key: M8KeyName = position.y < y ? 'down' : position.y > y ? 'up' : position.x < x ? 'right' : 'left'
       await this.press([key])
-      const moved = await this.waitCursorChange(pos)
-      if (!moved) throw new M8MoveError(`the cursor stays at (${pos.x}, ${pos.y}) on its way to (${x}, ${y})`)
+      if (!(await this.waitForCursorMove(position))) {
+        throw new M8MoveError(`the cursor stays at (${position.x}, ${position.y}) on its way to (${x}, ${y})`)
+      }
       // Cells are several columns wide: stop once the target column is passed on the way right.
-      const now = (await this.port.getState()).cursorPos
-      if (now && now.y === y && key === 'right' && now.x > x) {
+      const moved = (await this.port.getState()).cursorPos
+      if (moved && moved.y === y && key === 'right' && moved.x > x) {
         await this.press(['left'])
-        await this.waitCursorChange(now)
+        await this.waitForCursorMove(moved)
         return
       }
     }
     throw new M8MoveError(`could not reach (${x}, ${y})`)
   }
 
-  private async waitCursorChange(from: { x: number; y: number }, timeoutMs = 600): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs
+  private async waitForCursorMove(from: { x: number; y: number }): Promise<boolean> {
+    const deadline = Date.now() + CURSOR_MOVE_TIMEOUT_MS
     while (Date.now() < deadline) {
-      const pos = (await this.port.getState()).cursorPos
-      if (pos && (pos.x !== from.x || pos.y !== from.y)) return true
+      const position = (await this.port.getState()).cursorPos
+      if (position && (position.x !== from.x || position.y !== from.y)) return true
       await this.sleep(this.pollMs)
     }
     return false
   }
 
   /** Song view: scrolls until song row `row` is on screen and puts the cursor on its cell of `track`. */
-  async songCursorTo(row: number, track: number): Promise<ScreenView> {
+  async moveToSongCell(row: number, track: number): Promise<ScreenView> {
     let view = await this.settle((v) => isPage(v, 'song'), 'the song view')
-    for (let i = 0; i < 24; i += 1) {
-      const rows = readSongRows(view)
-      const hit = rows.find((r) => r.row === row)
-      if (hit) {
-        await this.moveCursor(3 + 3 * track + SCREEN_MARGIN, hit.screenRow)
+    for (let page = 0; page < MAX_SONG_PAGES; page += 1) {
+      const rows   = readSongRows(view)
+      const target = rows.find((reading) => reading.row === row)
+      if (target) {
+        await this.moveCursor(songCellX(track), target.screenRow)
         return view
       }
-      const first = rows[0].row
-      await this.press(row < first ? ['opt', 'up'] : ['opt', 'down'])
-      const next = await this.maybeSettle(
-        (v) => isPage(v, 'song') && readSongRows(v)[0].row !== first,
+      const firstRow = rows[0].row
+      await this.press(row < firstRow ? ['opt', 'up'] : ['opt', 'down'])
+      const scrolled = await this.settleOrNull(
+        (v) => isPage(v, 'song') && readSongRows(v)[0].row !== firstRow,
         `song row ${row}`,
-        1000,
+        SONG_PAGE_TIMEOUT_MS,
       )
-      if (!next) throw new M8MoveError(`song row ${row.toString(16)} cannot be scrolled into view`)
-      view = next
+      if (!scrolled) throw new M8MoveError(`song row ${row.toString(16)} cannot be scrolled into view`)
+      view = scrolled
     }
     throw new M8MoveError(`song row ${row.toString(16)} is out of reach`)
   }
@@ -546,19 +254,19 @@ export class M8Driver {
    * Option+Up/Down jump to the first / last scale, so only Option+Left/Right are used there (and
    * on the Groove view, where there are only 32).
    */
-  async stepTo(kind: 'inst' | 'table' | 'scale' | 'groove', id: number, from?: ScreenView): Promise<ScreenView> {
+  async stepToItem(kind: ItemView, id: number, from?: ScreenView): Promise<ScreenView> {
     let view = from ?? (await this.settle((v) => isPage(v, kind), `the ${kind} view`))
-    for (let i = 0; i < 160 && view.id !== id; i += 1) {
-      const current = view.id as number
-      const diff = id - current
-      const big = (kind === 'inst' || kind === 'table') && this.bigSteps[kind] && Math.abs(diff) >= 16
-      const keys: M8KeyName[] = big ? ['opt', diff > 0 ? 'down' : 'up'] : ['opt', diff > 0 ? 'right' : 'left']
+    for (let step = 0; step < MAX_ITEM_STEPS && view.id !== id; step += 1) {
+      const current  = view.id as number
+      const distance = id - current
+      const bigStep  = (kind === 'inst' || kind === 'table') && this.bigStepsWork[kind] && Math.abs(distance) >= BIG_STEP
+      const keys     : M8KeyName[] = bigStep ? ['opt', distance > 0 ? 'down' : 'up'] : ['opt', distance > 0 ? 'right' : 'left']
       await this.press(keys)
-      const next = await this.maybeSettle((v) => isPage(v, kind) && v.id !== current, `${kind} ${id}`, 1200)
-      if (!next) throw new M8MoveError(`${kind === 'inst' ? 'instrument' : kind} ${current.toString(16)} does not move on`)
-      if (big && (kind === 'inst' || kind === 'table') && Math.abs(id - (next.id as number)) >= Math.abs(diff)) {
+      const next = await this.settleOrNull((v) => isPage(v, kind) && v.id !== current, `${kind} ${id}`, ITEM_STEP_TIMEOUT_MS)
+      if (!next) throw new M8MoveError(`${ITEM_NAMES[kind]} ${current.toString(16)} does not move on`)
+      if (bigStep && Math.abs(id - (next.id as number)) >= Math.abs(distance)) {
         this.log(`Option+Up/Down does not step 16 ${kind} items toward the target here; using single steps`)
-        this.bigSteps[kind] = false
+        this.bigStepsWork[kind as 'inst' | 'table'] = false
       }
       view = next
     }

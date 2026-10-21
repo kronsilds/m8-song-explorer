@@ -1,15 +1,20 @@
 import { describe, expect, test } from 'bun:test'
-import { readGroove, viewOf } from '../src/m8/driver'
-import { exploreSong } from '../src/m8/explorer'
 import { PlaybackTracker } from '../src/m8/playback'
+import { readGroove, viewOf } from '../src/m8/screen/screenReader'
+import { exploreSong } from '../src/m8/tasks/explorer'
 import { demoSong } from '../src/model/demo'
-import { chainStepTicks, grooveLoop, occurrenceKey, referencedGrooves, stepClockTicks } from '../src/model/groove'
+import { chainStepTicks, grooveLoop, occurrenceKey, referencedGrooves, stepClockTicks } from '../src/model/music/groove'
 import { FIRST_CONTENT_ROW, grooveScreen, phraseScreen } from '../src/model/screens'
-import { buildTimeline, type Groove, type SongModel } from '../src/model/song'
+import type { Groove, SongModel } from '../src/model/song'
+import { buildTimeline } from '../src/model/timeline'
 import { FakeM8 } from './fakeM8'
 
-const groove = (id: number, ticks: number[], ppq = 24): Groove => ({ id, ticks: [...ticks, ...Array(16 - ticks.length).fill(null)], ppq })
-const SWING = groove(1, [8, 4])
+const groove   = (id: number, ticks: number[], ppq = 24): Groove => ({
+  id,
+  ticks: [...ticks, ...Array(16 - ticks.length).fill(null)],
+  ppq
+})
+const SWING    = groove(1, [8, 4])
 const TRIPLETS = groove(3, [0x10, 0x10, 0x10, 0], 48)
 
 describe('grooves', () => {
@@ -23,16 +28,22 @@ describe('grooves', () => {
   })
 
   test('the project groove applies to every track until GRV (its track) or GGR (all tracks)', () => {
-    const model = demoSong()
-    model.projectGroove = 1
-    model.grooves = { 1: SWING, 3: TRIPLETS }
-    const timeline = buildTimeline(model)
-    const first = timeline.byTrack[0][0]
-    model.phrases[first.phrase].steps[4].fx[2] = { cmd: 'GRV', val: 3 }
+    const model                                = demoSong()
+    model.projectGroove                        = 1
+    model.grooves                              = {
+      1: SWING,
+      3: TRIPLETS
+    }
+    const timeline                             = buildTimeline(model)
+    const first                                = timeline.byTrack[0][0]
+    model.phrases[first.phrase].steps[4].fx[2] = {
+      cmd: 'GRV',
+      val: 3
+    }
     expect(referencedGrooves(model)).toEqual([1, 3])
     const ticks = chainStepTicks(model, timeline)
-    const kick = ticks.get(occurrenceKey(0, first.songRow)) as number[]
-    const at = first.chainRow * 16
+    const kick  = ticks.get(occurrenceKey(0, first.songRow)) as number[]
+    const at    = first.chainRow * 16
     expect(kick.slice(at, at + 8)).toEqual([8, 4, 8, 4, 8, 8, 8, 0])
     // Other tracks keep the project groove.
     const other = timeline.byTrack[1][0]
@@ -40,24 +51,44 @@ describe('grooves', () => {
   })
 
   test('reads a Groove view, with a play marker on row 0', () => {
-    const lines = grooveScreen(TRIPLETS).map((l) => l.toLowerCase())
+    const lines              = grooveScreen(TRIPLETS).map((l) => l.toLowerCase())
     lines[FIRST_CONTENT_ROW] = `${lines[FIRST_CONTENT_ROW].slice(0, 2)}>${lines[FIRST_CONTENT_ROW].slice(3)}`
-    const view = viewOf({ width: 40, height: 24, lines })
-    expect(view).toMatchObject({ kind: 'groove', id: 3 })
+    const view               = viewOf({
+      width : 40,
+      height: 24,
+      lines
+    })
+    expect(view).toMatchObject({
+      kind: 'groove',
+      id  : 3
+    })
     expect(readGroove(view)).toEqual(TRIPLETS)
   })
 
   test('the exploration reads the project groove and the ones GRV / GGR point at', async () => {
-    const device = demoSong()
-    device.projectGroove = 1
-    device.grooves = { 1: SWING, 3: TRIPLETS, 5: groove(5, [6]) }
-    const first = buildTimeline(device).byTrack[0][0]
-    device.phrases[first.phrase].steps[4].fx[2] = { cmd: 'GGR', val: 3 }
-    const fake = new FakeM8(device)
-    const model = await exploreSong(fake, { pollMs: 0, settleTimeoutMs: 400 })
+    const device                                = demoSong()
+    device.projectGroove                        = 1
+    device.grooves                              = {
+      1: SWING,
+      3: TRIPLETS,
+      5: groove(5, [6])
+    }
+    const first                                 = buildTimeline(device).byTrack[0][0]
+    device.phrases[first.phrase].steps[4].fx[2] = {
+      cmd: 'GGR',
+      val: 3
+    }
+    const fake                                  = new FakeM8(device)
+    const model                                 = await exploreSong(fake, {
+      pollMs         : 0,
+      settleTimeoutMs: 400
+    })
     expect(model.warnings).toEqual([])
     expect(model.projectGroove).toBe(1)
-    expect(model.grooves).toEqual({ 1: SWING, 3: TRIPLETS })
+    expect(model.grooves).toEqual({
+      1: SWING,
+      3: TRIPLETS
+    })
     expect(fake.forbidden).toEqual([])
     expect(fake.view).toBe('song')
   })
@@ -68,34 +99,44 @@ describe('grooves', () => {
  * running; the tracker knows the grooves or not. Returns how often the prediction matched.
  */
 function simulateSwing(knowsGroove: boolean): number {
-  const device = demoSong()
-  device.grooves = { 0: groove(0, [8, 4]) }
-  const model: SongModel = knowsGroove ? device : { ...device, grooves: undefined }
-  const timeline = buildTimeline(model)
-  const tracker = new PlaybackTracker(model, timeline)
-  const kick = model.song[2][0] as number
-  const phraseId = model.chains[kick].rows[0].phrase as number
-  const band = timeline.bands.find((b) => b.songRow === 2)?.row as number
-  tracker.context = { songRow: 2, track: 0 }
+  const device    = demoSong()
+  device.grooves  = { 0: groove(0, [8, 4]) }
+  const model     : SongModel = knowsGroove ? device : {
+    ...device,
+    grooves: undefined
+  }
+  const timeline  = buildTimeline(model)
+  const tracker   = new PlaybackTracker(model, timeline)
+  const kick      = model.song[2][0] as number
+  const phraseId  = model.chains[kick].rows[0].phrase as number
+  const band      = timeline.bands.find((b) => b.songRow === 2)?.row as number
+  tracker.context = {
+    songRow: 2,
+    track  : 0
+  }
   const msPerTick = 60000 / 96 / 24
-  const t0 = 1000.3
-  const trueStep = (ms: number) => {
+  const t0        = 1000.3
+  const trueStep  = (ms: number) => {
     const ticks = (ms - t0) / msPerTick
     if (ticks < 0) return -1
     const inPhrase = ticks % 96
     return 2 * Math.floor(inPhrase / 12) + (inPhrase % 12 >= 8 ? 1 : 0)
   }
-  let hits = 0
-  let checks = 0
+  let hits        = 0
+  let checks      = 0
   for (let ms = t0 + 7; ms < t0 + 96 * msPerTick * 0.95; ms += 60) {
     const tick = Math.floor(ms / msPerTick)
     tracker.clockTick(tick, tick * msPerTick, msPerTick)
     const shown = trueStep(ms - 25)
     const lines = phraseScreen(model.phrases[phraseId])
     if (shown >= 0) {
-      const y = FIRST_CONTENT_ROW + shown
+      const y  = FIRST_CONTENT_ROW + shown
       lines[y] = `${lines[y].slice(0, 2)}>${lines[y].slice(3)}`
-      tracker.observe({ width: 40, height: 24, lines }, ms)
+      tracker.observe({
+        width : 40,
+        height: 24,
+        lines
+      }, ms)
     }
     for (const probe of [ms + 18, ms + 42]) {
       if (probe - t0 < 24 * msPerTick) continue // warm-up

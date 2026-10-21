@@ -1,23 +1,24 @@
 import { expect, test } from 'bun:test'
+import { readProject, readScale, viewOf } from '../src/m8/screen/screenReader'
 import { describeSelection } from '../src/m8/semantics'
 import { demoSong } from '../src/model/demo'
-import { readProject, readScale, viewOf } from '../src/m8/driver'
 import {
   analyzePhrase,
   formatTranspose,
   instrumentTransposes,
   keyName,
-  noteNumber,
-  noteText,
   quantize,
+  referencedScales,
   ScaleMap,
   scaleLabel,
   scalePitches,
   transposeNote,
   transposeSemitones,
-} from '../src/model/harmony'
+} from '../src/model/music/harmony'
+import { noteNumber, noteText } from '../src/model/music/pitch'
 import { scaleScreen } from '../src/model/screens'
-import { buildTimeline, effectiveInstruments, emptyStep, type PhraseStep } from '../src/model/song'
+import { emptyStep, type PhraseStep } from '../src/model/song'
+import { buildTimeline, effectiveInstruments } from '../src/model/timeline'
 
 const steps = (notes: string[]): PhraseStep[] => notes.map((note) => ({ ...emptyStep(), note }))
 
@@ -40,7 +41,12 @@ test('notes move by semitones in M8 spelling', () => {
 })
 
 test('instruments with TRANSP. OFF ignore chain transpose', () => {
-  const inst = (v: string) => ({ id: 0, name: null, type: 'SAMPLER', lines: ['', `TRANSP.  ${v}    TBL. TIC 01`] })
+  const inst = (v: string) => ({
+    id   : 0,
+    name : null,
+    type : 'SAMPLER',
+    lines: ['', `TRANSP.  ${v}    TBL. TIC 01`]
+  })
   expect(instrumentTransposes(inst('OFF'))).toBe(false)
   expect(instrumentTransposes(inst('ON'))).toBe(true)
   expect(instrumentTransposes(undefined)).toBe(true)
@@ -56,36 +62,53 @@ test('a phrase key is guessed from its notes', () => {
 })
 
 test('a transposed step says what it plays, quantized to the track scale', () => {
-  const model = demoSong()
-  const timeline = buildTimeline(model)
+  const model     = demoSong()
+  const timeline  = buildTimeline(model)
   const effective = effectiveInstruments(model, timeline)
-  const inst = timeline.instances.find((i) => transposeSemitones(model.chains[i.chain].rows[i.chainRow].transpose) === -2)
+  const inst      = timeline.instances.find((i) => transposeSemitones(model.chains[i.chain].rows[i.chainRow].transpose) === -2)
   if (!inst) throw new Error('the demo has a chain row transposed by -2')
   const steps = model.phrases[inst.phrase].steps
-  const d0 = describeSelection(model, { kind: 'step', instance: inst, step: 0, column: 'note' }, effective.get(inst.key)?.[0])
+  const d0    = describeSelection(model, {
+    kind    : 'step',
+    instance: inst,
+    step    : 0,
+    column  : 'note'
+  }, effective.get(inst.key)?.[0])
   expect(d0.facts.find(([k]) => k === 'Chain transpose')?.[1]).toBe('-2 st (TSP FE)')
   // An earlier lead phrase's SCA 91 put the track in A minor: a note moved out of it goes down into it.
   const minor = new Set([9, 11, 0, 2, 4, 5, 7])
-  const step = steps.findIndex((s, i) => i >= 1 && noteNumber(s.note) != null && !minor.has(((noteNumber(s.note) as number) - 2) % 12))
+  const step  = steps.findIndex((s, i) => i >= 1 && noteNumber(s.note) != null && !minor.has(((noteNumber(s.note) as number) - 2) % 12))
   expect(step).toBeGreaterThan(0)
-  const note = steps[step].note
+  const note     = steps[step].note
   const expected = noteText((noteNumber(note) as number) - 3)
-  const d = describeSelection(model, { kind: 'step', instance: inst, step, column: 'note' }, effective.get(inst.key)?.[step])
+  const d        = describeSelection(model, {
+    kind    : 'step',
+    instance: inst,
+    step,
+    column  : 'note'
+  }, effective.get(inst.key)?.[step])
   expect(d.title).toBe(`Note ${note} → ${expected}`)
   expect(d.facts.find(([k]) => k === 'Plays')?.[1]).toStartWith(`${expected} (${note} -2, scale -1)`)
   expect(d.facts.find(([k]) => k === 'Track scale')?.[1]).toBe('01 MINOR · key A · SCA')
 })
 
 test('SCA and SCG choose the scale of a track from their step on', () => {
-  const model = demoSong()
+  const model    = demoSong()
   const timeline = buildTimeline(model)
-  const map = new ScaleMap(model, timeline)
-  const lead = timeline.instances.find((i) => model.phrases[i.phrase].steps[1].fx[2].cmd === 'SCA')
+  const map      = new ScaleMap(model, timeline)
+  const lead     = timeline.instances.find((i) => model.phrases[i.phrase].steps[1].fx[2].cmd === 'SCA')
   if (!lead) throw new Error('no SCA in the demo')
-  expect(map.at(lead.track, lead.row)).toMatchObject({ scale: 0, source: 'project' })
-  expect(map.at(lead.track, lead.row + 1)).toMatchObject({ scale: 1, key: 9, source: 'SCA' })
+  expect(map.at(lead.track, lead.row)).toMatchObject({
+    scale : 0,
+    source: 'project'
+  })
+  expect(map.at(lead.track, lead.row + 1)).toMatchObject({
+    scale : 1,
+    key   : 9,
+    source: 'SCA'
+  })
   expect(map.at((lead.track + 1) % 8, lead.row + 1).source).toBe('project')
-  expect(ScaleMap.referenced(model)).toEqual([1])
+  expect(referencedScales(model)).toEqual([1])
   expect(scaleLabel(model, map.at(lead.track, lead.row + 1))).toBe('01 MINOR · key A · SCA')
 })
 
@@ -99,27 +122,37 @@ test('quantize goes down to the scale note below', () => {
 test('a Scale view screen is read back', () => {
   const scale = demoSong().scales?.[1]
   if (!scale) throw new Error('no scale 01')
-  const lines = scaleScreen({ ...scale, key: 9 }).map((l) => l.toLowerCase())
-  const view = viewOf({ width: 40, height: 24, lines })
+  const lines = scaleScreen({
+    ...scale,
+    key: 9
+  }).map((l) => l.toLowerCase())
+  const view  = viewOf({
+    width : 40,
+    height: 24,
+    lines
+  })
   expect(view.kind).toBe('scale')
-  expect(readScale(view)).toEqual({ ...scale, key: 9 })
+  expect(readScale(view)).toEqual({
+    ...scale,
+    key: 9
+  })
 })
 
 // Screens as the M8 drew them (Model:02, fw 6.5, LAAMAA_SNOWY), from the explorer's `d` dump.
 const deviceScreen = (rows: Record<number, string>) => ({
-  width: 40,
+  width : 40,
   height: 24,
-  lines: Array.from({ length: 24 }, (_, y) => rows[y] ?? ''),
+  lines : Array.from({ length: 24 }, (_, y) => rows[y] ?? '')
 })
 
 test('the device Scale view and Project SCALE row are read', () => {
   const scale = deviceScreen({
-    3: ' SCALE 01',
-    5: ' KEY   C                          T>095',
-    6: '    EN OFFSET',
-    7: ' C  ON 00.00                      1 ---',
-    8: ' C# -- -- --                      2 ---',
-    9: ' D  ON 00.00                      3 ---',
+    3 : ' SCALE 01',
+    5 : ' KEY   C                          T>095',
+    6 : '    EN OFFSET',
+    7 : ' C  ON 00.00                      1 ---',
+    8 : ' C# -- -- --                      2 ---',
+    9 : ' D  ON 00.00                      3 ---',
     10: ' D# -- -- --                      4 ---',
     11: ' E  ON 00.00                      5 ---',
     12: ' F  ON 00.00                      6 ---',
@@ -131,9 +164,9 @@ test('the device Scale view and Project SCALE row are read', () => {
     18: ' B  ON 00.00                        S',
     19: ' TUNE  440.00                       G',
     20: ' NAME  MAJOR-----------           SCPIT',
-    21: '       LOAD SAVE                    V',
+    21: '       LOAD SAVE                    V'
   })
-  const read = readScale(viewOf(scale))
+  const read  = readScale(viewOf(scale))
   expect(read?.id).toBe(1)
   expect(read?.name).toBe('MAJOR')
   expect(read?.key).toBe(0)
@@ -142,12 +175,19 @@ test('the device Scale view and Project SCALE row are read', () => {
   expect(read?.notes[1].offset).toBeNull()
 
   const project = deviceScreen({
-    3: ' PROJECT',
-    5: ' TEMPO        096.00 <>           T>095',
-    6: ' TRANSPOSE    00',
-    7: ' GROOVE       00DEFAULT           1 ---',
-    8: ' SCALE        00C CHROMATIC       2 ---',
-    13: ' NAME         LAAMAA_SNOWY        7 ---',
+    3 : ' PROJECT',
+    5 : ' TEMPO        096.00 <>           T>095',
+    6 : ' TRANSPOSE    00',
+    7 : ' GROOVE       00DEFAULT           1 ---',
+    8 : ' SCALE        00C CHROMATIC       2 ---',
+    13: ' NAME         LAAMAA_SNOWY        7 ---'
   })
-  expect(readProject(project)).toEqual({ name: 'LAAMAA_SNOWY', tempo: 96, transpose: 0, scale: 0, key: 0, groove: 0 })
+  expect(readProject(project)).toEqual({
+    name     : 'LAAMAA_SNOWY',
+    tempo    : 96,
+    transpose: 0,
+    scale    : 0,
+    key      : 0,
+    groove   : 0
+  })
 })

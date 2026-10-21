@@ -88,9 +88,12 @@ instruments → tables) and shows it as a 3D tracker:
 ## Run it
 
 ```bash
-npm install          # links ../yam8d/packages/m8-sdk (build it first: npm run build:sdk in yam8d)
-npm run dev          # http://localhost:5176/
+bun install          # installs the published @yam8d/m8-sdk from npm
+bun run dev          # http://localhost:5176/
 ```
+
+To try unpublished SDK changes from yam8d, set the dependency to `file:../yam8d/packages/m8-sdk`,
+run `bun run build:sdk` in yam8d, then `bun install` here.
 
 In yam8d, add `http://localhost:5176/` under External Apps. Opened on its own the page shows the
 last explored song (or a demo song) and runs the SDK in standalone mode: **Connect M8** connects
@@ -98,9 +101,9 @@ to the device from the page (Web Serial, WebUSB or Web MIDI) and plays its USB a
 page can hold the M8, so disconnect it in yam8d first. A device the page was granted before is
 reopened at start. Standalone mode has not been tried on the device yet.
 
-`npm test` runs the explorer against a fake M8 (`tests/fakeM8.ts`) and tests the semantics,
+`bun run test` runs the explorer against a fake M8 (`tests/fakeM8.ts`) and tests the semantics,
 transpose and scales (`harmony`), the layout, playback, the MIDI sync check and the other-song
-check; `npm run typecheck` and `npm run build` check the rest.
+check; `bun run typecheck` and `bun run build` check the rest.
 
 ## How the exploration moves
 

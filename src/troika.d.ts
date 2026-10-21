@@ -1,6 +1,6 @@
 // troika-three-text ships loose class types; this declares the part the app uses.
 declare module 'troika-three-text' {
-  import type { Mesh, Material } from 'three'
+  import type { Material, Mesh } from 'three'
 
   export class Text extends Mesh {
     text: string
