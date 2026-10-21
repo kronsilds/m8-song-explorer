@@ -9,6 +9,7 @@ import { fxColumn } from '../../model/columns'
 import { transposeSemitones } from '../../model/music/harmony'
 import { ROWS_PER_PHRASE, type SongModel } from '../../model/song'
 import type { PhraseInstance } from '../../model/timeline'
+import { FACE_CHARS, type InstrumentFace } from '../instrumentFace'
 import {
   CHAIN_COL,
   CHAR_W,
@@ -31,7 +32,8 @@ import {
 } from '../layout'
 import { mix, type Palette } from '../palette'
 import { type ColoredRect, easeFactor, lineSegments, rectangles } from '../shapes'
-import { disposeText, makeText, type TextBlock } from '../text'
+import { disposeText, makeText, RichText, type TextBlock } from '../text'
+import { FACE_WIDTH, InstrumentFaceView } from './instrumentFaceView'
 import { LinkLines } from './linkLines'
 import { TrackHeader } from './trackHeader'
 import { TrackTextBuilder } from './trackText'
@@ -45,6 +47,19 @@ const BAR_HEIGHT               = ROW_H * 0.72
 /** Ease rates per second of a panel's fade and glide. */
 const PANEL_FADE_RATE          = 6
 const PANEL_GLIDE_RATE         = 9
+/** Seconds a panel takes to turn over to its other face. */
+const FLIP_SECONDS             = 0.5
+/** How far a turning panel comes off the wall toward the viewer. */
+const FLIP_LIFT                = 1.2
+/** The tab above a panel's top-right corner that turns it over: its width (characters) and height. */
+const TAB_CHARS                = 8
+const TAB_HEIGHT               = ROW_H * 0.95
+/** Left edge of a panel's background in its group: the hinge it turns on. */
+const PANEL_LEFT               = PANEL_U0 - 0.45
+const TABLE_WIDTH              = PANEL_CHARS * CHAR_W + 0.9
+
+/** Smooth start and end of a turn (t 0..1). */
+const easeInOut                = (t: number): number => t * t * (3 - 2 * t)
 
 /** The notes column of the front, with a little room around it. */
 export const FRONT_NOTES_X = NOTE_COL * CHAR_W - 0.25
@@ -59,14 +74,33 @@ function velocityColor(palette: Palette, velocity: number | null): string {
   return value >= 0x70 ? palette.theme.meterPeak : value >= 0x48 ? palette.theme.meterMid : palette.theme.meterLow
 }
 
-/** An instrument / table panel of the wall, in its own group moved by the sticky layout. */
+/**
+ * An instrument / table panel of the wall, in its own group moved by the sticky layout. Its
+ * faces hang on a hinge at its left edge: the table, and the instrument face it turns over to.
+ */
 interface PanelView {
   panel     : Panel
   group     : Group
+  hinge     : Group
+  tableFace : Group
   text      : Text | null
   background: MeshBasicMaterial
   bars      : MeshBasicMaterial
+  /** The instrument face's layout (null for an aux table or an instrument not read) and its 3D view, made when first shown. */
+  face      : InstrumentFace | null
+  faceView  : InstrumentFaceView | null
+  tab       : PanelTab | null
 }
+
+/** The tab that turns a panel over, labelled with the face it turns to. */
+interface PanelTab {
+  group     : Group
+  background: MeshBasicMaterial
+  text      : Text | null
+  label     : string
+}
+
+export type PanelFace = 'table' | 'inst'
 
 /** A material whose opacity follows the front's or the wall's fade. */
 interface FadingMaterial {
@@ -87,6 +121,8 @@ export class TrackView {
   panelCeiling    = Number.POSITIVE_INFINITY
   /** Called when a text finished laying out (to redraw). */
   onTextReady     : () => void = () => {}
+  /** The face each panel should show (the world decides: the M8 view, a turn by hand). */
+  faceGoal        : (panel: Panel) => PanelFace = () => 'table'
 
   private readonly text           : TrackTextBuilder
   private readonly links          : LinkLines
@@ -290,20 +326,74 @@ export class TrackView {
         })
       })
     })
-    const background = rectangles(backgrounds, PANEL_BACKGROUND_OPACITY)
-    const barMesh    = rectangles(bars, 0)
-    const group      = new Group()
-    group.add(background, barMesh)
+    const background     = rectangles(backgrounds, PANEL_BACKGROUND_OPACITY)
+    const barMesh        = rectangles(bars, 0)
+    const group          = new Group()
+    const hinge          = new Group()
+    const tableFace      = new Group()
+    hinge.position.x     = PANEL_LEFT
+    tableFace.position.x = -PANEL_LEFT
+    tableFace.add(background, barMesh)
+    hinge.add(tableFace)
+    group.add(hinge)
     group.position.set(panel.shownU - PANEL_U0, panel.shownY, 0)
     group.visible = false
     this.wall.add(group)
+    const face = this.layout.instrumentFace(panel.instrument)
     this.panels.push({
       panel,
       group,
+      hinge,
+      tableFace,
       text      : null,
       background: background.material as MeshBasicMaterial,
-      bars      : barMesh.material as MeshBasicMaterial
+      bars      : barMesh.material as MeshBasicMaterial,
+      face,
+      faceView  : null,
+      tab       : face ? this.buildTab(group) : null
     })
+  }
+
+  private buildTab(parent: Group): PanelTab {
+    const background = rectangles([{
+      x    : 0,
+      y    : TAB_HEIGHT,
+      w    : TAB_CHARS * CHAR_W,
+      h    : TAB_HEIGHT,
+      z    : -0.05,
+      color: this.palette.panelHeader
+    }], PANEL_BACKGROUND_OPACITY)
+    const group      = new Group()
+    group.add(background)
+    parent.add(group)
+    return {
+      group,
+      background: background.material as MeshBasicMaterial,
+      text      : null,
+      label     : ''
+    }
+  }
+
+  /** Width of the face a panel shows, in scene units. */
+  panelWidth(panel: Panel): number {
+    return panel.chars > PANEL_CHARS ? FACE_WIDTH : TABLE_WIDTH
+  }
+
+  /** The face a panel shows now (it turns at half way). */
+  shownFace(panel: Panel): PanelFace {
+    return panel.flip >= 0.5 ? 'inst' : 'table'
+  }
+
+  /** The tab of the panel at wall (u, y), when there is one. */
+  tabAt(u: number, y: number): Panel | null {
+    for (const view of this.panels) {
+      const { panel, tab } = view
+      if (!tab || panel.alpha < 0.5) continue
+      const left = panel.shownU - 0.45 + this.panelWidth(panel) - TAB_CHARS * CHAR_W
+      const top  = panel.shownY + 0.25 + TAB_HEIGHT
+      if (u >= left && u <= left + TAB_CHARS * CHAR_W && y <= top && y >= top - TAB_HEIGHT) return panel
+    }
+    return null
   }
 
   /** Registers an object's material so its opacity follows the front's or the wall's fade. */
@@ -388,14 +478,70 @@ export class TrackView {
     for (const view of this.panels) {
       const { panel } = view
       if (this.easePanel(panel, fade, glide)) busy = true
-      const alpha = panel.alpha * this.wallAlpha
+      if (this.turnPanel(view, dt)) busy = true
+      const alpha     = panel.alpha * this.wallAlpha
+      const showsInst = this.shownFace(panel) === 'inst'
       view.group.position.set(panel.shownU - PANEL_U0, panel.shownY, 0)
       view.group.visible      = alpha > 0.01
+      view.tableFace.visible  = !showsInst
       view.background.opacity = PANEL_BACKGROUND_OPACITY * alpha
       view.bars.opacity       = this.barsAlpha * alpha
-      this.updatePanelText(view, textOn && alpha > 0.01, alpha)
+      this.updatePanelText(view, textOn && alpha > 0.01 && !showsInst, alpha)
+      if (showsInst && view.face && !view.faceView) {
+        view.faceView                  = new InstrumentFaceView(view.face, this.palette)
+        view.faceView.group.position.x = 0.45
+        view.hinge.add(view.faceView.group)
+      }
+      view.faceView?.setAlpha(showsInst ? alpha : 0, textOn, () => this.onTextReady())
+      this.updateTab(view, textOn, alpha)
     }
     return busy
+  }
+
+  /**
+   * Turns a panel toward the face the world wants: a quarter turn off the wall around its left
+   * edge, the faces swap edge-on, a quarter turn back. Returns true while it turns.
+   */
+  private turnPanel(view: PanelView, dt: number): boolean {
+    const { panel } = view
+    const goal      = view.face && this.faceGoal(panel) === 'inst' ? 1 : 0
+    // The layout makes room for the face it turns to at once.
+    panel.rows      = goal ? (view.face?.rows ?? PANEL_ROWS) : PANEL_ROWS
+    panel.chars     = goal ? FACE_CHARS : PANEL_CHARS
+    if (panel.flip === goal && view.hinge.rotation.y === 0) return false
+    const step = dt / FLIP_SECONDS
+    panel.flip = goal > panel.flip ? Math.min(goal, panel.flip + step) : Math.max(goal, panel.flip - step)
+    // A panel coming back from hidden shows its face at once.
+    if (panel.alpha < 0.02) panel.flip = goal
+    const eased           = easeInOut(panel.flip)
+    const angle           = (eased < 0.5 ? eased : 1 - eased) * Math.PI
+    view.hinge.rotation.y = -angle
+    view.hinge.position.z = Math.sin(eased * Math.PI) * FLIP_LIFT
+    return panel.flip !== goal
+  }
+
+  /** The tab over the panel's top-right corner, named after the face a click turns to. */
+  private updateTab(view: PanelView, textOn: boolean, alpha: number): void {
+    const tab = view.tab
+    if (!tab) return
+    const label = this.shownFace(view.panel) === 'inst' ? '‹ TABLE' : 'INST ›'
+    tab.group.position.set(PANEL_LEFT + this.panelWidth(view.panel) - TAB_CHARS * CHAR_W, 0.25, 0)
+    tab.background.opacity = PANEL_BACKGROUND_OPACITY * alpha
+    const wanted           = textOn && alpha > 0.01
+    if (tab.text && (!wanted || tab.label !== label)) {
+      disposeText(tab.text)
+      tab.text = null
+    }
+    if (wanted && !tab.text) {
+      const text       = makeText(new RichText().add(label.padStart(TAB_CHARS - 1), this.palette.label))
+      text.position.set(0, TAB_HEIGHT - 0.05, 0.01)
+      text.renderOrder = 2
+      tab.group.add(text)
+      text.sync(() => this.onTextReady())
+      tab.text  = text
+      tab.label = label
+    }
+    if (tab.text) tab.text.fillOpacity = alpha
   }
 
   /** Moves a panel's shown place and opacity toward its goal; returns true while it still moves. */
@@ -424,7 +570,7 @@ export class TrackView {
       text.position.set(PANEL_U0, 0, 0.01)
       text.renderOrder = 2
       text.fillOpacity = alpha
-      view.group.add(text)
+      view.tableFace.add(text)
       text.sync(() => this.onTextReady())
       view.text = text
     } else if (!wanted && view.text) {
@@ -440,7 +586,11 @@ export class TrackView {
   }
 
   dispose(): void {
-    for (const view of this.panels) view.text?.dispose()
+    for (const view of this.panels) {
+      view.text?.dispose()
+      view.tab?.text?.dispose()
+      view.faceView?.dispose()
+    }
     this.header.dispose()
     this.group.traverse((object) => {
       const mesh  = object as InstancedMesh

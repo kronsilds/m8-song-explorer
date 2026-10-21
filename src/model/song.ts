@@ -59,8 +59,10 @@ export interface Instrument {
   name : string | null
   /** As the TYPE row shows it: 'SAMPLER', 'FMSYNTH', 'NONE'... */
   type : string | null
-  /** Instrument screen rows (title to the last parameter), for the details panel. */
+  /** Instrument view rows (title to the last parameter, no margin), as the device shows them. */
   lines: string[]
+  /** Inst. Mods view rows (title to the last modulator), when read. */
+  mods?: string[]
 }
 
 /** One interval row of a Scale view: semitones above the key. */

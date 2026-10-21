@@ -3,6 +3,7 @@
 import type { PhraseColumn } from '../../model/columns'
 import type { Selection } from '../../model/selection'
 import { ROWS_PER_PHRASE } from '../../model/song'
+import { placeOf } from '../instrumentFace'
 import { CHAR_W, INST_COL, NOTE_COL, PANEL_CHARS, PANEL_FIELDS, type Panel, ROW_H, SIDE_FIELDS, SIDE_U0, type SongLayout } from '../layout'
 import { FRONT_NOTES_W, FRONT_NOTES_X, type TrackView, WALL_STEPS_U, WALL_STEPS_W } from '../track/trackView'
 import type { CellRect } from './cellMarker'
@@ -76,16 +77,36 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
       }
       return [tableRow, fieldRect(view.wall, panel.shownU + start * CHAR_W, y, width)]
     }
-    case 'instrument': {
+    case 'instrument':
+    case 'instParam': {
       const panel = panelOf(selection.table)
       if (!panel) return []
-      return [{
+      const header: CellRect = {
         parent: view.wall,
         x     : panel.shownU - 0.45,
         y     : panel.shownY + 0.25,
-        w     : PANEL_CHARS * CHAR_W + 0.9,
+        w     : view.panelWidth(panel),
         h     : ROW_H * 2 + 0.35
-      }]
+      }
+      if (selection.kind === 'instrument') return [header]
+      // A value is marked on the instrument face; while the table shows, the header stands for it.
+      const face  = view.shownFace(panel) === 'inst' ? layout.instrumentFace(selection.instrument) : null
+      const place = face ? placeOf(face, selection.screen, selection.line, selection.x) : null
+      if (!place) return [header]
+      const y    = panel.shownY - place.row * ROW_H
+      const cell : CellRect = {
+        ...fieldRect(view.wall, panel.shownU + place.col * CHAR_W, y, place.width),
+        h: ROW_H * place.height
+      }
+      // A modulator value is marked on its card alone; a parameter with its row.
+      if (selection.screen === 'mods') return [cell]
+      return [{
+        parent: view.wall,
+        x     : panel.shownU - 0.3,
+        y,
+        w     : view.panelWidth(panel) - 0.3,
+        h     : ROW_H
+      }, cell]
     }
   }
 }

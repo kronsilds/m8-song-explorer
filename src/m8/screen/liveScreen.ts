@@ -1,13 +1,14 @@
 // What the M8 shows right now, compared with the explored song: where its cursor is, whether
 // another song is loaded, and edits made on the device folded back into the model.
 
-import { getSemanticContext, type M8Screen, type M8State } from '@yam8d/m8-sdk'
+import { getSemanticContext, type M8Screen, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { type SongModel, TRACKS } from '../../model/song'
 import {
   isPage,
   readChain,
   readGroove,
   readInstrument,
+  readInstrumentMods,
   readPhrase,
   readProject,
   readSongRows,
@@ -24,6 +25,8 @@ export interface DeviceFocus {
   row   : number | null
   /** Field key under the cursor ('note', 'fx2val', 'track3', ...). */
   column: string | null
+  /** The cursor cell, screen x without the margin and screen row. */
+  cursor: { x: number; y: number } | null
 }
 
 export function deviceFocus(state: M8State, screen: M8Screen): DeviceFocus | null {
@@ -34,7 +37,11 @@ export function deviceFocus(state: M8State, screen: M8Screen): DeviceFocus | nul
     view  : view.kind,
     id    : view.id,
     row   : context?.row?.rowIndex ?? null,
-    column: context?.activeField?.key ?? null
+    column: context?.activeField?.key ?? null,
+    cursor: state.cursorPos ? {
+      x: state.cursorPos.x - SCREEN_MARGIN,
+      y: state.cursorPos.y
+    } : null
   }
 }
 
@@ -87,32 +94,48 @@ function absorbSongRows(model: SongModel, view: ScreenView): boolean {
   return changed
 }
 
-/** An instrument counts as changed when its name or type did. */
+/** An instrument counts as changed when any of its values did; its modulators are kept. */
 function absorbInstrument(model: SongModel, view: ScreenView): boolean {
   const instrument = readInstrument(view)
   const known      = model.instruments[view.id as number]
-  if (!instrument || (known && known.name === instrument.name && known.type === instrument.type)) return false
-  model.instruments[instrument.id] = instrument
+  if (!instrument || (known && sameJson(known.lines, instrument.lines) && known.name === instrument.name && known.type === instrument.type)) return false
+  model.instruments[instrument.id] = {
+    ...instrument,
+    mods: known?.mods
+  }
+  return true
+}
+
+/** The modulators of an instrument the model knows, when they changed. */
+function absorbModulators(model: SongModel, view: ScreenView): boolean {
+  const mods  = readInstrumentMods(view)
+  const known = mods ? model.instruments[mods.id] : null
+  if (!mods || !known || sameJson(known.mods, mods.lines)) return false
+  model.instruments[mods.id] = {
+    ...known,
+    mods: mods.lines
+  }
   return true
 }
 
 /** How each view kind folds into the model. */
 const ABSORBERS: Partial<Record<ScreenView['kind'], (model: SongModel, view: ScreenView) => boolean>> = {
-  song  : absorbSongRows,
-  chain : (model, view) => storeIfChanged(model.chains, readChain(view)),
-  phrase: (model, view) => storeIfChanged(model.phrases, readPhrase(view)),
-  table : (model, view) => storeIfChanged(model.tables, readTable(view)),
-  groove: (model, view) => {
+  song    : absorbSongRows,
+  chain   : (model, view) => storeIfChanged(model.chains, readChain(view)),
+  phrase  : (model, view) => storeIfChanged(model.phrases, readPhrase(view)),
+  table   : (model, view) => storeIfChanged(model.tables, readTable(view)),
+  groove  : (model, view) => {
     const grooves = { ...model.grooves }
     if (!storeIfChanged(grooves, readGroove(view))) return false
     model.grooves = grooves
     return true
   },
-  inst  : absorbInstrument
+  inst    : absorbInstrument,
+  instmods: absorbModulators
 }
 
 /**
- * Folds a fully drawn song / chain / phrase / table / instrument / groove screen, or the
+ * Folds a fully drawn song / chain / phrase / table / instrument / modulators / groove screen, or the
  * Project view's GROOVE, into the model. Returns true when the model changed (the M8 was
  * edited since the exploration).
  */

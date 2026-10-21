@@ -1,9 +1,9 @@
 // Mouse and touch input over the 3D view: drag turns, right / Shift drag pans, the wheel
 // scrolls (Ctrl / pinch zooms), click selects, double click focuses, hover highlights.
 
-import type { TrackToggle } from '../../m8/midiControl'
 import type { Selection } from '../../model/selection'
 import type { CameraRig } from '../camera/rig'
+import type { SceneButton } from './picker'
 
 /** What the controls drive: the world implements it. */
 export interface PointerTarget {
@@ -16,12 +16,12 @@ export interface PointerTarget {
   turnedByHand(): void
   invalidate(): void
   interacted(): void
-  buttonAt(clientX: number, clientY: number): { track: number; kind: TrackToggle } | null
+  buttonAt(clientX: number, clientY: number): SceneButton | null
   cellAt(clientX: number, clientY: number): Selection | null
   hover(selection: Selection | null): void
   click(selection: Selection | null): void
   doubleClick(selection: Selection): void
-  pressButton(track: number, kind: TrackToggle): void
+  pressButton(button: SceneButton): void
 }
 
 /** Pixels the pointer must move before a press becomes a drag. */
@@ -104,7 +104,7 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
     drag           = null
     if (!released || released.moved || released.button !== 0) return
     const button = target.buttonAt(event.clientX, event.clientY)
-    if (button) target.pressButton(button.track, button.kind)
+    if (button) target.pressButton(button)
     else target.click(target.cellAt(event.clientX, event.clientY))
   })
 

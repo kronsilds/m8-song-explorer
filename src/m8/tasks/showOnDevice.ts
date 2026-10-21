@@ -1,9 +1,11 @@
 // Walks the M8 to a cell of the model: the song cell, then the chain row, then the phrase
-// step; or the instrument, then its table row.
+// step; or the instrument (a value on its Instrument or Inst. Mods view), then its table row.
 
 import { SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X, type PhraseColumn, phraseColumnX, type TableColumn, tableColumnX } from '../../model/columns'
 import { hex2 } from '../../model/hex'
+import type { InstrumentScreen } from '../../model/instrumentPage'
+import { TITLE_ROW } from '../../model/screens'
 import type { Selection } from '../../model/selection'
 import type { SongModel } from '../../model/song'
 import { type DriverOptions, M8Driver, M8MoveError } from '../driver'
@@ -14,7 +16,7 @@ export type DeviceTarget =
   | { kind: 'song'; songRow: number; track: number }
   | { kind: 'chain'; songRow: number; track: number; chainRow: number }
   | { kind: 'step'; songRow: number; track: number; chainRow: number; step: number; column: PhraseColumn }
-  | { kind: 'instrument'; instrument: number }
+  | { kind: 'instrument'; instrument: number; cell?: { screen: InstrumentScreen; line: number; x: number } }
   | { kind: 'table'; table: number; row: number; column: TableColumn }
 
 /** Where on the M8 a selection is. */
@@ -46,6 +48,16 @@ export function deviceTargetOf(selection: Selection): DeviceTarget {
         table : selection.table,
         row   : selection.row,
         column: selection.column
+      }
+    case 'instParam':
+      return {
+        kind      : 'instrument',
+        instrument: selection.instrument,
+        cell      : {
+          screen: selection.screen,
+          line  : selection.line,
+          x     : selection.x
+        }
       }
     case 'instrument':
       return selection.instrument != null
@@ -86,7 +98,14 @@ async function showInstrumentOrTable(
   if (throughInstrument) {
     const instrument = target.kind === 'instrument' ? target.instrument : target.table
     await driver.stepToItem('inst', instrument, await driver.goToView('inst'))
-    if (target.kind === 'instrument') return
+    if (target.kind === 'instrument') {
+      const cell = target.cell
+      if (!cell) return
+      // The Inst. Mods view is above the Instrument view.
+      if (cell.screen === 'mods') await driver.pressToOpen(['shift', 'up'], (view) => isPage(view, 'instmods', instrument), `the modulators of instrument ${hex2(instrument)}`)
+      await driver.moveCursor(cell.x + SCREEN_MARGIN, TITLE_ROW + cell.line)
+      return
+    }
     await driver.press(['shift', 'right'])
   } else {
     await driver.stepToItem('table', target.table, await driver.goToView('table'))

@@ -28,8 +28,9 @@ import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../mode
 import type { PhraseInstance } from '../model/timeline'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
 import { CameraRig } from './camera/rig'
-import { ScenePicker } from './input/picker'
+import { type SceneButton, ScenePicker } from './input/picker'
 import { bindPointerControls, type PointerTarget } from './input/pointerControls'
+import { placeOf } from './instrumentFace'
 import { BAND_GAP, FRONT_W, HEADER_H, type Panel, ROW_H, SongLayout, TRACK_PITCH, WALL_ANGLE } from './layout'
 import { CellMarker, type CellRect } from './markers/cellMarker'
 import { cellRects } from './markers/cellRects'
@@ -38,7 +39,7 @@ import type { Palette } from './palette'
 import { easeFactor, linkCurve, smoothstep } from './shapes'
 import { RichText, type TextBlock, TextPool } from './text'
 import { HEADER_TOP } from './track/trackHeader'
-import { TrackView } from './track/trackView'
+import { type PanelFace, TrackView } from './track/trackView'
 
 export type { ViewPreset } from './camera/cameraAngles'
 
@@ -128,6 +129,10 @@ export class World implements PointerTarget {
     depthWrite : false
   })
   private bandRules                     : LineSegments | null = null
+  /** The instrument the M8 shows (Instrument or Inst. Mods view): its panels turn to their instrument face. */
+  private deviceInstrument              : number | null = null
+  /** Panels turned by hand ('track:table'), until the M8 moves to another instrument or leaves it. */
+  private readonly facesByHand          = new Map<string, PanelFace>()
   private dirty                         = true
   private renderedAt                    = 0
   private interactedAt                  = 0
@@ -178,8 +183,14 @@ export class World implements PointerTarget {
   // Content
 
   setModel(model: SongModel, keepView = false): void {
-    const hadLayout = this.layout != null
+    const previous  = this.layout
+    const hadLayout = previous != null
     this.layout     = new SongLayout(model)
+    if (previous) {
+      for (const track of this.layout.tracks) {
+        for (const panel of track.panels) panel.flip = previous.tracks[track.track]?.panels.find((p) => p.table === panel.table)?.flip ?? 0
+      }
+    }
     this.rebuild()
     if (!keepView || !hadLayout) this.view('overview', true)
     // Keep the selection when its place still exists.
@@ -224,6 +235,7 @@ export class World implements PointerTarget {
     for (const track of layout.tracks) {
       const view       = new TrackView(layout, track, this.palette, this.playedNotes)
       view.onTextReady = () => this.invalidate()
+      view.faceGoal    = (panel) => this.faceGoal(panel)
       view.setTrackModes(!!this.trackModes.muted[track.track], !!this.trackModes.soloed[track.track])
       view.group.position.x = track.track * TRACK_PITCH
       this.root.add(view.group)
@@ -549,6 +561,82 @@ export class World implements PointerTarget {
     return this.layout?.tracks[track]?.panels.find((panel) => panel.table === table)
   }
 
+  // ---------------------------------------------------------------------------
+  // Panel faces
+
+  /** The face a panel turns to: as turned by hand, else the instrument face while the M8 shows that instrument. */
+  private faceGoal(panel: Panel): PanelFace {
+    const byHand = this.facesByHand.get(`${panel.track}:${panel.table}`)
+    if (byHand) return byHand
+    return panel.instrument != null && panel.instrument === this.deviceInstrument ? 'inst' : 'table'
+  }
+
+  /** The instrument the M8 shows (null on any other view); turns over its panels. */
+  setDeviceInstrument(instrument: number | null): void {
+    if (instrument === this.deviceInstrument) return
+    this.deviceInstrument = instrument
+    this.facesByHand.clear()
+    this.invalidate()
+  }
+
+  /** Turns a panel over by hand. */
+  toggleFace(track: number, table: number): void {
+    const panel = this.panelOf(track, table)
+    if (!panel || panel.instrument == null || !this.layout?.instrumentFace(panel.instrument)) return
+    this.facesByHand.set(`${track}:${table}`, this.faceGoal(panel) === 'inst' ? 'table' : 'inst')
+    this.invalidate()
+  }
+
+  /**
+   * Key I: turns over the panel of the selection (a panel cell, or the instrument a step
+   * plays), turning the view to its wall first when needed.
+   */
+  toggleSelectedFace(): void {
+    const { selection, layout } = this
+    if (!selection || !layout) return
+    if (selection.kind === 'table' || selection.kind === 'instrument' || selection.kind === 'instParam') {
+      this.toggleFace(selection.track, selection.table)
+      return
+    }
+    if (selection.kind !== 'step') return
+    const track      = selection.instance.track
+    const instrument = layout.effective.get(selection.instance.key)?.[selection.step]
+    const panel      = layout.tracks[track].panels.find((p) => p.instrument === instrument)
+    if (!panel || instrument == null) return
+    this.select({
+      kind : 'instrument',
+      instrument,
+      table: panel.table,
+      track
+    }, { turn: true })
+    this.toggleFace(track, panel.table)
+  }
+
+  /** Arrows on the instrument face: the nearest value in that direction. */
+  private movedOnFace(selection: Extract<Selection, { kind: 'instParam' }>, rowDelta: number, columnDelta: number): Selection | null {
+    const face = this.layout?.instrumentFace(selection.instrument)
+    const here = face && placeOf(face, selection.screen, selection.line, selection.x)
+    if (!face || !here) return null
+    const same    = (cell: typeof here.cell) => cell.screen === here.cell.screen && cell.line === here.cell.line && cell.x === here.cell.x
+    let best      : typeof here | null = null
+    let bestScore = Number.POSITIVE_INFINITY
+    for (const place of face.places) {
+      if (same(place.cell) || place.row === 0) continue
+      const rows    = place.row - here.row
+      const columns = place.col - here.col
+      if (rowDelta && Math.sign(rows) !== Math.sign(rowDelta)) continue
+      if (!rowDelta && (place.row !== here.row || Math.sign(columns) !== Math.sign(columnDelta))) continue
+      const score = Math.abs(rows) * 100 + Math.abs(columns)
+      if (score < bestScore) [best, bestScore] = [place, score]
+    }
+    return best ? {
+      ...selection,
+      screen: best.cell.screen,
+      line  : best.cell.line,
+      x     : best.cell.x
+    } : null
+  }
+
   select(selection: Selection | null, options: SelectOptions = {}): void {
     const changed = !sameSelection(selection, this.selection)
     const from    = this.focusAnchor()
@@ -665,6 +753,27 @@ export class World implements PointerTarget {
       step    : 0,
       column  : 'note'
     }
+    if (selection.kind === 'instParam') {
+      const moved = this.movedOnFace(selection, rowDelta, columnDelta)
+      if (moved) this.select(moved, { turn: true })
+      return
+    }
+    // From the header of a panel showing its instrument face: onto its first value.
+    const headerPanel = selection.kind === 'instrument' ? this.panelOf(selection.track, selection.table) : undefined
+    const headerFace  = headerPanel?.instrument != null && headerPanel.flip >= 0.5 ? this.layout?.instrumentFace(headerPanel.instrument) : null
+    if (selection.kind === 'instrument' && headerFace && selection.instrument != null) {
+      const first = headerFace.places.find((place) => place.row > 0)
+      if (first) this.select({
+        kind      : 'instParam',
+        instrument: selection.instrument,
+        screen    : first.cell.screen,
+        line      : first.cell.line,
+        x         : first.cell.x,
+        table     : selection.table,
+        track     : selection.track
+      }, { turn: true })
+      return
+    }
     if (selection.kind === 'instrument') {
       selection = {
         kind      : 'table',
@@ -752,7 +861,7 @@ export class World implements PointerTarget {
     this.interactedAt = performance.now()
   }
 
-  buttonAt(clientX: number, clientY: number): { track: number; kind: TrackToggle } | null {
+  buttonAt(clientX: number, clientY: number): SceneButton | null {
     return this.picker.pickButton(this.trackViews, clientX, clientY)
   }
 
@@ -775,8 +884,9 @@ export class World implements PointerTarget {
     this.select(selection, { focus: true })
   }
 
-  pressButton(track: number, kind: TrackToggle): void {
-    this.onTrackButton(track, kind)
+  pressButton(button: SceneButton): void {
+    if (button.kind === 'flip') this.toggleFace(button.track, button.table)
+    else this.onTrackButton(button.track, button.kind)
   }
 
   // ---------------------------------------------------------------------------

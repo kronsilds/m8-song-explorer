@@ -153,6 +153,7 @@ export class ExplorerApp {
       t         : command.played,
       a         : command.autoselect,
       f         : () => world.focusSelection(),
+      i         : () => world.toggleSelectedFace(),
       Enter     : command.show,
       Escape    : () => world.select(null),
       '+'       : () => world.zoom(0.8),
@@ -309,6 +310,7 @@ export class ExplorerApp {
 
   private deviceDown(client: M8Client): void {
     this.port = null
+    this.world.setDeviceInstrument(null)
     this.playback.tracker.transportReset()
     this.world.setDevicePlaces([])
     if (client.mode === 'standalone') {
@@ -364,6 +366,7 @@ export class ExplorerApp {
       this.noteOtherSong(client, isOtherSong(this.model, screen))
       if (this.otherSongLoaded) {
         this.world.setDevicePlaces([])
+        this.world.setDeviceInstrument(null)
         return
       }
       if (absorbScreen(this.model, screen)) {
@@ -373,6 +376,8 @@ export class ExplorerApp {
       }
       const focus  = deviceFocus(state, screen)
       const layout = this.world.layout
+      // On the Instrument or Inst. Mods view, that instrument's panels turn to their instrument face.
+      this.world.setDeviceInstrument(focus && (focus.view === 'inst' || focus.view === 'instmods') ? focus.id : null)
       const places = focus && layout ? this.cursor.placesOf(layout, focus) : []
       this.world.setDevicePlaces(places)
       this.playback.tracker.context = this.cursor.songContext

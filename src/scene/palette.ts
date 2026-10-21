@@ -54,6 +54,10 @@ export interface Palette {
   phraseLabel: string
   /** Chain transpose labels and the notes a transposed phrase plays. */
   transpose  : string
+  /** Option names after their number on the instrument face ('01LOWPASS'). */
+  option     : string
+  /** The four modulator slots of an instrument, and the parameters they drive. */
+  mods       : [string, string, string, string]
 }
 
 /** Contrast a colour needs against the background, and the softer one for empty cells. */
@@ -159,6 +163,8 @@ export function makePalette(theme: Partial<ThemeColors> | null, observed: Observ
     },
     chainLabel : readable(observed.song?.track1?.filled ?? roles.textTitles),
     phraseLabel: readable(observed.chain?.phrase?.filled ?? info),
-    transpose  : readable(roles.meterMid)
+    transpose  : readable(roles.meterMid),
+    option     : mix(value, info, 0.45),
+    mods       : [readable(roles.playMarkers), readable(roles.meterMid), readable(roles.meterPeak), readable(roles.textTitles)]
   }
 }

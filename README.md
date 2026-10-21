@@ -15,6 +15,16 @@ instruments → tables) and shows it as a 3D tracker:
   one panel per instrument (`I` column, `INS`) and per table (`TBL`, `TBX`) it uses; links are
   drawn from the places on screen that point at a panel on screen, the selected place's links
   thick.
+- **Instrument face**: an instrument's panel turns over (around its left edge, so its links stay
+  put) to show the instrument itself: the Instrument view's rows where the device puts them, a bar
+  after each level (PAN and DETUNE from the middle, FM operator levels as a meter under them), and
+  four modulator cards with the shape of each envelope, LFO or tracking range, in the slot's
+  colour. A parameter a modulator drives (its DEST) gets a mark in that colour under its bar. The
+  panel turns by itself while the M8 shows that instrument (Instrument or Inst. Mods view), and
+  back when it leaves; the `INST ›` / `‹ TABLE` tab above the panel, or key `I`, turns it by
+  hand. Every value is a cell: the Selection panel explains it as the SDK reads it on the device,
+  with what modulates it, or the whole modulator for a modulator value. With Auto select the M8
+  cursor's value is selected as it moves.
 - **Many instruments at once**: panels that would overlap tile into extra columns deeper along the
   wall (up to three, the wall grows only for tracks that need them) and then stack downward. A panel
   keeps its column while you scroll, so the grid does not reshuffle.
@@ -70,6 +80,7 @@ instruments → tables) and shows it as a 3D tracker:
 | `E` | Open all | Open the walls of every track |
 | `X` | Dramatic | Skewed, tilted camera angles for front, turn, side and the turns toward a wall |
 | `T` | Played notes | Transposed phrases show the notes they play |
+| `I` | `INST ›` tab | Turn the selected instrument panel over (table / instrument) |
 | `A` | Auto select | Selection follows the M8 cursor |
 | `M` | | MIDI sync check |
 | Arrows | | Move the selection |
@@ -115,7 +126,8 @@ used on the Song view, where it solos tracks):
    empty row) from its chain row with Shift+Right, or Option+Down from the phrase above it while
    the device agrees; Shift+Left back.
 3. Instrument view, Option+Left/Right (±1) and Option+Up/Down (±16) to each instrument used, read
-   TYPE and NAME, Shift+Right to its table and back.
+   the whole view, Shift+Right to its table and back, Shift+Up to its Inst. Mods view and back
+   (Shift+Down returns to the view the Mods view was entered from).
 4. Table view for the tables only reached through TBL/TBX.
 5. Scale view (the Project view's SCALE first, read along with TRANSPOSE and the key at the
    start) and Option+Left/Right to each scale `SCA` / `SCG` point at: the 12 intervals (EN,
@@ -201,7 +213,28 @@ corrections in 50 steps, at step boundaries.
   the Theme View parse work (13 colours, RGB, theme name). Column colours learnt while exploring
   are dropped once the device shows another background (they belonged to the previous theme).
 
+- Instrument view (all 7 types captured 2026-10-21 by creating an instrument and stepping TYPE):
+  TYPE / NAME / `TRANSP. ON   TBL.TIC 01   EQ --` on rows 2-4 under the title, parameters from row
+  6. Left labels at x 0 with values at x 8 (MIDI OUT: x 12; EXTERNAL's CCs `CCA 001:--`: x 4); the
+  mixer column AMP LIM PAN DRY MFX DEL REV has its label at x 18 and value at x 22 (SAMPLER's
+  FILTER / CUTOFF / RES rows have none). FM rows hold four operator columns at x 8, 14, 20, 26;
+  operator D ends at x 30, LOAD SAVE at x 30, and the track panel starts at screen column 34. The
+  types read `WAVSYNTH`, `MACROSYN`, `SAMPLER`, `FMSYNTH`, `HYPERSYN`, `MIDI OUT`, `EXTERNAL`
+  (Edit+Right from NONE: that order, stopping at EXTERNAL).
+- Inst. Mods view (Shift+Up from the Instrument view): MOD1 and MOD3 side by side from row 2, MOD2
+  and MOD4 from row 10; labels at x 0 / 16, values at x 5 / 21 (`MOD2 01ADSR ENV MOD4 03LFO`).
+  Rows under MODn: AHD ENV DEST AMT ATK HOLD DEC; ADSR ENV DEST AMT ATK DEC SUS REL; DRUM ENV DEST
+  AMT PEAK BODY DEC; LFO DEST AMT OSC TRIG FREQ; TRIG ENV DEST AMT ATK HOLD DEC SRC
+  (`SRC  00WAVSYNTH`); TRACKING DEST AMT SRC LVAL HVAL. A new instrument has AHD, AHD, LFO, LFO,
+  all DEST OFF. An exploration with the Mods step ran on RAREORANGEEE (4 instruments, no warnings).
+
 ## Not yet checked on a device
+
+- Modulator drawings follow the manual's description, not the M8's output: the DRUM ENV outline
+  (PEAK's duck), envelope times drawn in proportion to their tick values, the LFO rate (FREQ in
+  steps; the tick-rate shapes taken as names ending in `T`), TRIG ENV drawn like AHD (the manual
+  calls it bipolar). DEST and OSC names beyond the ones seen.
+- The SAMPLE row with a sample loaded, and MIDI OUT / EXTERNAL values once set.
 
 - Grooves: that a groove restarts at each phrase (step s plays groove row s modulo the loop:
   only checked with a 4-row groove, where it makes no difference); that `GRV` / `GGR` apply from

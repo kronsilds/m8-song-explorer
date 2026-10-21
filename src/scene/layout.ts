@@ -8,6 +8,7 @@ import { fxColumn, type PhraseColumn, type TableColumn } from '../model/columns'
 import { ScaleMap } from '../model/music/harmony'
 import { ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
 import { buildTimeline, effectiveInstruments, instanceAt, type PhraseInstance, type Timeline } from '../model/timeline'
+import { type InstrumentFace, layoutInstrumentFace } from './instrumentFace'
 
 export const FONT     = 1
 export const CHAR_W   = 0.6 * FONT
@@ -44,6 +45,8 @@ const PANELS_PER_COL        = 2
 const PANEL_VIEW_PAD_ROWS   = 24
 /** Room a panel takes on the wall, gap included. */
 export const PANEL_SPAN     = (PANEL_ROWS + 1.5) * ROW_H
+/** Room a panel of `rows` rows takes on the wall, gap included. */
+export const panelSpan      = (rows: number): number => (rows + 1.5) * ROW_H
 
 /** Length of a wall that has `cols` columns of panels. */
 export const wallLength = (cols: number): number => PANEL_U0 + PANEL_CHARS * CHAR_W + 1 + (cols - 1) * PANEL_COL_W
@@ -104,6 +107,11 @@ export interface Panel {
   shownY    : number
   shownU    : number
   alpha     : number
+  /** Rows and characters of the face it shows (or turns to): the table's, or the larger instrument face. */
+  rows      : number
+  chars     : number
+  /** How far it has turned over to its instrument face (0 the table, 1 the instrument). */
+  flip      : number
 }
 
 export type LinkKind = 'instrument' | 'table'
@@ -141,16 +149,17 @@ export interface TrackLayout {
 }
 
 export class SongLayout {
-  readonly model    : SongModel
-  readonly timeline : Timeline
+  readonly model         : SongModel
+  readonly timeline      : Timeline
   /** Top y of each song band. */
-  readonly bandTop  : number[]
-  readonly tracks   : TrackLayout[]
+  readonly bandTop       : number[]
+  readonly tracks        : TrackLayout[]
   /** The instrument each step plays, per instance key (see effectiveInstruments). */
-  readonly effective: Map<string, (number | null)[]>
+  readonly effective     : Map<string, (number | null)[]>
   /** The scale each track plays with along the song. */
-  readonly scales   : ScaleMap
-  readonly bottomY  : number
+  readonly scales        : ScaleMap
+  readonly bottomY       : number
+  private readonly faces = new Map<number, InstrumentFace>()
 
   constructor(model: SongModel) {
     this.model     = model
@@ -166,6 +175,19 @@ export class SongLayout {
       for (const panel of track.panels) bottomY = Math.min(bottomY, panel.naturalY - PANEL_ROWS * ROW_H - PANEL_SPAN * 0.5)
     }
     this.bottomY = bottomY
+  }
+
+  /** The instrument face of an instrument (laid out once), null when the instrument was not read. */
+  instrumentFace(id: number | null): InstrumentFace | null {
+    if (id == null) return null
+    const instrument = this.model.instruments[id]
+    if (!instrument) return null
+    let face = this.faces.get(id)
+    if (!face) {
+      face = layoutInstrumentFace(instrument)
+      this.faces.set(id, face)
+    }
+    return face
   }
 
   /** Index of the band that holds a timeline row. */
@@ -264,16 +286,19 @@ export class SongLayout {
    * never below its own last use. Panels that would overlap go to the next column of the
    * wall (the one where they are pushed down least, keeping the column they were in unless
    * another is clearly better), and are stacked down only when every column is taken.
-   * Panels with no row near the view are hidden. Returns true when anything moved.
+   * Panels with no row near the view are hidden. A panel turned to its instrument face is
+   * placed first, so it takes the top of its column. Returns true when anything moved.
    */
   stick(track: number, yTop: number, yBottom: number): boolean {
     const trackLayout = this.tracks[track]
     if (!trackLayout) return false
     let moved            = false
     const columnCeilings = new Array<number>(trackLayout.cols).fill(yTop)
-    for (const panel of trackLayout.panels) {
+    const turned         = trackLayout.panels.filter((panel) => panel.chars > PANEL_CHARS)
+    for (const panel of [...turned, ...trackLayout.panels.filter((panel) => panel.chars <= PANEL_CHARS)]) {
       const firstY  = this.rowY(panel.row)
       const lastY   = this.rowY(panel.lastRow) - ROW_H
+      const span    = panelSpan(panel.rows)
       // A wider margin to leave than to come, so a panel at the edge does not flicker.
       const margin  = (yTop - yBottom) * (panel.visible ? 0.3 : 0.1)
       const visible = firstY > yBottom - margin && lastY < yTop + margin
@@ -281,16 +306,18 @@ export class SongLayout {
       let col       = panel.col
       if (visible) {
         // Held near the top while its first use is above the view; never below its last use.
-        const wantedY = Math.max(Math.min(panel.naturalY, yTop), Math.min(lastY + PANEL_SPAN * 0.5, panel.naturalY))
+        const wantedY = Math.max(Math.min(panel.naturalY, yTop), Math.min(lastY + span * 0.5, panel.naturalY))
         let bestScore = Number.NEGATIVE_INFINITY
         for (let candidate = 0; candidate < trackLayout.cols; candidate += 1) {
           const candidateY = Math.min(wantedY, columnCeilings[candidate])
           // Staying put is worth half a panel, so scrolling does not shuffle the grid.
-          const stayBonus  = panel.visible && candidate === panel.col ? PANEL_SPAN * 0.5 : 0
+          const stayBonus  = panel.visible && candidate === panel.col ? span * 0.5 : 0
           const score      = candidateY + stayBonus - candidate * 1e-3
           if (score > bestScore) [bestScore, col, y] = [score, candidate, candidateY]
         }
-        columnCeilings[col] = y - PANEL_SPAN
+        columnCeilings[col] = y - span
+        // A face wider than a column (the instrument face) takes room in the next one too.
+        if (panel.chars > PANEL_CHARS && col + 1 < trackLayout.cols) columnCeilings[col + 1] = Math.min(columnCeilings[col + 1], y - span)
       }
       if (visible !== panel.visible || col !== panel.col || Math.abs(y - panel.y) > 1e-3) moved = true
       panel.visible = visible
@@ -357,7 +384,10 @@ function newPanel(track: number, table: number, instrument: number | null, row: 
     u       : PANEL_U0,
     shownY  : 0,
     shownU  : PANEL_U0,
-    alpha   : 0
+    alpha   : 0,
+    rows    : PANEL_ROWS,
+    chars   : PANEL_CHARS,
+    flip    : 0
   }
 }
 

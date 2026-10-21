@@ -1,6 +1,7 @@
 // What the user (or the followed M8 cursor) points at in the song.
 
 import type { PhraseColumn, TableColumn } from './columns'
+import type { InstrumentScreen } from './instrumentPage'
 import type { PhraseInstance } from './timeline'
 
 export type Selection =
@@ -12,6 +13,11 @@ export type Selection =
   | { kind: 'table'; table: number; row: number; column: TableColumn; track: number; instrument: number | null }
   /** The header of an instrument / table panel. */
   | { kind: 'instrument'; instrument: number | null; table: number; track: number }
+  /**
+   * A value of an instrument (Instrument view) or of one of its modulators (Inst. Mods view),
+   * on the instrument face of its panel: where the value is on the device screen (stored line, x).
+   */
+  | { kind: 'instParam'; instrument: number; screen: InstrumentScreen; line: number; x: number; table: number; track: number }
 
 export function sameSelection(a: Selection | null, b: Selection | null): boolean {
   if (!a || !b) return a === b
@@ -24,6 +30,8 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
       return b.kind === 'table' && a.table === b.table && a.row === b.row && a.column === b.column && a.track === b.track
     case 'instrument':
       return b.kind === 'instrument' && a.table === b.table && a.track === b.track
+    case 'instParam':
+      return b.kind === 'instParam' && a.instrument === b.instrument && a.screen === b.screen && a.line === b.line && a.x === b.x && a.track === b.track
   }
 }
 
@@ -32,7 +40,10 @@ export const selectionTrack = (selection: Selection): number =>
 
 /**
  * True for cells shown on a track's wall: velocity, instrument and FX of a step, table rows
- * and panel headers. The instrument column is on the front too; the wall shows it with the rest of the step.
+ * panel headers and instrument values. The instrument column is on the front too; the wall shows it with the rest of the step.
  */
 export const isWallCell     = (selection: Selection): boolean =>
-  selection.kind === 'table' || selection.kind === 'instrument' || (selection.kind === 'step' && selection.column !== 'note')
+  selection.kind === 'table' ||
+  selection.kind === 'instrument' ||
+  selection.kind === 'instParam' ||
+  (selection.kind === 'step' && selection.column !== 'note')

@@ -4,6 +4,8 @@
 
 import type { DeviceFocus } from '../m8/screen/liveScreen'
 import { isPhraseColumn, isTableColumn } from '../model/columns'
+import { cellAt, instrumentPage } from '../model/instrumentPage'
+import { TITLE_ROW } from '../model/screens'
 import type { Selection } from '../model/selection'
 import type { SongLayout } from '../scene/layout'
 
@@ -63,15 +65,31 @@ export class DeviceCursor {
         })
       }
       case 'inst':
-        return layout.tracks.flatMap((track) => {
+      case 'instmods': {
+        if (id == null) return []
+        // The value under the cursor, on every panel of that instrument; the header when none is under it.
+        const instrument = layout.model.instruments[id]
+        const screen     = focus.view === 'inst' ? 'inst' : 'mods'
+        const cell       = instrument && focus.cursor ? cellAt(instrumentPage(instrument), screen, focus.cursor.y - TITLE_ROW, focus.cursor.x) : null
+        return layout.tracks.flatMap((track): Selection[] => {
           const panel = track.panels.find((p) => p.instrument === id)
-          return panel ? [{
+          if (!panel) return []
+          return [cell ? {
+            kind      : 'instParam',
+            instrument: id,
+            screen,
+            line      : cell.line,
+            x         : cell.x,
+            table     : panel.table,
+            track     : track.track
+          } : {
             kind      : 'instrument',
             instrument: id,
             table     : panel.table,
             track     : track.track
-          } as const] : []
+          }]
         })
+      }
       default:
         return []
     }

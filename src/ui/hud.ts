@@ -45,6 +45,7 @@ const HELP_HTML         = `
     <dt>Arrows · PgUp/PgDn</dt><dd>move the selection · scroll 16 rows</dd>
     <dt>0 1 2 3</dt><dd>all · front · turn · side</dd>
     <dt>E · F</dt><dd>open every wall · focus selection</dd>
+    <dt>I</dt><dd>turn the selected instrument panel over: its table or its instrument (parameters and modulators). It turns by itself while the M8 shows that instrument</dd>
     <dt>X</dt><dd>dramatic angles: each cut to front, turn or side takes a skewed angle</dd>
     <dt>T</dt><dd>played notes: transposed phrases show the notes they play instead of the notes written</dd>
     <dt>A</dt><dd>auto select: the selection follows the M8 cursor</dd>
@@ -317,7 +318,7 @@ export class Hud {
     head.append(element('div', 'info-kicker', 'SELECTION'), pin)
     if (!description) {
       const placeholder =
-        'Click a note, an FX cell or a table row. Turn the view (drag, or key 2) to reveal the FX columns and the instrument tables of the track.'
+        'Click a note, an FX cell, a table row or an instrument value. Turn the view (drag, or key 2) to reveal the FX columns and the instrument panels of the track; INST › on a panel (or key I) turns it over to its instrument.'
       body.append(head, element('div', 'info-placeholder', placeholder))
       return
     }

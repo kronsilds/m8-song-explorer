@@ -1,16 +1,17 @@
 // Turns a pointer position into what is under it: a cell of a track (front column, wall step
-// details, panel header or table row) or a track's mute / solo button.
+// details, panel header, table row or instrument value) or a button (a track's mute / solo, a
+// panel's tab that turns it over).
 
 import { Matrix4, type Object3D, type PerspectiveCamera, type Ray, Raycaster, Vector2, type Vector3 } from 'three'
 import type { TrackToggle } from '../../m8/midiControl'
 import type { Selection } from '../../model/selection'
+import { placeAt } from '../instrumentFace'
 import {
   CHAR_W,
   FRONT_W,
   fieldAt,
   INST_COL,
   NOTE_COL,
-  PANEL_CHARS,
   PANEL_FIELDS,
   PANEL_ROWS,
   PANEL_U0,
@@ -26,6 +27,9 @@ import type { TrackView } from '../track/trackView'
 const MIN_WALL_ALPHA         = 0.35
 const MIN_PANEL_ALPHA        = 0.5
 const MIN_BUTTON_FRONT_ALPHA = 0.5
+
+/** A button of the scene: a track's mute or solo, or the tab that turns a panel over. */
+export type SceneButton = { track: number; kind: TrackToggle } | { track: number; kind: 'flip'; table: number }
 
 interface Hit<T> {
   value   : T
@@ -130,12 +134,32 @@ export class ScenePicker {
       (p) =>
         p.alpha > MIN_PANEL_ALPHA &&
         u >= p.shownU - 0.5 &&
-        u <= p.shownU + PANEL_CHARS * CHAR_W + 0.5 &&
+        u <= p.shownU + view.panelWidth(p) &&
         y <= p.shownY + 0.3 &&
-        y > p.shownY - PANEL_ROWS * ROW_H,
+        y > p.shownY - (view.shownFace(p) === 'inst' ? p.rows : PANEL_ROWS) * ROW_H,
     )
     if (!panel) return null
     const line = Math.floor((panel.shownY - y) / ROW_H)
+    const face = view.shownFace(panel) === 'inst' && panel.instrument != null ? layout.instrumentFace(panel.instrument) : null
+    if (face && panel.instrument != null) {
+      const place = placeAt(face, (u - panel.shownU) / CHAR_W, line)
+      // Its title is the panel header.
+      if (!place || place.row === 0) return {
+        kind      : 'instrument',
+        instrument: panel.instrument,
+        table     : panel.table,
+        track
+      }
+      return {
+        kind      : 'instParam',
+        instrument: panel.instrument,
+        screen    : place.cell.screen,
+        line      : place.cell.line,
+        x         : place.cell.x,
+        table     : panel.table,
+        track
+      }
+    }
     // Lines 0 and 1 are the panel's title and subtitle.
     if (line < 2) return {
       kind      : 'instrument',
@@ -154,22 +178,36 @@ export class ScenePicker {
     }
   }
 
-  /** The mute or solo button under the pointer, nearest first. */
-  pickButton(views: TrackView[], clientX: number, clientY: number): { track: number; kind: TrackToggle } | null {
-    const ray   = this.rayAt(clientX, clientY)
-    let nearest : Hit<{ track: number; kind: TrackToggle }> | null = null
-    for (const view of views) {
-      if (view.frontAlpha < MIN_BUTTON_FRONT_ALPHA) continue
-      const hit  = this.hitPlane(view.front, ray)
-      const kind = hit && view.buttonAt(hit.point.x, hit.point.y)
-      if (hit && kind && (!nearest || hit.distance < nearest.distance)) nearest = {
-        value   : {
-          track: view.track.track,
-          kind
-        },
-        distance: hit.distance
+  /** The button under the pointer (mute, solo, a panel's tab), nearest first. */
+  pickButton(views: TrackView[], clientX: number, clientY: number): SceneButton | null {
+    const ray      = this.rayAt(clientX, clientY)
+    let nearest    : Hit<SceneButton> | null = null
+    const consider = (value: SceneButton, distance: number) => {
+      if (!nearest || distance < nearest.distance) nearest = {
+        value,
+        distance
       }
     }
-    return nearest?.value ?? null
+    for (const view of views) {
+      const track = view.track.track
+      if (view.frontAlpha >= MIN_BUTTON_FRONT_ALPHA) {
+        const hit  = this.hitPlane(view.front, ray)
+        const kind = hit && view.buttonAt(hit.point.x, hit.point.y)
+        if (hit && kind) consider({
+          track,
+          kind
+        }, hit.distance)
+      }
+      if (view.wallAlpha >= MIN_WALL_ALPHA) {
+        const hit   = this.hitPlane(view.wall, ray)
+        const panel = hit && view.tabAt(hit.point.x, hit.point.y)
+        if (hit && panel) consider({
+          track,
+          kind : 'flip',
+          table: panel.table
+        }, hit.distance)
+      }
+    }
+    return (nearest as Hit<SceneButton> | null)?.value ?? null
   }
 }

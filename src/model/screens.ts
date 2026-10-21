@@ -156,8 +156,187 @@ export function projectScreen(name: string | null, tempo: number | null, setting
   return lines
 }
 
-/** The instrument screen header (TYPE, NAME) as the schema reads it. */
+/** Stored screen lines (title row first, no margin) placed back on a screen. */
+export function storedScreen(stored: string[]): string[] {
+  const lines = Array.from({ length: SCREEN_HEIGHT }, () => '')
+  stored.forEach((line, i) => {
+    if (TITLE_ROW + i < SCREEN_HEIGHT) lines[TITLE_ROW + i] = line ? ` ${line}` : ''
+  })
+  return lines
+}
+
+/**
+ * The Instrument view of each type with its default values, as the device draws it (Model:02,
+ * fw 6.5, captured 2026-10-21), from the TYPE line on, without the margin.
+ */
+export const INSTRUMENT_TEMPLATES: Record<string, string[]> = {
+  WAVSYNTH  : [
+    'SHAPE   00PULSE 12%',
+    '',
+    'SIZE    20        AMP 00',
+    'MULT    00        LIM 00CLIP',
+    'WARP    00        PAN 80',
+    'SCAN    00        DRY C0',
+    'FILTER  00OFF     MFX 00',
+    'CUTOFF  FF        DEL 00',
+    'RES     00        REV 00',
+  ],
+  MACROSYN  : [
+    'SHAPE   00CSAW',
+    '',
+    'TIMBRE  80        AMP 00',
+    'COLOR   80        LIM 00CLIP',
+    'DEGRADE 00        PAN 80',
+    'REDUX   00        DRY C0',
+    'FILTER  00OFF     MFX 00',
+    'CUTOFF  FF        DEL 00',
+    'RES     00        REV 00',
+  ],
+  SAMPLER   : [
+    'SAMPLE  LOAD             REC.',
+    '',
+    'SLICE   00OFF     AMP 00',
+    'PLAY    00FWD     LIM 00CLIP',
+    'START   00        PAN 80',
+    'LOOP ST 00        DRY C0',
+    'LENGTH  FF        MFX 00',
+    'DETUNE  80        DEL 00',
+    'DEGRADE 00        REV 00',
+    'FILTER  00OFF',
+    'CUTOFF  FF',
+    'RES     00',
+  ],
+  FMSYNTH   : [
+    'ALGO    00A>B>C>D',
+    '        A SIN B SIN C SIN D SIN',
+    'RATIO   01.00 01.00 01.00 01.00',
+    'LEV/FB  80/00 80/00 80/00 80/00',
+    'MOD     ----- ----- ----- -----',
+    '        ----- ----- ----- -----',
+    'MOD1    00        AMP 00',
+    'MOD2    00        LIM 00CLIP',
+    'MOD3    00        PAN 80',
+    'MOD4    00        DRY C0',
+    'FILTER  00OFF     MFX 00',
+    'CUTOFF  FF        DEL 00',
+    'RES     00        REV 00',
+  ],
+  HYPERSYN  : [
+    'SCALE   00DEFAULT',
+    'CHORD   00> 00 00 00 00 00 00',
+    '',
+    '',
+    'SHAPE   00SAW',
+    'SHIFT   80        AMP 00',
+    'SWARM   00        LIM 00CLIP',
+    'WIDTH   00        PAN 80',
+    'SUBOSC  80        DRY C0',
+    'FILTER  00OFF     MFX 00',
+    'CUTOFF  FF        DEL 00',
+    'RES     00        REV 00',
+  ],
+  'MIDI OUT': [
+    'PORT        00MIDI+USB',
+    'CHANNEL     01',
+    'BANK:PG     ---:---',
+    ...'ABCDEFGHIJ'.split('').map((cc) => `CC${cc} CC:VAL  ---:--`),
+  ],
+  EXTERNAL  : [
+    'INPUT   00LINE-IN STEREO',
+    'PORT    01MIDI+USB',
+    'CHANNEL 01',
+    'BANK:PG ---:---',
+    '',
+    'CCA 001:--        AMP 00',
+    'CCB 002:--        LIM 00CLIP',
+    'CCC 003:--        PAN 80',
+    'CCD 004:--        DRY C0',
+    'FILTER  00OFF     MFX 00',
+    'CUTOFF  FF        DEL 00',
+    'RES     00        REV 00',
+  ]
+}
+
+/** Replaces the value after `label` (left column at x 8, or the mixer column) with `value`. */
+function setParameter(lines: string[], label: string, value: string): void {
+  for (const [i, line] of lines.entries()) {
+    const at = line.startsWith(`${label} `) ? 0 : line.indexOf(` ${label} `, 17) === 17 ? 18 : -1
+    if (at < 0) continue
+    const valueX = at === 0 ? 8 : 22
+    const end    = valueX + Math.max(value.length, (/^\S+/.exec(line.slice(valueX))?.[0] ?? '').length)
+    lines[i]     = `${line.slice(0, valueX).padEnd(valueX)}${value.padEnd(end - valueX)}${line.slice(end)}`.trimEnd()
+    return
+  }
+}
+
+/** Stored Instrument view lines of an instrument of `type`, with some values changed. */
+export function instrumentLines(id: number, type: string, name: string | null, values: Record<string, string> = {}): string[] {
+  const lines = [
+    `INST. ${hex2(id)}`,
+    '',
+    `TYPE    ${type.padEnd(14)}LOAD SAVE`,
+    `NAME    ${(name ?? '').padEnd(12, '-')}`,
+    'TRANSP. ON   TBL.TIC 01   EQ --',
+    '',
+    ...(INSTRUMENT_TEMPLATES[type] ?? []),
+  ]
+  for (const [label, value] of Object.entries(values)) setParameter(lines, label, value)
+  return lines
+}
+
+/** A modulator for instrumentModsLines: its type with code ('00AHD ENV'), then its rows below MODn. */
+export interface ModSpec {
+  type: string
+  rows: [label: string, value: string][]
+}
+
+/** The rows each modulator type shows under its MODn line (device, fw 6.5). */
+export const MOD_ROWS: Record<string, string[]> = {
+  'AHD ENV' : ['DEST', 'AMT', 'ATK', 'HOLD', 'DEC'],
+  'ADSR ENV': ['DEST', 'AMT', 'ATK', 'DEC', 'SUS', 'REL'],
+  'DRUM ENV': ['DEST', 'AMT', 'PEAK', 'BODY', 'DEC'],
+  LFO       : ['DEST', 'AMT', 'OSC', 'TRIG', 'FREQ'],
+  'TRIG ENV': ['DEST', 'AMT', 'ATK', 'HOLD', 'DEC', 'SRC'],
+  TRACKING  : ['DEST', 'AMT', 'SRC', 'LVAL', 'HVAL']
+}
+
+/** Stored Inst. Mods lines: MOD1 / MOD3 side by side from line 2, MOD2 / MOD4 from line 10. */
+export function instrumentModsLines(id: number, mods: ModSpec[]): string[] {
+  const lines = Array.from({ length: 18 }, () => '')
+  lines[0]    = `INST. MODS ${hex2(id)}`
+  mods.slice(0, 4).forEach((mod, i) => {
+    const top  = i % 2 === 0 ? 2 : 10
+    const left = i < 2 ? 0 : 16
+    const rows : [string, string][] = [[`MOD${i + 1}`, mod.type], ...mod.rows]
+    rows.forEach(([label, value], r) => {
+      lines[top + r] = `${lines[top + r].padEnd(left).slice(0, left)}${label.padEnd(5)}${value}`.trimEnd()
+    })
+  })
+  return lines
+}
+
+/** The default modulators of a new instrument (device): two AHD envelopes and two LFOs, all OFF. */
+export const DEFAULT_MODS: ModSpec[] = [{
+  type: '00AHD ENV',
+  rows: [['DEST', '00OFF'], ['AMT', 'FF'], ['ATK', '00'], ['HOLD', '00'], ['DEC', '80']]
+}, {
+  type: '00AHD ENV',
+  rows: [['DEST', '00OFF'], ['AMT', 'FF'], ['ATK', '00'], ['HOLD', '00'], ['DEC', '80']]
+}, {
+  type: '03LFO',
+  rows: [['DEST', '00OFF'], ['AMT', 'FF'], ['OSC', '00TRI'], ['TRIG', '00FREE'], ['FREQ', '10']]
+}, {
+  type: '03LFO',
+  rows: [['DEST', '00OFF'], ['AMT', 'FF'], ['OSC', '00TRI'], ['TRIG', '00FREE'], ['FREQ', '10']]
+}]
+
+/** The Inst. Mods screen: the stored lines when read, else the default modulators. */
+export const instrumentModsScreen = (instrument: Instrument): string[] =>
+  storedScreen(instrument.mods?.length ? instrument.mods : instrumentModsLines(instrument.id, DEFAULT_MODS))
+
+/** The instrument screen: the stored lines when read, else its header (TYPE, NAME) as the schema reads it. */
 export function instrumentScreen(instrument: Instrument): string[] {
+  if (instrument.lines.length) return storedScreen(instrument.lines)
   const lines                  = blankScreen(`INST. ${hex2(instrument.id)}`)
   lines[FIRST_CONTENT_ROW]     = screenLine([
     [0, 'TYPE'],

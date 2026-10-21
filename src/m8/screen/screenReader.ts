@@ -22,7 +22,7 @@ import {
   TRACKS,
 } from '../../model/song'
 
-export type ViewKind = 'song' | 'chain' | 'phrase' | 'inst' | 'table' | 'scale' | 'groove' | 'other'
+export type ViewKind = 'song' | 'chain' | 'phrase' | 'inst' | 'instmods' | 'table' | 'scale' | 'groove' | 'other'
 
 export interface ScreenView {
   kind  : ViewKind
@@ -33,8 +33,13 @@ export interface ScreenView {
 }
 
 /** Right edge of the content the explorer reads; the track panel lives beyond it. */
-export const CONTENT_COLUMNS  = 30
-export const LAST_CONTENT_ROW = 21
+export const CONTENT_COLUMNS      = 30
+export const LAST_CONTENT_ROW     = 21
+/**
+ * Right edge of the Instrument and Inst. Mods views: FM operator D and LOAD / SAVE reach x 30
+ * (screen column 31); the track panel starts at screen column 34 (device, fw 6.5).
+ */
+export const WIDE_CONTENT_COLUMNS = 33
 
 /** Screen x (without the margin) of the values on the Project and Instrument views. */
 const PROJECT_VALUE_X    = 13
@@ -51,27 +56,32 @@ const TITLE_VIEW_KINDS        : Record<string, ViewKind> = {
 }
 
 /** A screen row's content, without the margin and the track panel. */
-const contentOf               = (line: string): string => line.slice(SCREEN_MARGIN, CONTENT_COLUMNS)
+const contentOf     = (line: string): string => line.slice(SCREEN_MARGIN, CONTENT_COLUMNS)
+/** A screen row's content up to the track panel. */
+const wideContentOf = (line: string): string => line.slice(SCREEN_MARGIN, WIDE_CONTENT_COLUMNS)
 
 export const titleOf          = (screen: M8Screen): string =>
   contentOf(screen.lines[TITLE_ROW] ?? '')
     .trim()
     .toUpperCase()
 
-function viewKindOf(titleWord: string): ViewKind {
+function viewKindOf(title: string): ViewKind {
+  const titleWord = title.split(/\s+/)[0] ?? ''
+  if (/^INST\.?\s+MODS\b/.test(title)) return 'instmods'
   if (titleWord.startsWith('INST') && !titleWord.startsWith('INSTRUMENT')) return 'inst'
   return TITLE_VIEW_KINDS[titleWord] ?? 'other'
 }
 
 function viewIdOf(kind: ViewKind, title: string): string | null {
   if (kind === 'scale' || kind === 'groove') return /^(?:SCALE|GROOVE)\s+([0-9A-F]{2})\b/.exec(title)?.[1] ?? null
+  if (kind === 'instmods') return /^INST\.?\s+MODS\s+([0-9A-F]{2})\b/.exec(title)?.[1] ?? null
   if (kind === 'song' || kind === 'other') return null
   return parseViewTitle(title).viewId
 }
 
 export function viewOf(screen: M8Screen): ScreenView {
   const title = titleOf(screen)
-  const kind  = viewKindOf(title.split(/\s+/)[0] ?? '')
+  const kind  = viewKindOf(title)
   const id    = viewIdOf(kind, title)
   return {
     kind,
@@ -85,7 +95,7 @@ export function viewOf(screen: M8Screen): ScreenView {
 export const stableContent = (screen: M8Screen): string =>
   screen.lines
     .slice(TITLE_ROW, LAST_CONTENT_ROW + 1)
-    .map(contentOf)
+    .map(wideContentOf)
     .join('\n')
 
 /** The screen row grid row `rowIndex` is drawn on, null when it is not on screen. */
@@ -190,6 +200,13 @@ const contentLines = (screen: M8Screen): string[] => screen.lines.map(contentOf)
 /** The first content row starting with `label`. */
 const rowLabelled  = (lines: string[], label: string): string | undefined => lines.find((line) => new RegExp(`^${label}\\b`, 'i').test(line))
 
+/** Rows from the title to the last content row, without the margin and the track panel, trailing blank rows dropped. */
+function storedLines(screen: M8Screen): string[] {
+  const lines = screen.lines.slice(TITLE_ROW, LAST_CONTENT_ROW + 1).map((line) => wideContentOf(line).trimEnd())
+  while (lines.length && !lines[lines.length - 1]) lines.pop()
+  return lines
+}
+
 export function readInstrument(view: ScreenView): Instrument | null {
   if (view.kind !== 'inst' || view.id == null) return null
   const lines    = contentLines(view.screen)
@@ -200,7 +217,18 @@ export function readInstrument(view: ScreenView): Instrument | null {
     id   : view.id,
     type : typeLine.slice(INSTRUMENT_VALUE_X, 21).trim().toUpperCase() || null,
     name : nameOf(nameLine?.slice(INSTRUMENT_VALUE_X, 20) ?? ''),
-    lines: lines.slice(TITLE_ROW, LAST_CONTENT_ROW + 1).map((line) => line.trimEnd())
+    lines: storedLines(view.screen)
+  }
+}
+
+/** The Inst. Mods view's rows (title first), null until its first modulator and destination are drawn. */
+export function readInstrumentMods(view: ScreenView): { id: number; lines: string[] } | null {
+  if (view.kind !== 'instmods' || view.id == null) return null
+  const lines = storedLines(view.screen)
+  if (!lines.some((line) => /^MOD1\s/i.test(line)) || !lines.some((line) => /^DEST\s/i.test(line))) return null
+  return {
+    id: view.id,
+    lines
   }
 }
 
@@ -318,13 +346,14 @@ const isSongPage  = (view: ScreenView): boolean => {
 
 /** How to tell a view kind is fully drawn: its reader reads it. */
 const PAGE_CHECKS : Partial<Record<ViewKind, (view: ScreenView) => boolean>> = {
-  song  : isSongPage,
-  chain : (view) => readChain(view) != null,
-  phrase: (view) => readPhrase(view) != null,
-  table : (view) => readTable(view) != null,
-  inst  : (view) => readInstrument(view) != null,
-  scale : (view) => readScale(view) != null,
-  groove: (view) => readGroove(view) != null
+  song    : isSongPage,
+  chain   : (view) => readChain(view) != null,
+  phrase  : (view) => readPhrase(view) != null,
+  table   : (view) => readTable(view) != null,
+  inst    : (view) => readInstrument(view) != null,
+  instmods: (view) => readInstrumentMods(view) != null,
+  scale   : (view) => readScale(view) != null,
+  groove  : (view) => readGroove(view) != null
 }
 
 /** True when the view is a fully drawn page of that kind (and number). */

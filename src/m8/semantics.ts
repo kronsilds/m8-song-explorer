@@ -5,6 +5,8 @@
 import { describeContextParts, getSemanticContext, type M8DescriptionPart, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X, fxLaneOf, phraseColumnX, tableColumnX } from '../model/columns'
 import { hex2, hexDigit } from '../model/hex'
+import { cellAt, type InstrumentCell, type InstrumentScreen, instrumentPage, type ModSlot, modulatorsOf } from '../model/instrumentPage'
+import { modSummary } from '../model/modShapes'
 import {
   analyzePhrase,
   degreeOf,
@@ -20,7 +22,7 @@ import {
   transposeSemitones,
 } from '../model/music/harmony'
 import { noteNumber, PITCH_NAMES, pitchClass } from '../model/music/pitch'
-import { chainScreen, FIRST_CONTENT_ROW, phraseScreen, SCREEN_HEIGHT, SCREEN_WIDTH, tableScreen } from '../model/screens'
+import { chainScreen, FIRST_CONTENT_ROW, phraseScreen, SCREEN_HEIGHT, SCREEN_WIDTH, storedScreen, TITLE_ROW, tableScreen } from '../model/screens'
 import type { Selection } from '../model/selection'
 import { emptyTable, type FxCell, type SongModel } from '../model/song'
 import { buildTimeline, type PhraseInstance } from '../model/timeline'
@@ -41,6 +43,7 @@ type StepSelection = Extract<Selection, { kind: 'step' }>
 type ChainSelection = Extract<Selection, { kind: 'chain' }>
 type TableSelection = Extract<Selection, { kind: 'table' }>
 type InstrumentSelection = Extract<Selection, { kind: 'instrument' }>
+type InstParamSelection = Extract<Selection, { kind: 'instParam' }>
 
 /**
  * @param effectiveInstrument the instrument the step plays (its I column or the last one before it)
@@ -55,6 +58,8 @@ export function describeSelection(model: SongModel, selection: Selection, effect
       return describeTableCell(model, selection)
     case 'instrument':
       return describeInstrumentPanel(model, selection)
+    case 'instParam':
+      return describeInstrumentCell(model, selection)
   }
 }
 
@@ -309,6 +314,70 @@ function tracksPlaying(model: SongModel, instrument: number | null): number[] {
   return [...tracks].sort()
 }
 
+/** Instrument label for a path: '01 · GRAYSATURN · FMSYNTH'. */
+function instrumentPath(model: SongModel, id: number, track: number, ...rest: string[]): string[] {
+  return [`Track ${track + 1}`, `Instrument ${instrumentLabel(model, id)}`, ...rest]
+}
+
+/** What the SDK says about a value of the Instrument or Inst. Mods view, read from the stored screen. */
+function instrumentParts(stored: string[], screen: InstrumentScreen, cell: InstrumentCell): M8DescriptionPart[] {
+  const lines   = storedScreen(stored)
+  const state   = stateWithCursorAt(
+    screen === 'inst' ? 'inst' : 'instmods',
+    stored[0] ?? '',
+    lines,
+    cell.x + SCREEN_MARGIN,
+    TITLE_ROW + cell.line,
+    cell.width,
+  )
+  const context = getSemanticContext(state, {
+    width : SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    lines
+  })
+  return context ? describeContextParts(context).filter((part) => part.kind !== 'location') : []
+}
+
+const slotFact = (slot: ModSlot): Fact => [`MOD${slot.slot}`, modSummary(slot)]
+
+function describeInstrumentCell(model: SongModel, selection: InstParamSelection): CellDescription {
+  const instrument = model.instruments[selection.instrument]
+  const page       = instrument ? instrumentPage(instrument) : null
+  const cell       = page ? cellAt(page, selection.screen, selection.line, selection.x) : null
+  const label      = cell ? `${cell.label}${cell.operator ? ` ${cell.operator}` : ''}` : '?'
+  const facts      : Fact[] = []
+  if (!instrument || !page || !cell) {
+    return {
+      path : instrumentPath(model, selection.instrument, selection.track),
+      title: label,
+      parts: [],
+      facts
+    }
+  }
+  if (selection.screen === 'mods') {
+    const slot = page.slots.find((s) => s.slot === cell.slot)
+    if (slot) {
+      facts.push(slotFact(slot))
+      // MOD AMT / RATE / BOTH act on the next slot (4 on 1).
+      if (slot.dest?.startsWith('MOD')) facts.push(['Modulates', `MOD${(slot.slot % 4) + 1} (${slot.dest})`])
+    }
+    return {
+      path : instrumentPath(model, selection.instrument, selection.track, 'Modulators', `MOD${cell.slot ?? '?'}`),
+      title: `${label} · ${cell.text}`,
+      parts: instrumentParts(instrument.mods ?? [], 'mods', cell),
+      facts
+    }
+  }
+  if (cell.operator) facts.push(['Operator', cell.operator])
+  for (const slot of modulatorsOf(page, cell.label)) facts.push(['Modulated by', `MOD${slot.slot} · ${modSummary(slot)}`])
+  return {
+    path : instrumentPath(model, selection.instrument, selection.track),
+    title: `${label} · ${cell.text}`,
+    parts: instrumentParts(instrument.lines, 'inst', cell),
+    facts
+  }
+}
+
 function describeInstrumentPanel(model: SongModel, selection: InstrumentSelection): CellDescription {
   const instrument = selection.instrument != null ? model.instruments[selection.instrument] : null
   const facts      : Fact[] = []
@@ -316,15 +385,21 @@ function describeInstrumentPanel(model: SongModel, selection: InstrumentSelectio
   if (instrument?.name) facts.push(['Name', instrument.name])
   const tracks = tracksPlaying(model, selection.instrument)
   if (tracks.length) facts.push(['Played on tracks', tracks.join(', ')])
-  const lines        = instrument?.lines.filter((line) => line.trim()) ?? []
+  if (instrument) {
+    const page   = instrumentPage(instrument)
+    const header = (label: string) => page.cells.find((cell) => cell.label === label)?.text
+    const transp = header('TRANSP')
+    if (transp) facts.push(['Transpose', `${transp} (scales, chain and project transpose ${transp === 'ON' ? 'apply' : 'do not apply'})`])
+    const tic = header('TBL.TIC')
+    if (tic) facts.push(['Table tick', tic])
+    for (const slot of page.slots) if (slot.dest) facts.push(slotFact(slot))
+    if (!instrument.mods?.length) facts.push(['Modulators', 'not read yet (explore the song again)'])
+  }
   const isInstrument = selection.instrument != null
   return {
     path : [`Track ${selection.track + 1}`, isInstrument ? `Instrument ${hex2(selection.instrument)}` : `Table ${hex2(selection.table)}`],
     title: isInstrument ? `Instrument ${instrumentLabel(model, selection.instrument)}` : `Table ${hex2(selection.table)}`,
-    parts: lines.slice(1).map((text) => ({
-      kind: 'line',
-      text
-    })),
+    parts: [],
     facts
   }
 }

@@ -1,6 +1,7 @@
 // A made-up song with the shape of a real one (sections, shared chains, tables, TBX/INS
 // references), shown when no M8 is connected and used by the tests.
 
+import { instrumentLines, instrumentModsLines, type ModSpec } from './screens'
 import {
   type Chain,
   emptyFx,
@@ -38,12 +39,163 @@ const INSTRUMENTS : [number, string, string][] = [
   [0x01, 'SNARE', 'SAMPLER'],
   [0x02, 'HATS', 'SAMPLER'],
   [0x03, 'SUBBASS', 'MACROSYN'],
-  [0x04, 'GLASSPAD', 'HYPERSYNTH'],
+  [0x04, 'GLASSPAD', 'HYPERSYN'],
   [0x05, 'LEAD', 'FMSYNTH'],
   [0x06, 'PLUCKARP', 'WAVSYNTH'],
   [0x07, 'NOISEFX', 'MACROSYN'],
   [0x08, 'OPENHAT', 'SAMPLER'],
 ]
+
+type ModRows = [label: string, value: string][]
+const ahd     = (dest: string, amt: string, atk: string, hold: string, dec: string): ModSpec => ({
+  type: '00AHD ENV',
+  rows: [['DEST', dest], ['AMT', amt], ['ATK', atk], ['HOLD', hold], ['DEC', dec]] as ModRows
+})
+const adsr    = (dest: string, amt: string, atk: string, dec: string, sus: string, rel: string): ModSpec => ({
+  type: '01ADSR ENV',
+  rows: [['DEST', dest], ['AMT', amt], ['ATK', atk], ['DEC', dec], ['SUS', sus], ['REL', rel]] as ModRows
+})
+const drum    = (dest: string, amt: string, peak: string, body: string, dec: string): ModSpec => ({
+  type: '02DRUM ENV',
+  rows: [['DEST', dest], ['AMT', amt], ['PEAK', peak], ['BODY', body], ['DEC', dec]] as ModRows
+})
+const lfo     = (dest: string, amt: string, osc: string, trig: string, freq: string): ModSpec => ({
+  type: '03LFO',
+  rows: [['DEST', dest], ['AMT', amt], ['OSC', osc], ['TRIG', trig], ['FREQ', freq]] as ModRows
+})
+const trig    = (dest: string, amt: string, atk: string, hold: string, dec: string, src: string): ModSpec => ({
+  type: '04TRIG ENV',
+  rows: [['DEST', dest], ['AMT', amt], ['ATK', atk], ['HOLD', hold], ['DEC', dec], ['SRC', src]] as ModRows
+})
+const track   = (dest: string, amt: string, src: string, low: string, high: string): ModSpec => ({
+  type: '05TRACKING',
+  rows: [['DEST', dest], ['AMT', amt], ['SRC', src], ['LVAL', low], ['HVAL', high]] as ModRows
+})
+/** An unused slot: the device's default modulator with DEST OFF. */
+const unused  = (spec: ModSpec): ModSpec => ({
+  ...spec,
+  rows: spec.rows.map(([label, value]): [string, string] => (label === 'DEST' ? [label, '00OFF'] : [label, value]))
+})
+const idleLfo = (): ModSpec => unused(lfo('', 'FF', '00TRI', '00FREE', '10'))
+const idleAhd = (): ModSpec => unused(ahd('', 'FF', '00', '00', '80'))
+
+/** Parameters and modulators of the demo instruments (in the layouts the device draws). */
+const INSTRUMENT_SOUNDS: Record<number, { values: Record<string, string>; mods: ModSpec[] }> = {
+  0: {
+    values: {
+      AMP   : '30',
+      LIM   : '01SIN',
+      DRY   : 'D0',
+      REV   : '10',
+      LENGTH: 'A0',
+      FILTER: '01LOWPASS',
+      CUTOFF: 'C8',
+      RES   : '30'
+    },
+    mods  : [drum('02PITCH', 'C0', '90', '08', '30'), ahd('01VOLUME', 'FF', '00', '04', '40'), idleLfo(), idleLfo()]
+  },
+  1: {
+    values: {
+      AMP    : '18',
+      DRY    : 'B0',
+      REV    : '48',
+      DEL    : '20',
+      START  : '08',
+      DEGRADE: '18'
+    },
+    mods  : [ahd('01VOLUME', 'FF', '00', '02', '28'), drum('07CUTOFF', 'A0', '60', '04', '20'), idleLfo(), idleLfo()]
+  },
+  2: {
+    values: {
+      DRY   : '90',
+      PAN   : '68',
+      FILTER: '02HIGHPASS',
+      CUTOFF: '70',
+      LENGTH: '40'
+    },
+    mods  : [ahd('01VOLUME', 'FF', '00', '00', '0C'), trig('07CUTOFF', '60', '00', '02', '10', '06WAVSYNTH'), lfo('08RES', '40', '08RANDOM', '00FREE', '02'), idleLfo()]
+  },
+  3: {
+    values: {
+      TIMBRE: '40',
+      COLOR : '60',
+      AMP   : '20',
+      LIM   : '04POST',
+      FILTER: '01LOWPASS',
+      CUTOFF: '48',
+      RES   : '58',
+      DRY   : 'E0'
+    },
+    mods  : [adsr('01VOLUME', 'FF', '00', '20', 'C0', '18'), ahd('07CUTOFF', '90', '00', '06', '30'), track('08RES', '50', '00NOTE', '20', 'A0'), lfo('02PITCH', '08', '01SIN', '00FREE', '20')]
+  },
+  4: {
+    values: {
+      SWARM : '60',
+      WIDTH : 'C0',
+      SUBOSC: '40',
+      FILTER: '01LOWPASS',
+      CUTOFF: '90',
+      RES   : '40',
+      MFX   : '60',
+      DEL   : '50',
+      REV   : 'C0'
+    },
+    mods  : [adsr('01VOLUME', 'FF', '40', '60', 'B0', '80'), lfo('07CUTOFF', '50', '01SIN', '00FREE', '40'), lfo('05PAN', '30', '00TRI', '00FREE', '18'), ahd('10SWARM', '80', '30', '20', 'A0')]
+  },
+  5: {
+    values: {
+      ALGO  : '02[A>B+C]>D',
+      MOD1  : '70',
+      FILTER: '01LOWPASS',
+      CUTOFF: 'B0',
+      RES   : '30',
+      AMP   : '10',
+      DEL   : '60',
+      REV   : '40'
+    },
+    mods  : [ahd('01VOLUME', 'CF', '00', '10', '50'), lfo('02PITCH', '10', '01SIN', '01RETRIG', '0C'), adsr('07CUTOFF', 'A0', '04', '30', '60', '20'), idleLfo()]
+  },
+  6: {
+    values: {
+      SHAPE : '02PULSE 50%',
+      SIZE  : '2A',
+      MULT  : '11',
+      WARP  : '19',
+      FILTER: '01LOWPASS',
+      CUTOFF: '40',
+      RES   : '90',
+      DEL   : 'A0',
+      REV   : '30'
+    },
+    mods  : [ahd('01VOLUME', 'FF', '00', '13', '01'), ahd('07CUTOFF', '7F', '00', '02', '1E'), lfo('11WARP', '60', '03RAMP UP', '01RETRIG', '08'), track('07CUTOFF', '40', '01VELOCITY', '00', 'FF')]
+  },
+  7: {
+    values: {
+      SHAPE  : '2BNOISE',
+      TIMBRE : 'C0',
+      COLOR  : '20',
+      DEGRADE: '40',
+      REDUX  : '30',
+      FILTER : '03BANDPASS',
+      CUTOFF : '60',
+      RES    : 'C0',
+      REV    : 'E0',
+      DEL    : '80'
+    },
+    mods  : [ahd('01VOLUME', 'FF', '60', '20', 'FF'), lfo('07CUTOFF', 'C0', '09DRUNK', '00FREE', '06'), lfo('05PAN', 'FF', '07SQU UP', '00FREE', '04'), idleAhd()]
+  },
+  8: {
+    values: {
+      DRY   : 'A0',
+      PAN   : '98',
+      FILTER: '02HIGHPASS',
+      CUTOFF: '90',
+      LENGTH: 'C0',
+      REV   : '20'
+    },
+    mods  : [adsr('01VOLUME', 'FF', '00', '30', '60', '30'), idleAhd(), idleLfo(), idleLfo()]
+  }
+}
 
 export function demoSong(seed = 8): SongModel {
   const rand  = rng(seed)
@@ -296,11 +448,13 @@ export function demoSong(seed = 8): SongModel {
 
   // --- Instruments and tables ---------------------------------------------------
   for (const [id, name, type] of INSTRUMENTS) {
+    const sound           = INSTRUMENT_SOUNDS[id]
     const inst            : Instrument = {
       id,
       name,
       type,
-      lines: []
+      lines: instrumentLines(id, type, name, sound?.values),
+      mods : sound ? instrumentModsLines(id, sound.mods) : undefined
     }
     model.instruments[id] = inst
     const table           : Table = {

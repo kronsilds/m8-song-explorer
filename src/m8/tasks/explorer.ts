@@ -1,6 +1,6 @@
 // Walks the whole song on the M8: pages the Song view, enters every chain used (Shift+Right
 // from its first song cell), every phrase those chains play, then every instrument the
-// phrases use and its table, the tables TBL/TBX point at, and the scales the song plays with
+// phrases use with its table and modulators, the tables TBL/TBX point at, and the scales the song plays with
 // (the project's and the ones SCA/SCG point at) and the grooves (the project's and the ones
 // GRV/GGR point at). Only moves, never edits.
 
@@ -21,6 +21,7 @@ import {
   readChain,
   readGroove,
   readInstrument,
+  readInstrumentMods,
   readPhrase,
   readProject,
   readScale,
@@ -44,6 +45,8 @@ export interface ExploreOptions {
   onUpdate?       : (model: SongModel) => void
   readInstruments?: boolean
   readTables?     : boolean
+  /** Read each instrument's Inst. Mods view (its modulators). */
+  readMods?       : boolean
   readScales?     : boolean
   readGrooves?    : boolean
   /** Song rows to read from row 00 (all 256 by default). */
@@ -113,7 +116,7 @@ class SongExplorer {
       await this.readProjectSettings()
       await this.readSongGrid()
       await this.readChains()
-      if (options.readInstruments ?? true) await this.readInstruments(readTables)
+      if (options.readInstruments ?? true) await this.readInstruments(readTables, options.readMods ?? true)
       if (readTables) await this.readTablesNotYetRead()
       if (options.readScales ?? true) await this.readScales()
       if (options.readGrooves ?? true) await this.readGrooves()
@@ -298,7 +301,7 @@ class SongExplorer {
   // ---------------------------------------------------------------------------
   // Instruments, tables, scales and grooves
 
-  private readInstruments(readTables: boolean): Promise<void> {
+  private readInstruments(readTables: boolean, readMods: boolean): Promise<void> {
     return this.readEachItem({
       view    : 'inst',
       phase   : 'instruments',
@@ -307,7 +310,8 @@ class SongExplorer {
       read    : async (view, id) => {
         const instrument = readInstrument(view)
         if (instrument) this.model.instruments[id] = instrument
-        return readTables ? this.readInstrumentTable(view, id) : view
+        const back = readTables ? await this.readInstrumentTable(view, id) : view
+        return readMods ? this.readModulators(id) : back
       }
     })
   }
@@ -331,6 +335,17 @@ class SongExplorer {
     const table = readTable(tableView)
     if (table) this.model.tables[table.id] = table
     return driver.pressToOpen(['shift', 'left'], (view) => isPage(view, 'inst', id), `instrument ${hex2(id)}`)
+  }
+
+  /** Shift+Up to the instrument's Inst. Mods view, read it, Shift+Down back; returns the instrument view. */
+  private async readModulators(id: number): Promise<ScreenView> {
+    const { driver } = this
+    const modsView   = await driver.pressToOpen(['shift', 'up'], (view) => isPage(view, 'instmods', id), `the modulators of instrument ${hex2(id)}`)
+    const mods       = readInstrumentMods(modsView)
+    const instrument = this.model.instruments[id]
+    if (mods && instrument) instrument.mods = mods.lines
+    // Shift+Down goes back to the view the Mods view was entered from: the Instrument view.
+    return driver.pressToOpen(['shift', 'down'], (view) => isPage(view, 'inst', id), `instrument ${hex2(id)}`)
   }
 
   /** The tables only reached through TBL / TBX. */

@@ -9,6 +9,7 @@ import {
   chainScreen,
   FIRST_CONTENT_ROW,
   grooveScreen,
+  instrumentModsScreen,
   instrumentScreen,
   phraseScreen,
   projectScreen,
@@ -21,7 +22,7 @@ import {
 } from '../src/model/screens'
 import { emptyTableRow, type SongModel } from '../src/model/song'
 
-type View = 'song' | 'chain' | 'phrase' | 'inst' | 'table' | 'scale' | 'groove' | 'project' | 'mixer' | 'midisettings'
+type View = 'song' | 'chain' | 'phrase' | 'inst' | 'instmods' | 'table' | 'scale' | 'groove' | 'project' | 'mixer' | 'midisettings'
 
 export const SYNC_OUT_VALUES = ['OFF', 'CLOCK', 'TRANSPORT', 'CLOCK+TRANSP', 'TRANSPORT+SPP', 'CLK+TRANSP+SPP']
 
@@ -107,6 +108,14 @@ export class FakeM8 implements M8Port {
           lines: []
         })
         break
+      case 'instmods':
+        lines = instrumentModsScreen(this.model.instruments[this.inst] ?? {
+          id   : this.inst,
+          name : null,
+          type : 'NONE',
+          lines: []
+        })
+        break
       case 'table':
         lines = tableScreen(this.model.tables[this.table] ?? {
           id  : this.table,
@@ -155,8 +164,8 @@ export class FakeM8 implements M8Port {
         lines[3] = ` ${this.view.toUpperCase()}`
     }
     lines    = lines.map((l) => l.toLowerCase())
-    // The track panel shares the rows on the right.
-    lines[5] = `${lines[5].padEnd(32)}t>120`
+    // The track panel shares the rows on the right, from screen column 34.
+    lines[5] = `${lines[5].padEnd(34)}t>120`
     return lines
   }
 
@@ -393,10 +402,15 @@ export class FakeM8 implements M8Port {
           this.changeView('groove')
         }
         return
+      case 'instmods':
+        // Shift+Down goes back to the Instrument view it was entered from.
+        if (has('shift') && dir === 1) this.changeView('inst')
+        return
       case 'inst':
       case 'table': {
         const isInst = this.view === 'inst'
-        if (has('shift') && side === 1 && isInst) {
+        if (has('shift') && dir === -1 && isInst) this.changeView('instmods')
+        else if (has('shift') && side === 1 && isInst) {
           this.table = this.inst
           this.changeView('table')
         } else if (has('shift') && side === -1) {
