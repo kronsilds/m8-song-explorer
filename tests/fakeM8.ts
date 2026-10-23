@@ -26,6 +26,8 @@ type View = 'song' | 'chain' | 'phrase' | 'inst' | 'instmods' | 'table' | 'scale
 
 export const SYNC_OUT_VALUES = ['OFF', 'CLOCK', 'TRANSPORT', 'CLOCK+TRANSP', 'TRANSPORT+SPP', 'CLK+TRANSP+SPP']
 
+const channelText = (channel: number): string => (channel === 0 ? 'ALL' : String(channel).padStart(2, '0'))
+
 export interface FakeOptions {
   /** Reads after a view change that return a half-drawn screen (title only). */
   partialReads?          : number
@@ -58,6 +60,9 @@ export class FakeM8 implements M8Port {
     y: 5
   }
   syncOut         = 0
+  /** CC MAP CHAN and SONG ROW CUE CHAN: 0 is ALL, else the channel. */
+  ccMapChan       = 0
+  songRowCueChan  = 0
   private held    : M8KeyName[] = []
   /** Keys that would edit or play: the explorer must never send them. */
   forbidden       : string[] = []
@@ -158,6 +163,8 @@ export class FakeM8 implements M8Port {
         lines[3] = ' MIDI SETTINGS'
         lines[6] = ` SYNC IN${' '.repeat(7)}OFF`
         lines[7] = ` SYNC OUT${' '.repeat(6)}${SYNC_OUT_VALUES[this.syncOut]}`
+        lines[8] = ` CC MAP CHAN${' '.repeat(4)}${channelText(this.ccMapChan)}`
+        lines[9] = ` SONGROW CUE CH ${channelText(this.songRowCueChan)}`
         break
       default:
         lines    = Array.from({ length: SCREEN_HEIGHT }, () => '')
@@ -300,10 +307,12 @@ export class FakeM8 implements M8Port {
 
   /** Edit held + Right steps the SYNC OUT value under the cursor (on the Right press). */
   async keyDown(keys: M8KeyName[]): Promise<void> {
-    const pressed   = keys.filter((k) => !this.held.includes(k))
-    this.held       = [...keys]
-    const onSyncOut = this.view === 'midisettings' && this.free.y === 7 && this.free.x === 15
-    if (pressed.includes('right') && keys.includes('edit') && onSyncOut) this.syncOut = Math.min(SYNC_OUT_VALUES.length - 1, this.syncOut + 1)
+    const pressed = keys.filter((k) => !this.held.includes(k))
+    this.held     = [...keys]
+    const onValue = (y: number, x: number) => this.view === 'midisettings' && this.free.y === y && this.free.x === x
+    const side    = pressed.includes('right') ? 1 : pressed.includes('left') ? -1 : 0
+    if (side === 1 && keys.includes('edit') && onValue(7, 15)) this.syncOut = Math.min(SYNC_OUT_VALUES.length - 1, this.syncOut + 1)
+    else if (side && keys.includes('edit') && onValue(8, 16)) this.ccMapChan = Math.max(0, Math.min(16, this.ccMapChan + side))
     else if (pressed.some((k) => k !== 'edit')) this.forbidden.push(`${this.view}: hold ${keys.join('+')}`)
   }
 

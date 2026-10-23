@@ -8,7 +8,7 @@ import { clientPort, type M8Port, withTimeout } from '../m8/port'
 import { absorbScreen, deviceFocus, isOtherSong } from '../m8/screen/liveScreen'
 import { describeSelection } from '../m8/semantics'
 import { exploreSong } from '../m8/tasks/explorer'
-import { readMidiSync, SYNC_OUT_TARGET, setMidiSyncOut } from '../m8/tasks/midiSync'
+import { type ChannelPlan, planChannel, readMidiSync, SYNC_OUT_TARGET, setCcMapChannel, setMidiSyncOut } from '../m8/tasks/midiSync'
 import { deviceTargetOf, showOnDevice } from '../m8/tasks/showOnDevice'
 import { readDeviceTheme } from '../m8/tasks/themeReader'
 import { demoSong } from '../model/demo'
@@ -45,14 +45,34 @@ const CONFIRM_EXPLORE =
   'The M8 will walk through the Song, Chain, Phrase, Instrument, Table, Scale and Groove views to read the whole song. It only presses arrows, Shift+arrows and Option+arrows, so nothing is edited; at the end it opens Project › MIDI SETTINGS (Edit on that entry) to check the sync setting. Keep your hands off the M8 until it finishes; Cancel stops it and keeps what was read.'
 const CONFIRM_THEME   =
   'The M8 will open Project › System Settings › Theme (Edit is pressed on SYSTEM SETTINGS and on EDIT THEME, after checking the cursor is on them), read the 13 colours, then leave with Option and go back to the current view.'
-const confirmSyncOut  = (current: string) =>
-  `SYNC OUT is ${current} in this song. Set it to ${SYNC_OUT_TARGET}? With clock, transport and song position the explorer places every track the moment Play is pressed and follows it exactly. It changes the song's MIDI Settings (Edit held + Right on SYNC OUT); the change is kept only if you save the song on the M8.`
+
+/** The MIDI Settings changes the explorer asks for: SYNC OUT (when `syncOut` is set) and CC MAP CHAN (when the plan sets it). */
+function confirmMidiSettings(syncOut: string | null, plan: ChannelPlan, sync: MidiSync, explorerChannel: number): string {
+  const parts: string[] = []
+  if (syncOut != null) {
+    parts.push(
+      `SYNC OUT is ${syncOut} in this song. It would be set to ${SYNC_OUT_TARGET}: with clock, transport and song position the explorer places every track the moment Play is pressed and follows it exactly.`,
+    )
+  }
+  if (plan.kind === 'set') {
+    const cue = sync.songRowCueChan ?? 'unknown'
+    parts.push(
+      plan.reason === 'all'
+        ? `CC MAP CHAN is ALL on the M8, so the mute / solo notes cannot reach a single track. It would be set to channel ${plan.channel}, the channel of the explorer's mute / solo buttons${plan.moved ? ` (not ${explorerChannel}: SONG ROW CUE CHAN already uses it, and is left as it is)` : ''}.`
+        : `CC MAP CHAN and SONG ROW CUE CHAN are both ${cue}, so the mute / solo notes would cue song rows. SONG ROW CUE CHAN is left as it is; CC MAP CHAN would be set to channel ${plan.channel}.`,
+    )
+    if (plan.channel !== explorerChannel) parts.push(`The explorer's mute / solo channel changes from ${explorerChannel} to ${plan.channel}.`)
+  }
+  parts.push("This changes the song's MIDI Settings (Edit held + Right / Left on the value); the changes are kept only if you save the song on the M8.")
+  return parts.join(' ')
+}
 
 export class ExplorerApp {
   private readonly hud      : Hud
   private readonly world    : World
   private readonly theme    : ThemeColorsSource
   private readonly playback : PlaybackFeed
+  private readonly mixer    : TrackMixer
   private readonly cursor   = new DeviceCursor()
   private model             : SongModel
 
@@ -100,7 +120,7 @@ export class ExplorerApp {
     this.refreshPalette()
     this.bindSelection()
     this.applyViewPreferences()
-    new TrackMixer(this.world, this.hud)
+    this.mixer        = new TrackMixer(this.world, this.hud)
     const commands    = this.commands()
     this.hud.onAction = (action) => commands[action]()
     bindKeyboard(this.keyCommands(commands), (fromCursor) => this.play(fromCursor))
@@ -507,19 +527,50 @@ export class ExplorerApp {
       console.info('[sync] not read:', messageOf(error))
       return null
     }
-    if (sync.syncOut === SYNC_OUT_TARGET) return sync
+    const plan    = planChannel(sync, this.mixer.channel)
+    const syncDue = sync.syncOut !== SYNC_OUT_TARGET
+    if (plan.kind === 'adopt' && plan.channel !== this.mixer.channel) {
+      this.mixer.useChannel(plan.channel)
+      this.hud.notify(`Mute / solo channel set to ${plan.channel}, the M8's CC MAP CHAN`)
+    }
+    if (!syncDue && plan.kind !== 'set') return sync
     this.hud.hideProgress()
-    if (!(await this.hud.confirm('MIDI SYNC', confirmSyncOut(sync.syncOut ?? 'unknown'), 'Set it'))) return sync
+    const message = confirmMidiSettings(syncDue ? (sync.syncOut ?? 'unknown') : null, plan, sync, this.mixer.channel)
+    if (!(await this.hud.confirm('MIDI SETTINGS', message, 'Apply'))) return sync
+    let result = sync
+    if (syncDue) result = await this.applySyncOut(port, result)
+    if (plan.kind === 'set') result = await this.applyCcMapChannel(port, result, plan.channel)
+    return result
+  }
+
+  private async applySyncOut(port: M8Port, sync: MidiSync): Promise<MidiSync> {
     this.hud.showProgress(`Setting SYNC OUT to ${SYNC_OUT_TARGET}…`, null)
     try {
       const syncOut = await setMidiSyncOut(port, { log: logTo('[sync]') })
       this.hud.notify(`SYNC OUT set to ${syncOut} (save the song on the M8 to keep it)`)
       return {
-        syncIn: sync.syncIn,
+        ...sync,
         syncOut
       }
     } catch (error) {
       this.hud.notify(`Could not set SYNC OUT: ${messageOf(error)}`, 'warn', 8000)
+      return sync
+    }
+  }
+
+  /** Sets the M8's CC MAP CHAN, then the explorer's mute / solo channel follows it. */
+  private async applyCcMapChannel(port: M8Port, sync: MidiSync, channel: number): Promise<MidiSync> {
+    this.hud.showProgress(`Setting CC MAP CHAN to ${channel}…`, null)
+    try {
+      const ccMapChan = await setCcMapChannel(port, channel, { log: logTo('[sync]') })
+      this.mixer.useChannel(channel)
+      this.hud.notify(`CC MAP CHAN set to ${ccMapChan}, mute / solo use it (save the song on the M8 to keep it)`)
+      return {
+        ...sync,
+        ccMapChan
+      }
+    } catch (error) {
+      this.hud.notify(`Could not set CC MAP CHAN: ${messageOf(error)}`, 'warn', 8000)
       return sync
     }
   }

@@ -50,7 +50,7 @@ const PANEL_GLIDE_RATE         = 15
 /** Seconds a panel takes to turn to its other face. */
 const FLIP_SECONDS             = 0.10
 /** Part of the flip the turn off the wall takes, and where the crossfade of the faces starts (it overlaps the end of the turn). */
-const TURN_END                 = 90.0
+const TURN_END                 = 180.0
 const FADE_START               = 0.0
 /** The tab above a panel's top-right corner that turns it over: its width (characters) and height. */
 const TAB_CHARS                = 8
@@ -126,6 +126,8 @@ interface PanelView {
   face      : InstrumentFace | null
   faceView  : InstrumentFaceView | null
   tab       : PanelTab | null
+  /** Width of the card as last drawn. */
+  width     : number
 }
 
 /** The tab that turns a panel over, labelled with the face it turns to. */
@@ -391,7 +393,8 @@ export class TrackView {
       bars      : barMesh.material as MeshBasicMaterial,
       face,
       faceView  : null,
-      tab       : face ? this.buildTab(group) : null
+      tab       : face ? this.buildTab(group) : null,
+      width     : TABLE_WIDTH
     }
     this.panels.push(view)
     this.panelViews.set(panel, view)
@@ -525,6 +528,21 @@ export class TrackView {
     return this.header.covers(y)
   }
 
+  /**
+   * The far right ends of the panels turned out of the wall (an instrument face sticks out
+   * past the wall's end), in the track group's coordinates.
+   */
+  turnedPanelEnds(): Vector3[] {
+    const ends: Vector3[] = []
+    this.wall.updateMatrix()
+    for (const view of this.panels) {
+      if (!view.group.visible || view.panel.flip < 0.05) continue
+      view.group.updateMatrix()
+      ends.push(new Vector3(view.width, 0, 0).applyMatrix4(view.group.matrix).applyMatrix4(this.wall.matrix))
+    }
+    return ends
+  }
+
   // ---------------------------------------------------------------------------
   // Panels and links
 
@@ -547,6 +565,7 @@ export class TrackView {
       view.group.rotation.y = -pose.turn * WALL_ANGLE
       view.group.visible    = alpha > 0.01
       const width           = this.cardSize(view, pose.fade)
+      view.width            = width
       this.updateTable(view, textOn, alpha, pose.fade)
       this.updateInstrument(view, textOn, alpha, pose.fade)
       this.updateTab(view, textOn, alpha, width)

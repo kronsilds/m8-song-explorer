@@ -510,6 +510,7 @@ body,
   border: 1px solid var(--line);
   border-radius: 10px;
   backdrop-filter: blur(12px);
+  z-index: 10;
 }
 
 .progress-text {
@@ -550,7 +551,7 @@ body,
 .toast {
   position: absolute;
   left: 50%;
-  top: 70px;
+  bottom: 44px;
   transform: translateX(-50%);
   max-width: min(640px, calc(100% - 20px));
   padding: 9px 14px;
@@ -560,6 +561,12 @@ body,
   border-radius: 8px;
   backdrop-filter: blur(12px);
   line-height: 1.5;
+  z-index: 10;
+}
+
+/* While the exploration progress is up, the toast sits just above it. */
+.progress:not(.hidden) ~ .toast {
+  bottom: 120px;
 }
 
 .toast[data-kind='warn'] {

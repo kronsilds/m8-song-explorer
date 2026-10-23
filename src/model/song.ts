@@ -101,8 +101,11 @@ export interface ObservedColumnColors {
 export type ObservedColors = Record<string, Record<string, ObservedColumnColors>>
 
 export interface MidiSync {
-  syncIn : string | null
-  syncOut: string | null
+  syncIn         : string | null
+  syncOut        : string | null
+  /** CC MAP CHAN: the channel the mute / solo notes need. */
+  ccMapChan?     : string | null
+  songRowCueChan?: string | null
 }
 
 export interface SongModel {

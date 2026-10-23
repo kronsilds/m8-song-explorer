@@ -26,6 +26,17 @@ export class TrackMixer {
     window.addEventListener('pagehide', () => this.midi.releaseAll())
   }
 
+  /** The channel the mute / solo notes go out on. */
+  get channel(): number {
+    return this.midi.channel
+  }
+
+  /** Switches to `channel` and shows it in the picker (the M8's CC MAP CHAN was read or set to it). */
+  useChannel(channel: number): void {
+    this.hud.setChannel(channel)
+    this.changeChannel(channel)
+  }
+
   /** The notes held on the old channel are released. */
   private changeChannel(channel: number): void {
     this.midi.channel = channel

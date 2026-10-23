@@ -33,6 +33,15 @@ instruments → tables) and shows it as a 3D tracker:
   keeps its column while you scroll, so the grid does not reshuffle.
 - **Moving the selection** with the arrows onto a velocity / instrument / FX cell or a table turns the view and
   opens the wall; back on a note it turns back (the same rule as Follow M8).
+- **Camera**: Turn and Side centre the open track's column and wall (the panel columns in use)
+  and stand back as far as they need, within readable distances: the same framing for every
+  track. Front centres on all the tracks and slides only as far as it takes to show the open
+  one; Follow M8 and the arrows do the same when the cell leaves the screen. A drag that turns
+  the view opens the track it starts on and turns around it, bringing it to the middle. Panning
+  moves parallel to the tracks, so the zoom never changes. Turned, each track has its stretch of
+  the pan, from where it is centred to halfway to its neighbours (longer when part of its wall is
+  off screen); panning out of it opens the neighbour, the same either way. Ctrl+wheel zooms toward
+  the pointer.
 - **Chain transpose and scales**: a phrase a chain row transposes shows the transpose under its
   number in the tree (`+5`, `-12`), and its notes as played in the transpose colour: the written
   note moved by the chain and project TRANSPOSE, then brought into the track's scale. **Played
@@ -79,7 +88,7 @@ instruments → tables) and shows it as a 3D tracker:
 | `0`, Home | All | Whole song, all tracks |
 | `1` | Front | Tracker view |
 | `2` | Turn | Turn to see FX and tables |
-| `3` | Side | Look along the wall |
+| `3` | Side | Face the open wall square |
 | `E` | Open all | Open the walls of every track |
 | `X` | Dramatic | Skewed, tilted camera angles for front, turn, side and the turns toward a wall |
 | `T` | Played notes | Transposed phrases show the notes they play |

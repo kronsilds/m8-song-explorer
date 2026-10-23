@@ -10,10 +10,16 @@ export interface PointerTarget {
   readonly rig: CameraRig
   /** World units per screen pixel at the goal distance. */
   unitsPerPixel(): number
-  /** The view was panned sideways: the track in its middle may have changed. */
+  /** Zooms by `factor` (distance) toward the point under the pointer. */
+  zoomAt(clientX: number, clientY: number, factor: number): void
+  /** The view was panned sideways: the track in focus may have changed. */
   panned(): void
+  /** A turn by hand starts from a press at this pointer position. */
+  turnStarted(clientX: number, clientY: number): void
   /** The view was turned by hand, away from any preset. */
   turnedByHand(): void
+  /** The turn by hand ended. */
+  turnEnded(): void
   invalidate(): void
   interacted(): void
   buttonAt(clientX: number, clientY: number): SceneButton | null
@@ -30,18 +36,30 @@ const YAW_PER_PX            = 0.0055
 const PITCH_PER_PX          = 0.004
 const ZOOM_PER_WHEEL_UNIT   = 0.0022
 const SCROLL_PER_WHEEL_UNIT = 0.9
+/** Looking almost along the tracks, a pan speeds up no more than this allows. */
+export const PAN_MIN_COS    = 0.35
 /** Wheel delta units: pixels, lines, pages. */
 const WHEEL_UNIT_PX         = [1, 16, 400]
 
 interface Drag {
   x     : number
   y     : number
+  /** Where the press was. */
+  startX: number
+  startY: number
   button: number
   moved : boolean
   pan   : boolean
 }
 
 export function bindPointerControls(element: HTMLElement, target: PointerTarget): void {
+  /**
+   * World x per pixel of a sideways pan. A pan moves along the tracks (parallel to their plane),
+   * so the distance to them and the zoom never change; turned, it goes further per pixel so the
+   * view still keeps up with the pointer.
+   */
+  const alongTracks = (yaw: number) => target.unitsPerPixel() / Math.max(PAN_MIN_COS, Math.cos(yaw))
+
   let drag        : Drag | null = null
   let pendingHover: { x: number; y: number } | null = null
 
@@ -53,6 +71,8 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
     drag = {
       x     : event.clientX,
       y     : event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
       button: event.button,
       moved : false,
       pan   : event.button !== 0 || event.shiftKey
@@ -81,15 +101,14 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
     const dx = event.clientX - current.x
     const dy = event.clientY - current.y
     if (!current.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+    if (!current.moved && !current.pan) target.turnStarted(current.startX, current.startY)
     current.moved = true
     current.x     = event.clientX
     current.y     = event.clientY
     const goal    = target.rig.goal
     if (current.pan) {
-      const scale   = target.unitsPerPixel()
-      goal.target.x -= dx * scale * Math.cos(goal.yaw)
-      goal.target.z += dx * scale * Math.sin(goal.yaw)
-      goal.target.y += dy * scale
+      goal.target.x -= dx * alongTracks(goal.yaw)
+      goal.target.y += dy * target.unitsPerPixel()
       target.panned()
     } else {
       goal.yaw   -= dx * YAW_PER_PX
@@ -102,6 +121,7 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
   element.addEventListener('pointerup', (event) => {
     const released = drag
     drag           = null
+    if (released?.moved && !released.pan) target.turnEnded()
     if (!released || released.moved || released.button !== 0) return
     const button = target.buttonAt(event.clientX, event.clientY)
     if (button) target.pressButton(button)
@@ -123,11 +143,11 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
       const goal = target.rig.goal
       const unit = WHEEL_UNIT_PX[event.deltaMode] ?? 1
       if (event.ctrlKey || event.metaKey || event.altKey) {
-        goal.distance *= Math.exp(event.deltaY * unit * ZOOM_PER_WHEEL_UNIT)
+        target.zoomAt(event.clientX, event.clientY, Math.exp(event.deltaY * unit * ZOOM_PER_WHEEL_UNIT))
       } else {
-        const scale   = target.unitsPerPixel() * SCROLL_PER_WHEEL_UNIT
-        goal.target.y -= event.deltaY * unit * scale
-        goal.target.x += (event.shiftKey ? event.deltaY : event.deltaX) * unit * scale
+        const scale   = SCROLL_PER_WHEEL_UNIT
+        goal.target.y -= event.deltaY * unit * scale * target.unitsPerPixel()
+        goal.target.x += (event.shiftKey ? event.deltaY : event.deltaX) * unit * scale * alongTracks(goal.yaw)
         if (event.shiftKey || event.deltaX) target.panned()
       }
       target.invalidate()

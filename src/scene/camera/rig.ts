@@ -45,8 +45,8 @@ export class CameraRig {
     goal.yaw               = MathUtils.clamp(goal.yaw, YAW_LIMITS[0], YAW_LIMITS[1])
     goal.pitch             = MathUtils.clamp(goal.pitch, PITCH_LIMITS[0], PITCH_LIMITS[1])
     goal.distance          = MathUtils.clamp(goal.distance, this.minDistance, this.maxDistance)
-    goal.target.x          = MathUtils.clamp(goal.target.x, bounds.minX, bounds.maxX)
     goal.target.y          = MathUtils.clamp(goal.target.y, bounds.minY, bounds.maxY)
+    goal.target.x          = MathUtils.clamp(goal.target.x, bounds.minX, bounds.maxX)
   }
 
   /** Puts the camera on its goal at once. */

@@ -15,11 +15,11 @@ export interface CameraAngles {
 
 const degrees                 = MathUtils.degToRad
 
-/** Yaw and pitch of each preset, in degrees. */
+/** Yaw and pitch of each preset, in degrees. Side faces the open wall square (it is turned 56° from the front, see WALL_ANGLE). */
 const PRESET_ANGLES           : Record<TurnPreset, [yaw: number, pitch: number]> = {
   front: [0, 0],
-  angle: [40, 5],
-  side : [64, 3]
+  angle: [30, 5],
+  side : [60, 3]
 }
 
 /** Below this yaw the view counts as facing the front (the walls closed). */

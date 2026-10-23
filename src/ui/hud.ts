@@ -38,7 +38,7 @@ const element           = <K extends keyof HTMLElementTagNameMap>(tag: K, classN
 const HELP_HTML         = `
   <div class="help-title">NAVIGATE</div>
   <dl>
-    <dt>Drag</dt><dd>turn around the song (reveals FX and tables)</dd>
+    <dt>Drag</dt><dd>turn around the song: the track under the pointer opens (FX and tables)</dd>
     <dt>Right drag · Shift drag</dt><dd>pan</dd>
     <dt>Wheel</dt><dd>scroll the song · Ctrl/pinch zooms</dd>
     <dt>Click · Double click</dt><dd>select · focus</dd>
@@ -155,7 +155,7 @@ export class Hud {
       ['overview', 'All', 'Whole song, all tracks (0)'],
       ['front', 'Front', 'Tracker view (1)'],
       ['angle', 'Turn', 'Turn to see FX and tables (2)'],
-      ['side', 'Side', 'Look along the wall (3)'],
+      ['side', 'Side', 'Face the open wall (3)'],
       ['expand', 'Open all', 'Open the walls of every track (E)'],
     )
     group(['help', '?', 'Keys and mouse'])
