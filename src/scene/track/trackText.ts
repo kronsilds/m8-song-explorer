@@ -29,7 +29,7 @@ export class TrackTextBuilder {
   /**
    * Chain and phrase labels, notes and instruments of one phrase instance. A transposed phrase
    * gets its transpose under the phrase number ('+5', '-12'; the third character takes the
-   * bracket's place) and, with playedNotes, the notes it plays in the transpose colour.
+   * bracket's place) and, with playedNotes, the notes it plays in the transpose colour (or the scale colour when only the scale moved them).
    */
   frontText(instance: PhraseInstance): RichText {
     const { palette, layout } = this
@@ -47,7 +47,7 @@ export class TrackTextBuilder {
       const played = this.playedNotes
         ? playedNote(model, step?.note ?? null, semitones, instruments?.[s], layout.scales.at(instance.track, instance.row + s))
         : null
-      if (played?.shift && step?.note && played.note !== step.note) rich.add(played.note ?? '???', palette.transpose)
+      if (played && step?.note && played.sounding !== step.note) rich.add(played.sounding ?? '???', played.shift ? palette.transpose : palette.quantized)
       else addValue(rich, step?.note ?? '---', step?.note != null, palette.phrase.note)
       rich.add(' ', palette.empty)
       addValue(rich, hex2(step?.inst ?? null), step?.inst != null, palette.phrase.inst)

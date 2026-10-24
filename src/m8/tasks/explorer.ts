@@ -370,7 +370,7 @@ class SongExplorer {
     return this.readEachItem({
       view    : 'scale',
       phase   : 'scales',
-      ids     : [...new Set([this.model.projectScale ?? 0, ...referencedScales(this.model)])].sort((a, b) => a - b),
+      ids     : [...new Set([this.model.projectScale ?? 0, ...referencedScales(this.model), ...this.instrumentScales()])].sort((a, b) => a - b),
       optional: true,
       read    : async (view, id) => {
         const scale = readScale(view)
@@ -378,6 +378,19 @@ class SongExplorer {
         return view
       }
     })
+  }
+
+  /** The scales Hypersynth instruments pick with their SCALE parameter (00 uses the song / track scale). */
+  private instrumentScales(): number[] {
+    const ids: number[] = []
+    for (const instrument of Object.values(this.model.instruments)) {
+      if (instrument.type !== 'HYPERSYN') continue
+      for (const line of instrument.lines) {
+        const id = /^SCALE\s+([0-9A-F]{2})/i.exec(line)?.[1]
+        if (id && Number.parseInt(id, 16) > 0) ids.push(Number.parseInt(id, 16) & 0x0f)
+      }
+    }
+    return ids
   }
 
   /** The project's groove and the ones GRV / GGR point at: step lengths for the playheads. */

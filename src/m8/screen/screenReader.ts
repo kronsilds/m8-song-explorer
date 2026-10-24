@@ -91,11 +91,14 @@ export function viewOf(screen: M8Screen): ScreenView {
   }
 }
 
-/** What has to stay unchanged between two reads for a screen to count as drawn. */
+/**
+ * What has to stay unchanged between two reads for a screen to count as drawn. The '>' play
+ * markers come and go with the notes of a song that plays (Scale view: 'D >ON'), so they do not count.
+ */
 export const stableContent = (screen: M8Screen): string =>
   screen.lines
     .slice(TITLE_ROW, LAST_CONTENT_ROW + 1)
-    .map(wideContentOf)
+    .map((line) => wideContentOf(line).replaceAll('>', ' '))
     .join('\n')
 
 /** The screen row grid row `rowIndex` is drawn on, null when it is not on screen. */
@@ -241,7 +244,10 @@ export interface ProjectInfo {
   tempo    : number | null
   /** TRANSPOSE as the raw byte. */
   transpose: number | null
-  /** SCALE: the number and the key in front of the scale name ('00C CHROMATIC'). */
+  /**
+   * SCALE: the byte in front of the scale name ('00C CHROMATIC', '20D CHROMATIC'). Its low digit is
+   * the scale number (0-F) and its high digit the key (0 = C, 1 = C#, 2 = D ... B = B), as in SCA.
+   */
   scale    : number | null
   key      : number | null
   /** GROOVE: the number in front of the groove name ('00DEFAULT'). */
@@ -264,12 +270,13 @@ export function readProject(screen: M8Screen): ProjectInfo | null {
   const tempo        = Number.parseFloat(rowLabelled(lines, 'TEMPO')?.slice(PROJECT_VALUE_X, 19) ?? '')
   const scale        = projectValue('SCALE')
   const key          = /^[0-9A-F]{2}([A-G]#?)/.exec(scale)?.[1]
+  const scaleByte    = leadingHex(scale)
   return {
     name     : nameOf(nameLine.slice(PROJECT_VALUE_X, 25)),
     tempo    : Number.isNaN(tempo) ? null : tempo,
     transpose: leadingHex(projectValue('TRANSPOSE')),
-    scale    : leadingHex(scale),
-    key      : key ? pitchClassOfName(key) : null,
+    scale    : scaleByte == null ? null : scaleByte & 0x0f,
+    key      : key ? pitchClassOfName(key) : scaleByte == null ? null : scaleByte >> 4,
     groove   : leadingHex(projectValue('GROOVE'))
   }
 }
@@ -311,14 +318,20 @@ export function readGroove(view: ScreenView): Groove | null {
  */
 export function readScale(view: ScreenView): Scale | null {
   if (view.kind !== 'scale' || view.id == null) return null
-  const lines = contentLines(view.screen).map((line) => line.toUpperCase())
-  const notes : Scale['notes'] = []
+  const lines   = contentLines(view.screen).map((line) => line.toUpperCase())
+  const keyName = /^KEY\s+([A-G]#?)/.exec(rowLabelled(lines, 'KEY') ?? '')?.[1]
+  const key     = keyName ? pitchClassOfName(keyName) : null
+  const notes   : Scale['notes'] = []
   for (const line of lines) {
-    const match = /^([A-G])([-# ])\s*(ON|OFF|--)(?:\s*([+-]?\d+\.\d+))?/.exec(line)
+    // While the song plays the M8 draws a '>' before the EN cell of the note being played ('D >ON 00.00').
+    const match = /^([A-G])([-# ])\s*>?\s*(ON|OFF|--)(?:\s*([+-]?\d+\.\d+))?/.exec(line)
     if (!match) continue
     const [, letter, accidental, enabled, offsetText] = match
-    const interval                                    = pitchClassOfName(accidental === '#' ? `${letter}#` : letter)
-    if (interval < 0 || notes[interval]) continue
+    const pitch                                       = pitchClassOfName(accidental === '#' ? `${letter}#` : letter)
+    if (pitch < 0) continue
+    // The rows are named from the key (D, D#, E ... for key D): the scale is stored as intervals from it.
+    const interval = (pitch - (key ?? 0) + 12) % 12
+    if (notes[interval]) continue
     const offset    = offsetText != null ? Number.parseFloat(offsetText) : null
     notes[interval] = {
       enabled: enabled === 'ON',
@@ -326,13 +339,12 @@ export function readScale(view: ScreenView): Scale | null {
     }
   }
   if (notes.filter(Boolean).length < 12) return null
-  const key  = /^KEY\s+([A-G]#?)/.exec(rowLabelled(lines, 'KEY') ?? '')?.[1]
   const name = /^NAME\s+(.*)$/.exec(rowLabelled(lines, 'NAME') ?? '')?.[1] ?? ''
   return {
     id  : view.id,
     name: nameOf(name),
     notes,
-    key : key ? pitchClassOfName(key) : null
+    key
   }
 }
 

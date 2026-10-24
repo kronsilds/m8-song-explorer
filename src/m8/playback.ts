@@ -197,24 +197,30 @@ export class PlaybackTracker {
   }
 
   /**
-   * MIDI Start / Continue: the song plays from Song Position `spp` (sixteenths from the song
-   * start; Start means 0). On the M8 that is the timeline row the explorer uses for the start
-   * of a song row (Play on song row 07 sent 448 = 7 x 64), so every track playing there is
-   * placed at once, its first step starting on the next clock tick. Returns false when no song
-   * row starts at that position (the screen markers take over).
+   * MIDI Start / Continue: the song plays from the cursor's song row. Every track has its own
+   * playhead and loops its own run of chains: an empty cell ends the run and the track goes
+   * back to the run's first chain. A track with an empty cell on the start row plays the last
+   * chain above it. The Song Position counts from the start of the *cursor track's* run, up to
+   * the cursor row (a cell without a chain counts the whole run: 2B, 2E and 33 sent 0 right
+   * after empty rows, 2C 128, and the empty cells below a run all sent its length), so it does
+   * not say which row plays: the song row the cursor is on does, and every track is placed
+   * there at once, its first step starting on the next clock tick. Without a cursor, a position
+   * only one song row starts at (counted from the last empty row, as for a song with one track)
+   * is used. Returns false when no row is known (the screen markers take over).
    */
   transportStart(spp: number, ms: number): boolean {
     this.transportReset()
     this.transportRunning = true
-    const band            = this.timeline.bands.find((b) => b.row === spp)
-    if (!band) return false
+    const startRow        = this.context?.songRow ?? this.rowAtPosition(spp)
+    if (startRow == null) return false
     const now  = this.now(ms)
     const tick = this.unitsPerTick()
     for (let track = 0; track < TRACKS; track += 1) {
-      if (this.chainSteps(band.songRow, track) === 0) continue
+      const songRow = this.lastChainRow(startRow, track)
+      if (songRow == null || this.chainSteps(songRow, track) === 0) continue
       // MIDI: after Start / Continue, the song moves on the first clock that follows.
       this.anchors[track] = {
-        songRow : band.songRow,
+        songRow,
         step    : 0,
         earliest: now + 0.5 * tick,
         latest  : now + 1.5 * tick
@@ -223,6 +229,18 @@ export class PlaybackTracker {
     this.playing      = true
     this.lastMarkerAt = ms
     return true
+  }
+
+  /** The last song row at or above `row` where a track has a chain, null when it has none. */
+  private lastChainRow(row: number, track: number): number | null {
+    for (let songRow = row; songRow >= 0; songRow -= 1) if (this.model.song[songRow]?.[track] != null) return songRow
+    return null
+  }
+
+  /** The one song row a Song Position names when the cursor is unknown (null when none or several do). */
+  private rowAtPosition(spp: number): number | null {
+    const starts = this.timeline.bands.filter((b) => !b.blank && b.row - b.block === spp)
+    return starts.length === 1 ? starts[0].songRow : null
   }
 
   /** MIDI Start or Stop: positions start over (the clock itself keeps running). */

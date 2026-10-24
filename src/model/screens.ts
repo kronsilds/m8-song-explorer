@@ -386,7 +386,7 @@ export function scaleScreen(scale: Scale): string[] {
           [3, '--'],
           [6, '-- --'],
         ]
-    lines[FIRST_CONTENT_ROW + 1 + interval] = screenLine([[0, PITCH_NAMES[interval]], ...cells])
+    lines[FIRST_CONTENT_ROW + 1 + interval] = screenLine([[0, PITCH_NAMES[((scale.key ?? 0) + interval) % 12]], ...cells])
   })
   lines[FIRST_CONTENT_ROW + 13] = screenLine([
     [0, 'TUNE'],

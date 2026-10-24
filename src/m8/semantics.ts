@@ -213,17 +213,19 @@ class PhraseCellDescriber {
     if (effectiveInstrument != null) facts.unshift(['Instrument playing', instrumentLabel(model, effectiveInstrument)])
     return {
       path,
-      title: this.stepTitle(selection, played.shift, played.note),
+      title: this.stepTitle(selection, played),
       parts,
       facts
     }
   }
 
-  private stepTitle(selection: StepSelection, shift: number, playedText: string | null): string {
+  private stepTitle(selection: StepSelection, played: ReturnType<typeof playedNote>): string {
     const step = this.phrase?.steps[selection.step]
     switch (selection.column) {
       case 'note': {
-        const moved = shift && noteNumber(step?.note ?? null) != null ? ` → ${playedText ?? 'out of range'}` : ''
+        const changed = noteNumber(step?.note ?? null) != null && played.sounding !== step?.note
+        // A note only the scale moved (no transpose) says so.
+        const moved   = changed ? ` → ${played.sounding ?? 'out of range'}${played.shift ? '' : ' (scale)'}` : ''
         return `Note ${step?.note ?? '---'}${moved}`
       }
       case 'vel':
@@ -241,11 +243,19 @@ class PhraseCellDescriber {
   private addNoteFacts(writtenText: string | null, written: number, played: ReturnType<typeof playedNote>): void {
     const { facts } = this
     const degree    = this.degreeText(written, played)
-    const how       = [`${writtenText} ${formatTranspose(played.shift)}`, played.snapped ? `scale ${formatTranspose(played.snapped)}` : null]
+    const detuned   = Math.trunc(played.detune)
+    const how       = [
+      played.shift ? `${writtenText} ${formatTranspose(played.shift)}` : writtenText,
+      played.snapped ? `scale ${formatTranspose(played.snapped)}` : null,
+      detuned ? `scale offset ${formatTranspose(detuned)}` : null
+    ]
       .filter(Boolean)
       .join(', ')
+    if (played.snapped && !played.shift && played.transposes) {
+      facts.push(['Quantized', `${writtenText} is not in ${scaleLabel(this.model, played.scale)}: no transpose, the scale moves it ${formatTranspose(played.snapped)} st up to ${played.note ?? 'out of range'}`])
+    }
     if (this.transposed && !played.transposes) facts.push(['Plays', `${writtenText} (instrument TRANSP. OFF: not transposed)`])
-    else if (played.shift) facts.push(['Plays', `${played.note ?? 'out of range'} (${how})${degree ? ` · ${degree}` : ''}`])
+    else if (played.shift || played.snapped || detuned) facts.push(['Plays', `${played.sounding ?? 'out of range'} (${how})${degree ? ` · ${degree}` : ''}`])
     else if (degree) facts.push(['Degree', degree])
     if (played.detune) facts.push(['Scale detune', `${played.detune > 0 ? '+' : ''}${played.detune.toFixed(2)} st`])
   }

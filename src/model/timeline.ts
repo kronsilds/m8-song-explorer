@@ -25,6 +25,10 @@ export interface SongBand {
   length : number
   /** Chain per track, null for an empty cell. */
   chains : (number | null)[]
+  /** Every cell is empty: the M8 stops here and loops the block above. */
+  blank  : boolean
+  /** First timeline row of the block this row belongs to (the rows after the last blank row; a blank row ends its block). */
+  block  : number
 }
 
 export interface Timeline {
@@ -47,6 +51,7 @@ export function buildTimeline(model: SongModel): Timeline {
   const byPhrase  = new Map<number, PhraseInstance[]>()
   const lastRow   = lastSongRow(model)
   let bandRow     = 0
+  let blockRow    = 0
   for (let songRow = 0; songRow <= lastRow; songRow += 1) {
     const chains     = Array.from({ length: TRACKS }, (_, track) => model.song[songRow]?.[track] ?? null)
     let longestChain = 0
@@ -73,13 +78,17 @@ export function buildTimeline(model: SongModel): Timeline {
       }
     })
     const length = longestChain > 0 ? longestChain * ROWS_PER_PHRASE : EMPTY_BAND_ROWS
+    const blank  = chains.every((chainId) => chainId == null)
     bands.push({
       songRow,
-      row: bandRow,
+      row  : bandRow,
       length,
-      chains
+      chains,
+      blank,
+      block: blockRow
     })
     bandRow += length
+    if (blank) blockRow = bandRow
   }
   return {
     bands,

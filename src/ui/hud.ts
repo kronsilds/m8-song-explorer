@@ -174,7 +174,7 @@ export class Hud {
     section(
       'VIEW',
       ['dramatic', 'Dramatic', 'Skewed, tilted camera angles for front, turn, side and the turns toward a wall (X)'],
-      ['played', 'Played notes', 'Transposed phrases show the notes they play, in the transpose colour, instead of the notes written (T)'],
+      ['played', 'Played notes', 'Notes show what they play instead of what is written: moved by a transpose in the transpose colour, moved only by the scale in the scale colour (T)'],
     )
     section('M8', ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'], this.buildChannelPicker())
     section(

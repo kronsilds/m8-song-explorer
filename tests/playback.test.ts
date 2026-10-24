@@ -36,7 +36,8 @@ function markStep(lines: string[], step: number): string[] {
   return out
 }
 
-const bandRow = (songRow: number) => timeline.bands.find((b) => b.songRow === songRow)?.row as number
+const TRACKS_COUNT = 8
+const bandRow      = (songRow: number) => timeline.bands.find((b) => b.songRow === songRow)?.row as number
 
 /**
  * The device: phrase `phraseId` of the kick track playing from `t0`, read every `pollMs`, the
@@ -290,7 +291,9 @@ describe('PlaybackTracker', () => {
       songRow: 3,
       exact  : true
     })
-    expect(heads.filter(Boolean)).toHaveLength(playing.length)
+    // A track with an empty cell there plays the last chain above it, so no track with a chain above is silent.
+    const silent = model.song[3].map((c, t) => (c == null && !model.song.slice(0, 3).some((row) => row[t] != null) ? t : null)).filter((t) => t != null)
+    expect(heads.filter(Boolean)).toHaveLength(TRACKS_COUNT - silent.length)
     // A position where no song row starts: nothing placed, the screen decides.
     expect(tracker.transportStart(bandRow(3) + 5, ms(700))).toBe(false)
   })
@@ -301,5 +304,93 @@ describe('PlaybackTracker', () => {
     tracker.observe(songWithMarkers([2]), 0)
     tracker.clockTick(6 * 5, 5000, 20) // 5 steps of clock, whatever the wall time says
     expect(tracker.playheads(5000)[0]?.row).toBe(bandRow(2) + 5)
+  })
+})
+
+describe('each track loops its own run of chains', () => {
+  // Rows 0-2 are one run, row 3 is blank, rows 4-5 another run; track 0 has no chain on row 5.
+  const source = demoSong()
+  const blank  = Array(8).fill(null) as (number | null)[]
+  const last   = [...source.song[2]]
+  last[0]      = null
+  const two    = {
+    ...source,
+    song: [source.song[2], source.song[3], source.song[2], blank, source.song[3], last]
+  }
+  const looped = buildTimeline(two)
+  const bandOf = (songRow: number) => looped.bands.find((b) => b.songRow === songRow) as (typeof looped.bands)[number]
+  const ms     = (tick: number) => tick * 20
+  const place  = (cursorRow: number | null, spp: number) => {
+    const tracker   = new PlaybackTracker(two, looped)
+    tracker.context = cursorRow == null ? null : {
+      songRow: cursorRow,
+      track  : 0
+    }
+    tracker.clockTick(600, ms(600), 20)
+    const placed = tracker.transportStart(spp, ms(600))
+    return {
+      placed,
+      rows: tracker.playheads(ms(601) + 1).map((head) => head?.songRow ?? null)
+    }
+  }
+
+  test('a blank row ends a block and the next row starts one', () => {
+    expect(looped.bands.map((b) => b.blank)).toEqual([false, false, false, true, false, false])
+    expect(bandOf(2).block).toBe(0)
+    expect(bandOf(3).block).toBe(0)
+    expect(bandOf(4).block).toBe(bandOf(4).row)
+  })
+
+  test('Play places every track on the cursor row, whatever the Song Position says', () => {
+    expect(place(4, 0).rows).toEqual(two.song[4].map((chain) => (chain == null ? null : 4)))
+    expect(place(5, 123456).rows[1]).toBe(5)
+  })
+
+  test('a track with an empty cell on the start row plays its last chain above it', () => {
+    // Track 0 has no chain on row 5: it plays the one on row 4, the others row 5.
+    expect(place(5, 0).rows[0]).toBe(4)
+  })
+
+  test('Play on a blank row plays the last chain of each track above it', () => {
+    const above = (track: number) => [2, 1, 0].find((row) => two.song[row][track] != null) ?? null
+    expect(place(3, 0).rows).toEqual(two.song[0].map((_, track) => above(track)))
+  })
+
+  test('without a cursor, a position only one song row has places the tracks, else nothing', () => {
+    expect(place(null, 0).placed).toBe(false)
+    expect(place(null, bandOf(2).row).placed).toBe(true)
+  })
+
+  test('a track at the end of its run goes back to the start of the run', () => {
+    const tracker = new PlaybackTracker(two, looped)
+    tracker.clockTick(0, 0, 20)
+    tracker.observe(songWithMarkers([null, 5]), 0)
+    // The last row of the run plays through, then loops to row 4.
+    const total = (songRow: number) => chainLength(two.chains[two.song[songRow][1] as number]) * ROWS_PER_PHRASE * 6
+    const ticks = total(5) + 6
+    tracker.clockTick(ticks, ticks * 20, 20)
+    expect(tracker.playheads(ticks * 20)[1]?.songRow).toBe(4)
+  })
+
+  test('blank rows below an isolated row play that row, in a loop', () => {
+    const solo      = {
+      ...source,
+      song: [source.song[2], blank, source.song[3], blank, blank]
+    }
+    const soloLine  = buildTimeline(solo)
+    const tracker   = new PlaybackTracker(solo, soloLine)
+    tracker.context = {
+      songRow: 4,
+      track  : 0
+    }
+    tracker.clockTick(600, ms(600), 20)
+    expect(tracker.transportStart(0, ms(600))).toBe(true)
+    const rows = (at: number) => tracker.playheads(at).map((head) => head?.songRow ?? null)
+    expect(rows(ms(601) + 1)).toEqual(solo.song[2].map((chain) => (chain == null ? null : 2)))
+    // Past the end of the row it plays again, never on to the blank rows.
+    const chain = chainLength(solo.chains[solo.song[2].find((c) => c != null) as number]) * ROWS_PER_PHRASE * 6
+    const later = 601 + chain + 12
+    tracker.clockTick(later, ms(later), 20)
+    expect(rows(ms(later))).toEqual(solo.song[2].map((c) => (c == null ? null : 2)))
   })
 })

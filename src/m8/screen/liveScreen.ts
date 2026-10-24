@@ -11,6 +11,7 @@ import {
   readInstrumentMods,
   readPhrase,
   readProject,
+  readScale,
   readSongRows,
   readTable,
   type ScreenView,
@@ -118,6 +119,23 @@ function absorbModulators(model: SongModel, view: ScreenView): boolean {
   return true
 }
 
+/**
+ * A scale on the Scale view (its notes, offsets and name); the KEY it shows is the project's
+ * global key, so a change of it is folded in too.
+ */
+function absorbScale(model: SongModel, view: ScreenView): boolean {
+  const scale = readScale(view)
+  if (!scale) return false
+  const scales = { ...model.scales }
+  let changed  = storeIfChanged(scales, scale)
+  if (changed) model.scales = scales
+  if (scale.key != null && scale.key !== model.projectKey) {
+    model.projectKey = scale.key
+    changed          = true
+  }
+  return changed
+}
+
 /** How each view kind folds into the model. */
 const ABSORBERS: Partial<Record<ScreenView['kind'], (model: SongModel, view: ScreenView) => boolean>> = {
   song    : absorbSongRows,
@@ -130,22 +148,34 @@ const ABSORBERS: Partial<Record<ScreenView['kind'], (model: SongModel, view: Scr
     model.grooves = grooves
     return true
   },
+  scale   : absorbScale,
   inst    : absorbInstrument,
   instmods: absorbModulators
 }
 
+/** The Project view's TRANSPOSE, GROOVE and SCALE (number and key). */
+function absorbProject(model: SongModel, project: NonNullable<ReturnType<typeof readProject>>): boolean {
+  let changed = false
+  const set   = <K extends 'projectTranspose' | 'projectGroove' | 'projectScale' | 'projectKey'>(field: K, value: number | null): void => {
+    if (value == null || model[field] === value) return
+    model[field] = value
+    changed      = true
+  }
+  set('projectTranspose', project.transpose)
+  set('projectGroove', project.groove)
+  set('projectScale', project.scale)
+  set('projectKey', project.key)
+  return changed
+}
+
 /**
- * Folds a fully drawn song / chain / phrase / table / instrument / modulators / groove screen, or the
- * Project view's GROOVE, into the model. Returns true when the model changed (the M8 was
+ * Folds a fully drawn song / chain / phrase / table / instrument / modulators / groove / scale screen, or the
+ * Project view's TRANSPOSE, GROOVE and SCALE, into the model. Returns true when the model changed (the M8 was
  * edited since the exploration).
  */
 export function absorbScreen(model: SongModel, screen: M8Screen): boolean {
   const project = readProject(screen)
-  if (project) {
-    if (project.groove == null || project.groove === model.projectGroove) return false
-    model.projectGroove = project.groove
-    return true
-  }
+  if (project) return absorbProject(model, project)
   const view = viewOf(screen)
   if (!isPage(view, view.kind)) return false
   return ABSORBERS[view.kind]?.(model, view) ?? false

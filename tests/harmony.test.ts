@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
-import { readProject, readScale, viewOf } from '../src/m8/screen/screenReader'
+import { absorbScreen } from '../src/m8/screen/liveScreen'
+import { isPage, readProject, readScale, stableContent, viewOf } from '../src/m8/screen/screenReader'
 import { describeSelection } from '../src/m8/semantics'
 import { demoSong } from '../src/model/demo'
 import {
@@ -7,6 +8,7 @@ import {
   formatTranspose,
   instrumentTransposes,
   keyName,
+  playedNote,
   quantize,
   referencedScales,
   ScaleMap,
@@ -75,12 +77,12 @@ test('a transposed step says what it plays, quantized to the track scale', () =>
     column  : 'note'
   }, effective.get(inst.key)?.[0])
   expect(d0.facts.find(([k]) => k === 'Chain transpose')?.[1]).toBe('-2 st (TSP FE)')
-  // An earlier lead phrase's SCA 91 put the track in A minor: a note moved out of it goes down into it.
+  // An earlier lead phrase's SCA 91 put the track in A minor: a note moved out of it goes up into it.
   const minor = new Set([9, 11, 0, 2, 4, 5, 7])
   const step  = steps.findIndex((s, i) => i >= 1 && noteNumber(s.note) != null && !minor.has(((noteNumber(s.note) as number) - 2) % 12))
   expect(step).toBeGreaterThan(0)
   const note     = steps[step].note
-  const expected = noteText((noteNumber(note) as number) - 3)
+  const expected = noteText((noteNumber(note) as number) - 1)
   const d        = describeSelection(model, {
     kind    : 'step',
     instance: inst,
@@ -88,7 +90,7 @@ test('a transposed step says what it plays, quantized to the track scale', () =>
     column  : 'note'
   }, effective.get(inst.key)?.[step])
   expect(d.title).toBe(`Note ${note} → ${expected}`)
-  expect(d.facts.find(([k]) => k === 'Plays')?.[1]).toStartWith(`${expected} (${note} -2, scale -1)`)
+  expect(d.facts.find(([k]) => k === 'Plays')?.[1]).toStartWith(`${expected} (${note} -2, scale +1)`)
   expect(d.facts.find(([k]) => k === 'Track scale')?.[1]).toBe('01 MINOR · key A · SCA')
 })
 
@@ -112,11 +114,15 @@ test('SCA and SCG choose the scale of a track from their step on', () => {
   expect(scaleLabel(model, map.at(lead.track, lead.row + 1))).toBe('01 MINOR · key A · SCA')
 })
 
-test('quantize goes down to the scale note below', () => {
+test('quantize goes up to the next scale note, as measured on the device', () => {
   const minorA = scalePitches(demoSong().scales?.[1], 9)
-  expect(quantize(noteNumber('A#4') as number, minorA)).toBe(noteNumber('A-4'))
+  expect(quantize(noteNumber('A#4') as number, minorA)).toBe(noteNumber('B-4'))
   expect(quantize(noteNumber('C-5') as number, minorA)).toBe(noteNumber('C-5'))
   expect(scalePitches(demoSong().scales?.[0], 0)).toBeNull()
+  // The device test: scale C, E, G; C-4 transposed by 1, 2, 5 and 8 semitones.
+  const triad  = new Set([0, 4, 7])
+  const played = [1, 2, 5, 8].map((shift) => quantize((noteNumber('C-4') as number) + shift, triad))
+  expect(played).toEqual(['E-4', 'E-4', 'G-4', 'C-5'].map((n) => noteNumber(n) as number))
 })
 
 test('a Scale view screen is read back', () => {
@@ -190,4 +196,219 @@ test('the device Scale view and Project SCALE row are read', () => {
     key      : 0,
     groove   : 0
   })
+})
+
+test('a Scale view with another key lists its notes from the key, stored as intervals', () => {
+  const scale = {
+    id   : 3,
+    name : 'TRIAD',
+    key  : 2,
+    notes: Array.from({ length: 12 }, (_, i) => ({
+      enabled: i === 0 || i === 4 || i === 7,
+      offset : i === 0 || i === 4 || i === 7 ? 0 : null
+    }))
+  }
+  const lines = scaleScreen(scale)
+  // On the device the rows read D, D#, E, F, F# ... from the key D.
+  expect(lines.some((line) => line.includes(' D  ON'))).toBe(true)
+  expect(lines.some((line) => line.includes(' F# ON'))).toBe(true)
+  const read = readScale(viewOf({
+    width : 40,
+    height: 24,
+    lines
+  }))
+  expect(read?.key).toBe(2)
+  expect(read?.notes.map((n) => n.enabled)).toEqual(scale.notes.map((n) => n.enabled))
+})
+
+test('the Scale view is read while the song plays, with the > marker on the note being played', () => {
+  const rows    = {
+    3 : ' SCALE 00',
+    5 : ' KEY   C                          T>120',
+    6 : '    EN OFFSET',
+    7 : ' C  ON 00.00                      1 D-5',
+    8 : ' C# -- -- --                      2 ---',
+    9 : ' D >ON 00.00                      3 ---',
+    10: ' D# ON 00.00',
+    11: ' E  ON 00.00',
+    12: ' F  ON 00.00',
+    13: ' F# ON 00.00',
+    14: ' G  ON 00.00',
+    15: ' G# ON 00.00',
+    16: ' A  ON 00.00',
+    17: ' A# ON 00.00',
+    18: ' B  ON 00.00                        S',
+    19: ' TUNE  440.00                       G',
+    20: ' NAME  CHROMATIC-------           SCPIT',
+    21: '       LOAD SAVE                    V'
+  }
+  const playing = deviceScreen(rows)
+  expect(isPage(viewOf(playing), 'scale')).toBe(true)
+  expect(readScale(viewOf(playing))?.notes.map((n) => n.enabled)).toEqual([true, false, ...Array(10).fill(true)])
+  // The marker moves with the notes: the same screen with the marker elsewhere is the same drawn content.
+  const moved = deviceScreen({
+    ...rows,
+    9 : ' D  ON 00.00                      3 ---',
+    11: ' E >ON 00.00'
+  })
+  expect(stableContent(moved)).toBe(stableContent(playing))
+})
+
+test('the Project SCALE byte is key (high digit) and scale number (low digit)', () => {
+  const project = (value: string) =>
+    readProject(
+      deviceScreen({
+        3 : ' PROJECT',
+        5 : ' TEMPO        120.00 <>           T>120',
+        6 : ' TRANSPOSE    00',
+        7 : ' GROOVE       00DEFAULT           1 ---',
+        8 : ` SCALE        ${value} CHROMATIC       2 ---`,
+        13: ' NAME         TEST                7 ---'
+      }),
+    )
+  // '20D': key D (2), scale 0, not scale number 0x20, which does not exist.
+  expect(project('20D')).toMatchObject({
+    scale: 0,
+    key  : 2
+  })
+  expect(project('B3A#')).toMatchObject({
+    scale: 3,
+    key  : 10
+  })
+  expect(project('00C')).toMatchObject({
+    scale: 0,
+    key  : 0
+  })
+})
+
+test('a written note outside the scale is quantized at play time too, without a transpose', () => {
+  const model  = demoSong()
+  model.scales = {
+    ...model.scales,
+    7: {
+      id   : 7,
+      name : 'TRIAD',
+      key  : 2,
+      notes: Array.from({ length: 12 }, (_, i) => ({
+        enabled: i === 0 || i === 4 || i === 7,
+        offset : 0
+      }))
+    }
+  }
+  // Scale 7 with key D (D, F#, A): an E-4 written under another scale plays F#4 (checked on the device).
+  const played = playedNote(model, 'E-4', 0, null, {
+    scale : 7,
+    key   : 2,
+    source: 'project'
+  })
+  expect(played.note).toBe('F#4')
+  expect(played.snapped).toBe(2)
+  expect(played.shift).toBe(0)
+})
+
+test("a scale note's semitone offset is added after the quantizing", () => {
+  const model  = demoSong()
+  // Key C# of a scale of C, E, G with offsets +1, +1, 0: C-5 goes up to C#5 (scale), then +1 (offset): D-5 (checked on the device).
+  model.scales = {
+    ...model.scales,
+    0: {
+      id   : 0,
+      name : 'TRIAD',
+      key  : 1,
+      notes: Array.from({ length: 12 }, (_, i) => ({
+        enabled: i === 0 || i === 4 || i === 7,
+        offset : i === 0 || i === 4 ? 1 : 0
+      }))
+    }
+  }
+  const played = playedNote(model, 'C-5', 0, null, {
+    scale : 0,
+    key   : 1,
+    source: 'SCA'
+  })
+  expect(played.note).toBe('C#5')
+  expect(played.snapped).toBe(1)
+  expect(played.detune).toBe(1)
+  expect(played.sounding).toBe('D-5')
+  // Written in the scale (C# with the C# offset): D-5 as well, with no quantizing.
+  expect(playedNote(model, 'C#5', 0, null, {
+    scale : 0,
+    key   : 1,
+    source: 'SCA'
+  }).sounding).toBe('D-5')
+})
+
+test('the selection says when only the scale moved a written note', () => {
+  const model            = demoSong()
+  model.scales           = {
+    7: {
+      id   : 7,
+      name : 'TRIAD',
+      key  : 0,
+      notes: Array.from({ length: 12 }, (_, i) => ({
+        enabled: i === 0 || i === 4 || i === 7,
+        offset : 0
+      }))
+    }
+  }
+  model.projectScale     = 7
+  model.projectKey       = 0
+  model.projectTranspose = 0
+  const timeline         = buildTimeline(model)
+  const effective        = effectiveInstruments(model, timeline)
+  const triad            = new Set([0, 4, 7])
+  for (const inst of timeline.instances) {
+    if (transposeSemitones(model.chains[inst.chain].rows[inst.chainRow].transpose) !== 0) continue
+    const steps = model.phrases[inst.phrase].steps
+    const step  = steps.findIndex((s) => noteNumber(s.note) != null && !triad.has((noteNumber(s.note) as number) % 12))
+    if (step < 0) continue
+    const d = describeSelection(model, {
+      kind    : 'step',
+      instance: inst,
+      step,
+      column  : 'note'
+    }, effective.get(inst.key)?.[step])
+    // The demo has no SCA that would change the track's scale before this step on every track: skip those.
+    if (!d.facts.some(([k]) => k === 'Quantized')) continue
+    expect(d.title).toContain('(scale)')
+    expect(d.facts.find(([k]) => k === 'Quantized')?.[1]).toContain('no transpose')
+    return
+  }
+  throw new Error('no note outside the triad on an untransposed phrase in the demo')
+})
+
+test('edits to the Scale view and the Project SCALE are folded in live', () => {
+  const model  = demoSong()
+  const scale  = {
+    id   : 4,
+    name : 'TRIAD',
+    key  : 2,
+    notes: Array.from({ length: 12 }, (_, i) => ({
+      enabled: i === 0 || i === 4 || i === 7,
+      offset : i === 0 || i === 4 || i === 7 ? 0 : null
+    }))
+  }
+  const screen = {
+    width : 40,
+    height: 24,
+    lines : scaleScreen(scale)
+  }
+  expect(absorbScreen(model, screen)).toBe(true)
+  expect(model.scales?.[4]?.notes.map((n) => n.enabled)).toEqual(scale.notes.map((n) => n.enabled))
+  expect(model.scales?.[4]?.name).toBe('TRIAD')
+  expect(model.projectKey).toBe(2)
+  // The same screen again changes nothing.
+  expect(absorbScreen(model, screen)).toBe(false)
+  const project = deviceScreen({
+    3 : ' PROJECT',
+    5 : ' TEMPO        120.00 <>           T>120',
+    6 : ' TRANSPOSE    05',
+    7 : ' GROOVE       00DEFAULT           1 ---',
+    8 : ' SCALE        94A TRIAD           2 ---',
+    13: ' NAME         TEST                7 ---'
+  })
+  expect(absorbScreen(model, project)).toBe(true)
+  expect(model.projectScale).toBe(4)
+  expect(model.projectKey).toBe(9)
+  expect(model.projectTranspose).toBe(5)
 })

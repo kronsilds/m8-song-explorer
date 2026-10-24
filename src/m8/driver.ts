@@ -3,7 +3,8 @@
 // Option+arrows are pressed here, keys that move around and never change the song
 // (Option+Left/Right is avoided on the Song view, where it solos tracks).
 
-import type { M8KeyName, M8State } from '@yam8d/m8-sdk'
+import { type M8KeyName, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
+import { phraseColumnX } from '../model/columns'
 import type { M8Port } from './port'
 import { isPage, readSongRows, type ScreenView, songCellX, stableContent, viewOf } from './screen/screenReader'
 
@@ -175,7 +176,37 @@ export class M8Driver {
     if (isPage(here, kind)) return here
     await this.leaveSubViews()
     await this.port.navigateToView(kind)
-    return this.settle((view) => isPage(view, kind), `the ${kind} view`, GO_TO_VIEW_TIMEOUT_MS)
+    try {
+      return await this.settle((view) => isPage(view, kind), `the ${kind} view`, GO_TO_VIEW_TIMEOUT_MS)
+    } catch (error) {
+      if ((kind !== 'scale' && kind !== 'groove') || error instanceof ExploreCancelled) throw error
+      return this.viaPhraseNote(kind, error)
+    }
+  }
+
+  /**
+   * With the cursor on an SCA / GRV cell, Shift+Up on a phrase opens the scale / groove that
+   * command points at, and Shift+Down comes back to the phrase: yam8d's route Phrase > Groove >
+   * Scale loops there. From a note cell Shift+Up opens the Groove view, and once more the Scale
+   * view. So: back to a phrase, the cursor onto the note column, then up.
+   */
+  private async viaPhraseNote(kind: 'scale' | 'groove', original: unknown): Promise<ScreenView> {
+    this.log(`the ${kind} view was not reached by name: going through a phrase note`)
+    let view = await this.read()
+    for (let hop = 0; hop < 4 && !isPage(view, kind); hop += 1) {
+      if (view.kind === 'phrase') {
+        const cursor = (await this.port.getState()).cursorPos
+        if (!cursor) break
+        await this.moveCursor(phraseColumnX('note') + SCREEN_MARGIN, cursor.y)
+        view = await this.pressToOpen(['shift', 'up'], (v) => v.kind === 'groove' || v.kind === 'scale', 'the groove or scale view')
+      } else if (view.kind === 'groove') {
+        view = await this.pressToOpen(['shift', 'up'], (v) => v.kind === 'scale', 'the scale view')
+      } else if (view.kind === 'scale') {
+        view = await this.pressToOpen(['shift', 'down'], (v) => v.kind === 'phrase' || v.kind === 'groove', 'the phrase or groove view')
+      } else break
+    }
+    if (!isPage(view, kind)) throw original
+    return view
   }
 
   /** Waits until the SDK reports view `name` (the views without a title the explorer reads). */

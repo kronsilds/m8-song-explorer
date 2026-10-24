@@ -119,13 +119,14 @@ export function scalePitches(scale: Scale | undefined, key: number | null): Set<
 }
 
 /**
- * A transposed note brought into the scale. Not checked on the device: which way the M8 moves a
- * note that falls between two scale notes. This takes the scale note below.
+ * A transposed note brought into the scale: a note the scale does not let through plays as the
+ * next scale note above it. Measured on the device (scale C, E, G; C-4 transposed by +1 played
+ * E-4, +2 E-4, +5 G-4, +8 C-5), so it is the next note up, not the nearest.
  */
 export function quantize(note: number, pitches: Set<number> | null): number {
   if (!pitches) return note
   let quantized = note
-  while (quantized > 0 && !pitches.has(quantized % 12)) quantized -= 1
+  for (let step = 0; step < 12 && !pitches.has(quantized % 12); step += 1) quantized += 1
   return quantized
 }
 
@@ -139,10 +140,12 @@ export interface PlayedNote {
   shift     : number
   /** The note after the shift and the scale; the written text for OFF / empty; null out of range. */
   note      : string | null
-  /** Semitones the scale moved it after the shift (0 or negative). */
+  /** Semitones the scale moved it after the shift (0 or positive). */
   snapped   : number
-  /** Detune the scale gives that note, in semitones. */
+  /** Detune the scale gives that note, in semitones (the OFFSET column of the Scale view). */
   detune    : number
+  /** The note the M8 sounds and shows on its note monitor: `note` plus the whole semitones of the detune. */
+  sounding  : string | null
   /** False when the instrument's TRANSP. is OFF (no transpose, no scale). */
   transposes: boolean
   scale     : ScaleChoice
@@ -150,8 +153,11 @@ export interface PlayedNote {
 
 /**
  * What a step plays: its note moved by the chain and project transpose, then quantized to the
- * track's scale. Notes are quantized only when a transpose moves them (the M8 quantizes note
- * entry, so written notes are taken as already in the scale).
+ * track's scale. The M8 quantizes at play time, written notes too: with no transpose, an E-4 in
+ * a scale of D, F#, A played F#4 (checked on the device). Entering a note quantizes it as well,
+ * so a note is only out of the scale after the scale or key was edited. The scale's OFFSET of the
+ * note it landed on then adds its whole semitones (C-5 in a scale of C# F G#, C# at +1, played D-5
+ * on the note monitor); the cents are not heard in the note name.
  */
 export function playedNote(
   model: SongModel,
@@ -164,13 +170,13 @@ export function playedNote(
   const shift      = transposes ? chainSemitones + transposeSemitones(model.projectTranspose) : 0
   const written    = noteNumber(writtenNote)
   const scaleInfo  = transposes ? model.scales?.[scale.scale] : undefined
-  if (written == null || shift === 0) {
-    const detune = written != null && scaleInfo ? scaleDetune(scaleInfo, scale.key, written) : 0
+  if (written == null) {
     return {
       shift,
-      note   : writtenNote,
-      snapped: 0,
-      detune,
+      note    : writtenNote,
+      snapped : 0,
+      detune  : 0,
+      sounding: writtenNote,
       transposes,
       scale
     }
@@ -179,11 +185,13 @@ export function playedNote(
   const quantized = quantize(moved, scalePitches(scaleInfo, scale.key))
   const detune    = scaleInfo ? scaleDetune(scaleInfo, scale.key, quantized) : 0
   const note      = moved < 0 || quantized > HIGHEST_NOTE ? null : noteText(quantized)
+  const heard     = quantized + Math.trunc(detune)
   return {
     shift,
     note,
-    snapped: quantized - moved,
+    snapped : quantized - moved,
     detune,
+    sounding: note == null || heard < 0 || heard > HIGHEST_NOTE ? null : noteText(heard),
     transposes,
     scale
   }
