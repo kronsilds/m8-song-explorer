@@ -56,21 +56,24 @@ export class PlayheadView {
         return
       }
       anyPlaying                 = true
+      const before               = this.shown[track]?.position ?? null
       const { row, phase, step } = this.smooth(track, head.row + head.phase, head.row, head.step, dt)
-      const y                    = PlayheadView.rowY(layout, row, phase)
+      const after                = this.shown[track]?.position ?? null
+      if (before != null && after != null) this.flashPassedNotes(layout, track, before, after)
+      const y            = PlayheadView.rowY(layout, row, phase)
       // A flash on each beat: full at the beat, gone by the middle of it.
-      const beatProgress         = ((((step % STEPS_PER_BEAT) + STEPS_PER_BEAT) % STEPS_PER_BEAT) + phase) / STEPS_PER_BEAT
-      const flash                = (1 - smoothstep(0, 0.5, beatProgress)) ** 2
-      const fill                 = (head.exact ? 0.2 : 0.12) + flash * 0.4
-      const outline              = Math.min(1, (head.exact ? 0.6 : 0.35) + flash * 0.6)
-      const frontRow             : CellRect = {
+      const beatProgress = ((((step % STEPS_PER_BEAT) + STEPS_PER_BEAT) % STEPS_PER_BEAT) + phase) / STEPS_PER_BEAT
+      const flash        = (1 - smoothstep(0, 0.5, beatProgress)) ** 2
+      const fill         = (head.exact ? 0.2 : 0.12) + flash * 0.4
+      const outline      = Math.min(1, (head.exact ? 0.6 : 0.35) + flash * 0.6)
+      const frontRow     : CellRect = {
         parent: view.front,
         x     : FRONT_NOTES_X - 0.05,
         y,
         w     : FRONT_NOTES_W + 0.1,
         h     : ROW_H
       }
-      const wallRow              : CellRect = {
+      const wallRow      : CellRect = {
         parent: view.wall,
         x     : WALL_STEPS_U - 0.05,
         y,
@@ -82,6 +85,19 @@ export class PlayheadView {
       else wall.hide()
     })
     return anyPlaying
+  }
+
+  /** Lights the header of the instrument each note passed between two playhead positions plays (a jump passes none). */
+  private flashPassedNotes(layout: SongLayout, track: number, before: number, after: number): void {
+    if (after <= before || after - before > JUMP_ROWS) return
+    for (let row = Math.floor(before) + 1; row <= Math.floor(after); row += 1) {
+      const instance = layout.instanceAt(track, row)
+      const step     = instance ? layout.model.phrases[instance.phrase]?.steps[row - instance.row] : undefined
+      if (!instance || !step?.note || step.note === 'OFF') continue
+      const instrument = layout.effective.get(instance.key)?.[row - instance.row]
+      const panel      = instrument == null ? undefined : layout.tracks[track].panels.find((p) => p.table === instrument)
+      if (panel) panel.flash = 1
+    }
   }
 
   /** Moves a track's drawn playhead toward the tracker's `target` (row + phase). */

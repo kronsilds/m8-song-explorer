@@ -231,7 +231,11 @@ export function modCells(rawLines: string[]): InstrumentCell[] {
   return cells
 }
 
-export const modKindOf = (type: string | null): ModKind | null => MOD_KINDS.find(([prefix]) => type?.startsWith(prefix))?.[1] ?? null
+/** The TBL.TIC of an instrument (how fast its table runs), null when its Instrument view was not read. */
+export const tableTicOf = (instrument: Instrument | undefined): number | null =>
+  instrumentCells(instrument?.lines ?? []).find((c) => c.label === 'TBL.TIC')?.value ?? null
+
+export const modKindOf =(type: string | null): ModKind | null => MOD_KINDS.find(([prefix]) => type?.startsWith(prefix))?.[1] ?? null
 
 /** The four modulators of an Inst. Mods screen, in slot order (slots not on screen are left out). */
 export function modSlots(cells: InstrumentCell[]): ModSlot[] {

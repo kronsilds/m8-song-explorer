@@ -189,6 +189,23 @@ the last step; right after the step before it, it started between the two readin
 playhead is not a poll behind. Measured on the device with the clock: about 6 one-step
 corrections in 50 steps, at step boundaries.
 
+When a track's playhead passes a note, the header of the panel of the instrument it plays
+glows for a moment. It also marks where that instrument's table is: a row marker on the table
+(`src/model/music/tableRun.ts`, `tablePlayback.ts`), and a cell marker over an FX lane that runs
+elsewhere (its own `TIC`, or a `HOP` that only it takes). A `TBX` shows its aux table the same
+way. These positions are a model, not read from the M8, so they are only as accurate as the
+playhead (a table at `TIC 01` moves a row per tick, so it can be a few rows off), and tables
+with no plain ticks-per-row (`TIC 00`, `FC`-`FF`) get no marker.
+
+Table playback, not yet checked on the device (taken from the manual's wording):
+
+- a note starts its table at row 0 and a note off stops it; `TBL` and `TIC` on the note's own
+  step pick the table and its speed (else the instrument's `TBL.TIC`); a `TIC` on a `TBX` step
+  is the aux table's, which defaults to the instrument's `TBL.TIC`;
+- a table tick is one MIDI clock tick (24 per quarter note, the groove's unit);
+- `HOP XY` hops its own FX lane and the transpose / volume columns, X times (0 for ever), then
+  runs on; `THO` hops every column; `TIC` in a lane sets that lane's speed from its row on.
+
 ## Device facts (Model:02, firmware 6.5, checked live)
 
 - Track mute / solo over MIDI (2026-10-17, CC MAP CHAN 11): a held note 12-19 mutes track 1-8

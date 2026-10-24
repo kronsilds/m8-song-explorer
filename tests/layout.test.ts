@@ -70,3 +70,37 @@ describe('panel columns', () => {
     expect(panel.col).toBeLessThan(track.cols - 1)
   })
 })
+
+describe('note instrument links', () => {
+  test('a note with no instrument of its own links to the one the track played last', () => {
+    const model  = demoSong()
+    const layout = new SongLayout(model)
+    const first  = layout.tracks[0].instances[0]
+    const steps  = model.phrases[first.phrase].steps
+    Object.assign(steps[0], {
+      note: 'C-4',
+      inst: 5,
+      fx  : []
+    })
+    Object.assign(steps[1], {
+      note: 'D-4',
+      inst: null,
+      fx  : []
+    })
+    Object.assign(steps[2], {
+      note: 'OFF',
+      inst: null,
+      fx  : []
+    })
+    Object.assign(steps[3], {
+      note: null,
+      inst: null,
+      fx  : []
+    })
+    const links = new SongLayout(model).noteInstrumentLinks(first)
+    const rows  = links.filter((link) => link.step < 4)
+    expect(rows.map((link) => [link.step, link.panel.table])).toEqual([[0, 5], [1, 5]])
+    expect(rows[1].row).toBe(first.row + 1)
+    expect(rows[1].col).toBe(rows[0].col)
+  })
+})

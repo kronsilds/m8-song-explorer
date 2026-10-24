@@ -114,6 +114,8 @@ export interface Panel {
   chars     : number
   /** How far it has turned over to its instrument face (0 the table, 1 the instrument). */
   flip      : number
+  /** Glow of its header after a playhead passed a note that plays it (1 at the note, easing to 0). */
+  flash     : number
 }
 
 export type LinkKind = 'instrument' | 'table'
@@ -375,6 +377,35 @@ export class SongLayout {
       return panel ? [linkOf(instance.track, reference, instance, panel)] : []
     })
   }
+
+  /**
+   * One link per note of a phrase instance to the panel of the instrument it plays: the I column
+   * (or INS command) when the step sets one, else the instrument the track played last (the
+   * link then leaves from the empty I column). Notes off and notes with no instrument yet have none.
+   */
+  noteInstrumentLinks(instance: PhraseInstance): Link[] {
+    const track     = this.tracks[instance.track]
+    const steps     = this.model.phrases[instance.phrase]?.steps ?? []
+    const effective = this.effective.get(instance.key) ?? []
+    const links     : Link[] = []
+    steps.forEach((step, s) => {
+      const instrument = effective[s]
+      if (!step.note || step.note === 'OFF' || instrument == null) return
+      const panel = track.panels.find((p) => p.table === instrument)
+      if (!panel) return
+      const insLane = step.fx.findIndex((fx) => fx.cmd === 'INS' && fx.val != null)
+      const col     = step.inst == null && insLane >= 0 ? SIDE_FIELDS[fxColumn(insLane, 'val')][0] : SIDE_FIELDS.inst[0]
+      links.push(linkOf(instance.track, {
+        kind : 'instrument',
+        row  : instance.row + s,
+        col,
+        step : s,
+        table: instrument,
+        instrument
+      }, instance, panel))
+    })
+    return links
+  }
 }
 
 function newPanel(track: number, table: number, instrument: number | null, row: number): Panel {
@@ -394,7 +425,8 @@ function newPanel(track: number, table: number, instrument: number | null, row: 
     alpha   : 0,
     rows    : PANEL_ROWS,
     chars   : PANEL_CHARS,
-    flip    : 0
+    flip    : 0,
+    flash   : 0
   }
 }
 

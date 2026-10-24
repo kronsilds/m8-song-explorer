@@ -25,6 +25,7 @@ import type { TrackToggle } from '../m8/midiControl'
 import type { TrackPlayhead } from '../m8/playback'
 import { PHRASE_COLUMNS, TABLE_COLUMNS } from '../model/columns'
 import { hex2 } from '../model/hex'
+import { TablePlayback } from '../model/music/tablePlayback'
 import { isWallCell, type Selection, sameSelection, selectionTrack } from '../model/selection'
 import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../model/song'
 import type { PhraseInstance } from '../model/timeline'
@@ -39,6 +40,7 @@ import {
   CHAR_W,
   FRONT_W,
   HEADER_H,
+  type Link,
   PANEL_CHARS,
   PANEL_COL_W,
   PANEL_U0,
@@ -53,6 +55,7 @@ import {
 import { CellMarker, type CellRect } from './markers/cellMarker'
 import { cellRects } from './markers/cellRects'
 import { PlayheadView } from './markers/playheadView'
+import { TablePlayheadView } from './markers/tablePlayheadView'
 import type { Palette } from './palette'
 import { easeFactor, linkCurve, smoothstep } from './shapes'
 import { RichText, type TextBlock, TextPool } from './text'
@@ -121,6 +124,8 @@ export class World implements PointerTarget {
   private readonly spine                = new Group()
   private readonly picker               : ScenePicker
   private readonly playheads            = new PlayheadView()
+  private readonly tablePlayheads       = new TablePlayheadView()
+  private tablePlayback                 : TablePlayback | null = null
   private trackViews                    : TrackView[] = []
   private trackModes                    = {
     muted : [] as boolean[],
@@ -218,9 +223,10 @@ export class World implements PointerTarget {
   // Content
 
   setModel(model: SongModel, keepView = false): void {
-    const previous  = this.layout
-    const hadLayout = previous != null
-    this.layout     = new SongLayout(model)
+    const previous     = this.layout
+    const hadLayout    = previous != null
+    this.layout        = new SongLayout(model)
+    this.tablePlayback = new TablePlayback(model, this.layout.timeline, this.layout.effective)
     if (previous) {
       for (const track of this.layout.tracks) {
         for (const panel of track.panels) panel.flip = previous.tracks[track.track]?.panels.find((p) => p.table === panel.table)?.flip ?? 0
@@ -864,12 +870,19 @@ export class World implements PointerTarget {
     if (!selection || !layout) return
     const track = selectionTrack(selection)
     const view  = this.trackViews[track]
-    const links =
-      selection.kind === 'step' || selection.kind === 'chain'
-        ? layout
-            .instanceLinks(selection.instance)
-            .filter((link) => selection.kind === 'chain' || link.step === selection.step || selection.column === 'note')
-        : layout.tracks[track].links.filter((link) => link.panel.table === selection.table)
+    let links   : Link[]
+    if (selection.kind === 'step' || selection.kind === 'chain') {
+      links       = layout
+        .instanceLinks(selection.instance)
+        .filter((link) => selection.kind === 'chain' || link.step === selection.step || selection.column === 'note')
+      // On a phrase, every note also links to the instrument it plays (the last one set when its I column is empty).
+      const drawn = new Set(links.map((link) => `${link.row}:${link.col}:${link.panel.table}`))
+      for (const link of layout.noteInstrumentLinks(selection.instance)) {
+        if (!drawn.has(`${link.row}:${link.col}:${link.panel.table}`)) links.push(link)
+      }
+    } else {
+      links = layout.tracks[track].links.filter((link) => link.panel.table === selection.table)
+    }
     if (!links.length || !view) return
     const positions: number[] = []
     for (const link of links) {
@@ -1165,6 +1178,13 @@ export class World implements PointerTarget {
   private updatePlayheads(dt: number): boolean {
     const heads   = this.playheadSource?.() ?? []
     const playing = this.playheads.update(heads, this.layout, this.trackViews, this.palette, dt)
+    this.tablePlayheads.update(
+      this.tablePlayback,
+      this.layout,
+      this.trackViews,
+      this.palette,
+      Array.from({ length: TRACKS }, (_, track) => this.playheads.shownPosition(track)),
+    )
     if (!playing || !this.followPlayback || !this.layout) return playing
     const focus    = this.focusTrack()
     const track    = heads[focus]?.row != null ? focus : heads.findIndex((head) => head?.row != null)

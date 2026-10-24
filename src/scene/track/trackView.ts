@@ -62,6 +62,10 @@ const FACE_PAD_TOP             = 0.25
 export const PANEL_TAB_ROOM    = FACE_PAD_TOP + TAB_HEIGHT
 const TABLE_WIDTH              = PANEL_CHARS * CHAR_W + 0.9
 const TABLE_HEIGHT             = PANEL_ROWS * ROW_H + 0.5
+/** A header's flash: seconds it takes to die out, its opacity at the note, and its height (the two title lines). */
+const FLASH_SECONDS            = 0.4
+const FLASH_OPACITY            = 0.3
+const FLASH_HEIGHT             = ROW_H * 2 + 0.35
 
 /** Smooth start and end (t clamped to 0..1). */
 const easeInOut                = (t: number): number => {
@@ -126,6 +130,8 @@ interface PanelView {
   face      : InstrumentFace | null
   faceView  : InstrumentFaceView | null
   tab       : PanelTab | null
+  /** The glow laid over the header when a playhead passes a note that plays the panel. */
+  flash     : InstancedMesh
   /** Width of the card as last drawn. */
   width     : number
 }
@@ -375,7 +381,16 @@ export class TrackView {
     tableFace.position.x = -PANEL_U0
     tableFace.add(background, barMesh)
     tableFrame.add(tableFace)
-    group.add(tableFrame, instFrame)
+    const flash   = rectangles([{
+      x    : 0,
+      y    : FACE_PAD_TOP,
+      w    : 1,
+      h    : FLASH_HEIGHT,
+      z    : 0.03,
+      color: palette.device
+    }], 0)
+    flash.visible = false
+    group.add(tableFrame, instFrame, flash)
     placeFrame(tableFrame, 1, 1)
     placeFrame(instFrame, 1, 1)
     group.position.set(panel.shownU - FACE_PAD_LEFT, panel.shownY, 0)
@@ -394,6 +409,7 @@ export class TrackView {
       face,
       faceView  : null,
       tab       : face ? this.buildTab(group) : null,
+      flash,
       width     : TABLE_WIDTH
     }
     this.panels.push(view)
@@ -569,8 +585,22 @@ export class TrackView {
       this.updateTable(view, textOn, alpha, pose.fade)
       this.updateInstrument(view, textOn, alpha, pose.fade)
       this.updateTab(view, textOn, alpha, width)
+      if (this.updateFlash(view, dt, alpha)) busy = true
     }
     return busy
+  }
+
+  /** Fades the glow of a panel's header out after a note; returns true while it glows. */
+  private updateFlash(view: PanelView, dt: number, alpha: number): boolean {
+    const { panel } = view
+    if (panel.flash > 0) panel.flash = Math.max(0, panel.flash - dt / FLASH_SECONDS)
+    const opacity      = FLASH_OPACITY * panel.flash ** 2 * alpha
+    view.flash.visible = opacity > 0.002
+    if (view.flash.visible) {
+      view.flash.scale.x                                 = view.width
+      ;(view.flash.material as MeshBasicMaterial).opacity = opacity
+    }
+    return panel.flash > 0
   }
 
   /**
