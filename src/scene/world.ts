@@ -1082,6 +1082,7 @@ export class World implements PointerTarget {
    * While turning by hand the view turns around the open track: the target's offset from the
    * track's centre turns with the view (so the camera orbits the track), and shrinks as the turn
    * goes on, bringing the track to the middle. The track's centre follows the wall as it opens.
+   * The height is left alone, so scrolling (following playback) goes on while turning.
    */
   turnedByHand(): void {
     this.preset   = null
@@ -1095,7 +1096,7 @@ export class World implements PointerTarget {
     const pivot  = this.trackPivot()
     goal.target.set(
       pivot.x + keep * (dx * Math.cos(turned) + dz * Math.sin(turned)),
-      turning.base.y,
+      goal.target.y,
       pivot.z + keep * (dz * Math.cos(turned) - dx * Math.sin(turned)),
     )
   }
