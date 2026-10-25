@@ -168,6 +168,13 @@ export class World implements PointerTarget {
     transparent: true,
     depthWrite : false
   })
+  /** The links of a selected phrase, all of them, faint. */
+  private readonly faintLinkMaterial    = new LineMaterial({
+    linewidth  : 1.2,
+    opacity    : 0.5,
+    transparent: true,
+    depthWrite : false
+  })
   private bandRules                     : LineSegments | null = null
   /** The instrument the M8 shows (Instrument or Inst. Mods view): its panels turn to their instrument face. */
   private deviceInstrument              : number | null = null
@@ -256,6 +263,7 @@ export class World implements PointerTarget {
     this.scene.background         = background
     ;(this.scene.fog as Fog).color = background
     this.selectedLinkMaterial.color.set(this.palette.hot)
+    this.faintLinkMaterial.color.set(this.palette.hot)
     this.invalidate()
   }
 
@@ -871,13 +879,14 @@ export class World implements PointerTarget {
     const track = selectionTrack(selection)
     const view  = this.trackViews[track]
     let links   : Link[]
+    // A selected row draws its own links; the phrase draws all of them, faintly; a panel header draws all of its panel's.
+    const faint = selection.kind === 'chain'
     if (selection.kind === 'step' || selection.kind === 'chain') {
-      links       = layout
-        .instanceLinks(selection.instance)
-        .filter((link) => selection.kind === 'chain' || link.step === selection.step || selection.column === 'note')
-      // On a phrase, every note also links to the instrument it plays (the last one set when its I column is empty).
+      const inRow = (link: Link) => selection.kind === 'chain' || link.step === selection.step
+      links       = layout.instanceLinks(selection.instance).filter(inRow)
+      // Each note also links to the instrument it plays (the last one set when its I column is empty).
       const drawn = new Set(links.map((link) => `${link.row}:${link.col}:${link.panel.table}`))
-      for (const link of layout.noteInstrumentLinks(selection.instance)) {
+      for (const link of layout.noteInstrumentLinks(selection.instance).filter(inRow)) {
         if (!drawn.has(`${link.row}:${link.col}:${link.panel.table}`)) links.push(link)
       }
     } else {
@@ -896,7 +905,7 @@ export class World implements PointerTarget {
     }
     const geometry = new LineSegmentsGeometry()
     geometry.setPositions(positions)
-    this.selectedLinks             = new LineSegments2(geometry, this.selectedLinkMaterial)
+    this.selectedLinks             = new LineSegments2(geometry, faint ? this.faintLinkMaterial : this.selectedLinkMaterial)
     this.selectedLinks.renderOrder = 4
     view.wall.add(this.selectedLinks)
   }
@@ -1166,6 +1175,7 @@ export class World implements PointerTarget {
     this.camera.aspect = width / height
     this.camera.updateProjectionMatrix()
     this.selectedLinkMaterial.resolution.set(width, height)
+    this.faintLinkMaterial.resolution.set(width, height)
     this.invalidate()
   }
 

@@ -390,6 +390,12 @@ export class TrackView {
       color: palette.device
     }], 0)
     flash.visible = false
+    // Only 0.03 above the panel: at a slant or a distance the depth buffer cannot tell them apart, so pull the flash toward the camera.
+    const flashMaterial               = flash.material as MeshBasicMaterial
+    flashMaterial.polygonOffset       = true
+    flashMaterial.polygonOffsetFactor = -4
+    flashMaterial.polygonOffsetUnits  = -4
+    flash.renderOrder                 = 3
     group.add(tableFrame, instFrame, flash)
     placeFrame(tableFrame, 1, 1)
     placeFrame(instFrame, 1, 1)
