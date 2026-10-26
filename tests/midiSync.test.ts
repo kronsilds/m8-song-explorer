@@ -97,3 +97,21 @@ test('sets CC MAP CHAN downwards from a higher channel', async () => {
   expect(await setCcMapChannel(fake, 6, { pollMs: 0 })).toBe('06')
   expect(fake.forbidden).toEqual([])
 })
+
+test('waits for the text under the cursor to catch up with the cursor before editing a value', async () => {
+  const fake = new FakeM8(demoSong(), { lateCursorText: 250 })
+  expect(await setMidiSyncOut(fake, { pollMs: 0 })).toBe(SYNC_OUT_TARGET)
+  fake.ccMapChan = 0
+  expect(await setCcMapChannel(fake, 6, { pollMs: 0 })).toBe('06')
+  expect(fake.forbidden).toEqual([])
+})
+
+test('says where the cursor is when it never reaches the value', async () => {
+  const fake = new FakeM8(demoSong(), { lateCursorText: 60000 })
+  const logs : string[] = []
+  await expect(setCcMapChannel(fake, 6, {
+    pollMs: 0,
+    log   : (message) => logs.push(message)
+  })).rejects.toThrow('the cursor is on "NONE", not MIDI SETTINGS')
+  expect(logs.some((message) => message.includes('the cursor is not on the MIDI SETTINGS entry') && message.toUpperCase().includes('PROJECT'))).toBe(true)
+})

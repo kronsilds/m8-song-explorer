@@ -2,6 +2,7 @@
 // between sessions. Storage may be full or blocked; then values live in memory only.
 
 import type { M8Theme } from '@yam8d/m8-sdk'
+import { debugLog } from './debugLog'
 import type { SongModel } from './song'
 
 const KEY_PREFIX = 'm8-song-explorer:'
@@ -17,8 +18,9 @@ export function readItem(name: string): string | null {
 export function writeItem(name: string, value: string): void {
   try {
     localStorage.setItem(KEY_PREFIX + name, value)
-  } catch {
+  } catch (error) {
     // Full or blocked: not remembered.
+    debugLog.problem('storage', `${name} not saved: ${(error as Error).message}`)
   }
 }
 

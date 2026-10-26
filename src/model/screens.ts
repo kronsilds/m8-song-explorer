@@ -330,9 +330,11 @@ export const DEFAULT_MODS: ModSpec[] = [{
   rows: [['DEST', '00OFF'], ['AMT', 'FF'], ['OSC', '00TRI'], ['TRIG', '00FREE'], ['FREQ', '10']]
 }]
 
-/** The Inst. Mods screen: the stored lines when read, else the default modulators. */
-export const instrumentModsScreen = (instrument: Instrument): string[] =>
-  storedScreen(instrument.mods?.length ? instrument.mods : instrumentModsLines(instrument.id, DEFAULT_MODS))
+/** The Inst. Mods screen: the stored lines when read, else the default modulators; an empty page for type NONE (as on the device). */
+export const instrumentModsScreen = (instrument: Instrument): string[] => {
+  if (instrument.type === 'NONE') return blankScreen(`INST. MODS ${hex2(instrument.id)}`)
+  return storedScreen(instrument.mods?.length ? instrument.mods : instrumentModsLines(instrument.id, DEFAULT_MODS))
+}
 
 /** The instrument screen: the stored lines when read, else its header (TYPE, NAME) as the schema reads it. */
 export function instrumentScreen(instrument: Instrument): string[] {

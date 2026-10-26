@@ -21,6 +21,18 @@ export const holdNote        = (kind: TrackToggle, track: number): number => FIR
 /** M8 default of CC MAP CHAN. */
 export const DEFAULT_CHANNEL = 11
 
+/** Where the mute / solo notes go, for the debug log. */
+export interface MidiInfo {
+  channel  : number
+  available: boolean
+  /** The M8's output once found. */
+  output   : { name: string | null; state: string; connection: string } | null
+  /** Notes held now. */
+  held     : number[]
+  /** Why the output could not be opened the last time. */
+  lastError: string | null
+}
+
 export class MidiControl {
   /** MIDI channel 1..16: the M8's CC MAP CHAN. */
   private currentChannel     : number
@@ -28,6 +40,7 @@ export class MidiControl {
   private opening            : Promise<MIDIOutput> | null = null
   /** Notes held now, with the channel nibble they went out on (released on that channel). */
   private readonly heldNotes = new Map<number, number>()
+  private lastError          : string | null = null
 
   constructor(channel = DEFAULT_CHANNEL) {
     this.currentChannel = channel
@@ -44,6 +57,21 @@ export class MidiControl {
     this.currentChannel = channel
   }
 
+  info(): MidiInfo {
+    const { output } = this
+    return {
+      channel  : this.currentChannel,
+      available: 'requestMIDIAccess' in navigator,
+      output   : output ? {
+        name      : output.name,
+        state     : output.state,
+        connection: output.connection
+      } : null,
+      held     : [...this.heldNotes.keys()].sort((a, b) => a - b),
+      lastError: this.lastError
+    }
+  }
+
   /** Finds the M8's MIDI output (asks for Web MIDI access the first time). */
   private async open(): Promise<MIDIOutput> {
     if (this.output?.state === 'connected') return this.output
@@ -57,8 +85,12 @@ export class MidiControl {
       return m8
     })()
     try {
-      this.output = await this.opening
+      this.output    = await this.opening
+      this.lastError = null
       return this.output
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error)
+      throw error
     } finally {
       this.opening = null
     }

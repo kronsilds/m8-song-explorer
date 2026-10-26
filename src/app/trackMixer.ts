@@ -2,7 +2,8 @@
 // the M8, its release ends it. The buttons show the notes held from here (mutes and solos made
 // on the M8 are not seen).
 
-import { MidiControl, type TrackToggle } from '../m8/midiControl'
+import { MidiControl, type MidiInfo, type TrackToggle } from '../m8/midiControl'
+import { debugLog } from '../model/debugLog'
 import { TRACKS } from '../model/song'
 import type { World } from '../scene/world'
 import type { Hud } from '../ui/hud'
@@ -23,12 +24,19 @@ export class TrackMixer {
     hud.onChannel       = (channel) => this.changeChannel(channel)
     world.onTrackButton = (track, kind) => this.toggle(track, kind)
     // Leaving the page lets go of every held mute and solo, so none stays stuck on the M8.
-    window.addEventListener('pagehide', () => this.midi.releaseAll())
+    window.addEventListener('pagehide', () => {
+      if (this.midi.info().held.length) debugLog.event('mixer-release', { held: this.midi.info().held })
+      this.midi.releaseAll()
+    })
   }
 
   /** The channel the mute / solo notes go out on. */
   get channel(): number {
     return this.midi.channel
+  }
+
+  info(): MidiInfo {
+    return this.midi.info()
   }
 
   /** Switches to `channel` and shows it in the picker (the M8's CC MAP CHAN was read or set to it). */
@@ -39,6 +47,11 @@ export class TrackMixer {
 
   /** The notes held on the old channel are released. */
   private changeChannel(channel: number): void {
+    if (channel !== this.midi.channel) debugLog.event('mixer-channel', {
+      from: this.midi.channel,
+      to  : channel,
+      held: this.midi.info().held.length
+    })
     this.midi.channel = channel
     this.held.mute.fill(false)
     this.held.solo.fill(false)
@@ -52,9 +65,15 @@ export class TrackMixer {
       () => {
         this.held[kind][track] = on
         this.showHeld()
+        debugLog.event(kind, {
+          track  : track + 1,
+          on,
+          channel: this.midi.channel
+        })
       },
       (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
+        debugLog.problem('midi-output', `could not ${on ? '' : 'un'}${kind} track ${track + 1}: ${message}`)
         this.hud.notify(`Could not ${on ? '' : 'un'}${kind} track ${track + 1}: ${message}`, 'warn')
       },
     )

@@ -1,6 +1,7 @@
 // What the explorer needs from the M8: the SDK client in the app, a fake M8 in the tests.
 
 import type { M8Client, M8KeyName, M8Screen, M8ScreenCells, M8State } from '@yam8d/m8-sdk'
+import { debugLog } from '../model/debugLog'
 
 export interface M8Port {
   getScreen(): Promise<M8Screen>
@@ -47,8 +48,9 @@ export function clientPort(client: M8Client): M8Port {
       if (!cellsSupported) return null
       try {
         return await withTimeout(client.getScreenCells(), CALL_TIMEOUT_MS, 'getScreenCells')
-      } catch {
+      } catch (error) {
         cellsSupported = false
+        debugLog.problem('screen-colours', `the host cannot report screen colours: ${(error as Error).message}`)
         return null
       }
     },

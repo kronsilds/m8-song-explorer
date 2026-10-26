@@ -3,6 +3,7 @@
 // palette as the scene. User actions go out through onAction.
 
 import type { CellDescription } from '../m8/semantics'
+import { debugLog } from '../model/debugLog'
 import type { Palette } from '../scene/palette'
 
 export type Action =
@@ -73,11 +74,13 @@ const PALETTE_VARIABLES : [variable: string, color: keyof Palette][] = [
 ]
 
 export class Hud {
-  onAction    : (action: Action) => void = () => {}
+  onAction     : (action: Action) => void = () => {}
   /** The mute / solo MIDI channel was changed (1..16). */
-  onChannel   : (channel: number) => void = () => {}
+  onChannel    : (channel: number) => void = () => {}
   /** The selection panel was pinned open or unpinned. */
-  onInfoPinned: (pinned: boolean) => void = () => {}
+  onInfoPinned : (pinned: boolean) => void = () => {}
+  /** The ? button was double clicked: save the debug log. */
+  onDebugExport: () => void = () => {}
 
   private readonly channelSelect = element('select', 'channel-select')
   private readonly status        = element('div', 'status')
@@ -158,7 +161,8 @@ export class Hud {
       ['side', 'Side', 'Face the open wall (3)'],
       ['expand', 'Open all', 'Open the walls of every track (E)'],
     )
-    group(['help', '?', 'Keys and mouse'])
+    group(['help', '?', 'Keys and mouse · double click: save the debug log'])
+    this.buttons.get('help')?.addEventListener('dblclick', () => this.onDebugExport())
     this.setButton('device', { hidden: true })
     return tools
   }
@@ -218,6 +222,10 @@ export class Hud {
     this.status.dataset.kind = kind
   }
 
+  statusText(): string {
+    return this.status.textContent ?? ''
+  }
+
   setSummary(text: string): void {
     this.summary.textContent = text
   }
@@ -255,7 +263,15 @@ export class Hud {
     this.progress.classList.add('hidden')
   }
 
-  notify(text: string, kind: 'info' | 'warn' = 'info', ms = 4200): void {
+  /** Shows a notice; it goes to the debug log too (a warning is kept for the whole session) unless `record` is false. */
+  notify(text: string, kind: 'info' | 'warn' = 'info', ms = 4200, record = true): void {
+    if (record) {
+      if (kind === 'warn') debugLog.problem('notice', text)
+      debugLog.throttled(`notice:${text}`, 3000, 'notice', {
+        kind,
+        text
+      })
+    }
     this.toast.textContent  = text
     this.toast.dataset.kind = kind
     this.toast.classList.remove('hidden')

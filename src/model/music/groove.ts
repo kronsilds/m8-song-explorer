@@ -41,6 +41,61 @@ export function referencedGrooves(model: SongModel): number[] {
   return [...grooves].sort((a, b) => a - b)
 }
 
+/** What a groove does to the sixteenths, for the debug log. */
+export interface GrooveReport {
+  id      : number
+  /** Clock ticks of the steps the groove loops through (6 6 is the plain sixteenth). */
+  loop    : number[]
+  ppq     : number | null
+  /** Every step lasts the default 6 clock ticks. */
+  standard: boolean
+  /** False when the groove was never read (the default is assumed). */
+  read    : boolean
+  /** 'project' (the project GROOVE), 'GRV' (a track), 'GGR' (all tracks). */
+  usedBy  : string[]
+}
+
+/** The grooves the song plays with, which are not plain 6-6 sixteenths, and what points at them. */
+export function grooveReports(model: SongModel): GrooveReport[] {
+  const usedBy = new Map<number, Set<string>>()
+  const use    = (groove: number, by: string) => usedBy.set(groove, (usedBy.get(groove) ?? new Set<string>()).add(by))
+  use(model.projectGroove ?? 0, 'project')
+  for (const phrase of Object.values(model.phrases)) {
+    for (const step of phrase.steps) for (const command of GROOVE_COMMANDS) for (const groove of fxValues(step.fx, command)) use(groove, command)
+  }
+  return [...usedBy.keys()]
+    .sort((a, b) => a - b)
+    .map((id) => {
+      const groove = model.grooves?.[id]
+      const loop   = grooveLoop(groove).map((_, step) => stepClockTicks(groove, step))
+      return {
+        id,
+        loop,
+        ppq     : groove?.ppq ?? null,
+        standard: loop.every((ticks) => ticks === DEFAULT_TICKS),
+        read    : groove != null,
+        usedBy  : [...(usedBy.get(id) as Set<string>)]
+      }
+    })
+}
+
+/** How the steps of one chain occurrence differ from the plain sixteenth. */
+export interface TicksSummary {
+  steps      : number
+  /** Steps that do not last 6 clock ticks. */
+  nonStandard: number
+  /** The different step lengths, ascending (at most 8). */
+  distinct   : number[]
+}
+
+export function summarizeTicks(ticks: number[]): TicksSummary {
+  return {
+    steps      : ticks.length,
+    nonStandard: ticks.filter((t) => t !== DEFAULT_TICKS).length,
+    distinct   : [...new Set(ticks)].sort((a, b) => a - b).slice(0, 8)
+  }
+}
+
 /** Key of one chain occurrence: a track's cell on a song row. */
 export const occurrenceKey = (track: number, songRow: number): string => `${track}:${songRow}`
 

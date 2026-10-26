@@ -33,43 +33,49 @@ export interface FakeOptions {
   partialReads?          : number
   /** Option+Down in a phrase does nothing (to exercise the explorer's fallback). */
   phraseOptionDownBroken?: boolean
-  /** Option+Up/Down on Instrument/Table steps the other way (to exercise the fallback). */
+  /** Option+Up/Down on Instrument/Table steps the other way than the device does (to exercise the swap). */
   invertedBigSteps?      : boolean
+  /** Cells that change on every read on `view` (a live indicator the M8 draws while the song plays). */
+  flicker?               : { view: View; cells: { x: number; y: number }[] }
+  /** The text under the cursor stays 'NONE' for this many ms after a key or a move (it lags the cursor on the device). */
+  lateCursorText?        : number
   /** Presses the device misses: the first `count` presses of `keys` ('shift+right') on `view` do nothing. */
   missedPresses?         : { view: View; keys: string; count: number }[]
 }
 
 export class FakeM8 implements M8Port {
-  view            : View = 'mixer'
-  songTop         = 0
-  songRow         = 0
-  songTrack       = 0
-  chain           = 0
-  chainRow        = 0
-  chainCol        = 0
-  phrase          = 0
-  phraseRow       = 0
-  phraseCol       = 0
-  inst            = 0x10
-  table           = 0x10
-  scale           = 0x03
-  groove          = 0x02
+  view              : View = 'mixer'
+  songTop           = 0
+  songRow           = 0
+  songTrack         = 0
+  chain             = 0
+  chainRow          = 0
+  chainCol          = 0
+  phrase            = 0
+  phraseRow         = 0
+  phraseCol         = 0
+  inst              = 0x10
+  table             = 0x10
+  scale             = 0x03
+  groove            = 0x02
   /** Cursor on the label/value views (Project, MIDI Settings), in screen cells. */
-  free            = {
+  free              = {
     x: 14,
     y: 5
   }
-  syncOut         = 0
+  syncOut           = 0
   /** CC MAP CHAN and SONG ROW CUE CHAN: 0 is ALL, else the channel. */
-  ccMapChan       = 0
-  songRowCueChan  = 0
-  private held    : M8KeyName[] = []
+  ccMapChan         = 0
+  songRowCueChan    = 0
+  private held      : M8KeyName[] = []
   /** Keys that would edit or play: the explorer must never send them. */
-  forbidden       : string[] = []
-  presses         = 0
+  forbidden         : string[] = []
+  presses           = 0
   /** Presses dropped through missedPresses. */
-  missed          = 0
-  private pending = 0
+  missed            = 0
+  private pending   = 0
+  private reads     = 0
+  private lastKeyAt = 0
 
   constructor(
     readonly model: SongModel,
@@ -182,6 +188,19 @@ export class FakeM8 implements M8Port {
       this.pending -= 1
       lines        = lines.map((l, y) => (y === 3 ? l : ''))
     }
+    const flicker = this.options.flicker
+    if (flicker && flicker.view === this.view) {
+      this.reads += 1
+      lines      = lines.map((line, y) => {
+        let padded = line
+        for (const cell of flicker.cells) {
+          if (cell.y !== y) continue
+          padded = padded.padEnd(cell.x + 1)
+          padded = `${padded.slice(0, cell.x)}${this.reads % 10}${padded.slice(cell.x + 1)}`
+        }
+        return padded
+      })
+    }
     return {
       width : SCREEN_WIDTH,
       height: SCREEN_HEIGHT,
@@ -247,6 +266,11 @@ export class FakeM8 implements M8Port {
   }
 
   async getState(): Promise<M8State> {
+    return this.stateNow(this.options.lateCursorText != null && Date.now() - this.lastKeyAt < this.options.lateCursorText)
+  }
+
+  /** The state as the fake itself knows it; `late` gives the lagging text under the cursor. */
+  private stateNow(late: boolean): M8State {
     const lines = this.lines()
     const c     = this.cursor()
     const line  = lines[c.y] ?? ''
@@ -264,7 +288,7 @@ export class FakeM8 implements M8Port {
       titleColor     : null,
       backgroundColor: null,
       cursorColor    : null,
-      textUnderCursor: line.slice(c.x, c.x + c.w).trim() || null,
+      textUnderCursor: late ? 'NONE' : line.slice(c.x, c.x + c.w).trim() || null,
       currentLine    : line.trim() || null,
       deviceModel    : 'Fake',
       fontMode       : 0,
@@ -280,6 +304,7 @@ export class FakeM8 implements M8Port {
   }
 
   async navigateTo(x: number, y: number): Promise<void> {
+    this.lastKeyAt = Date.now()
     switch (this.view) {
       case 'project':
       case 'midisettings':
@@ -307,10 +332,11 @@ export class FakeM8 implements M8Port {
 
   /** Edit held + Right steps the SYNC OUT value under the cursor (on the Right press). */
   async keyDown(keys: M8KeyName[]): Promise<void> {
-    const pressed = keys.filter((k) => !this.held.includes(k))
-    this.held     = [...keys]
-    const onValue = (y: number, x: number) => this.view === 'midisettings' && this.free.y === y && this.free.x === x
-    const side    = pressed.includes('right') ? 1 : pressed.includes('left') ? -1 : 0
+    this.lastKeyAt = Date.now()
+    const pressed  = keys.filter((k) => !this.held.includes(k))
+    this.held      = [...keys]
+    const onValue  = (y: number, x: number) => this.view === 'midisettings' && this.free.y === y && this.free.x === x
+    const side     = pressed.includes('right') ? 1 : pressed.includes('left') ? -1 : 0
     if (side === 1 && keys.includes('edit') && onValue(7, 15)) this.syncOut = Math.min(SYNC_OUT_VALUES.length - 1, this.syncOut + 1)
     else if (side && keys.includes('edit') && onValue(8, 16)) this.ccMapChan = Math.max(0, Math.min(16, this.ccMapChan + side))
     else if (pressed.some((k) => k !== 'edit')) this.forbidden.push(`${this.view}: hold ${keys.join('+')}`)
@@ -327,10 +353,11 @@ export class FakeM8 implements M8Port {
   }
 
   async press(keys: M8KeyName[]): Promise<void> {
-    this.presses += 1
-    const has    = (k: M8KeyName) => keys.includes(k)
-    const combo  = keys.join('+')
-    const missed = this.options.missedPresses?.find((m) => m.view === this.view && m.keys === combo && m.count > 0)
+    this.lastKeyAt = Date.now()
+    this.presses   += 1
+    const has      = (k: M8KeyName) => keys.includes(k)
+    const combo    = keys.join('+')
+    const missed   = this.options.missedPresses?.find((m) => m.view === this.view && m.keys === combo && m.count > 0)
     if (missed) {
       missed.count -= 1
       this.missed  += 1
@@ -338,7 +365,7 @@ export class FakeM8 implements M8Port {
     }
     // Edit on MIDI > SETTINGS opens the MIDI Settings: a menu entry, not an edit.
     if (this.view === 'project' && keys.length === 1 && has('edit')) {
-      const state = await this.getState()
+      const state = this.stateNow(false)
       if (/^midi/.test(state.currentLine ?? '') && state.textUnderCursor === 'settings') {
         this.free = {
           x: 15,
@@ -429,7 +456,8 @@ export class FakeM8 implements M8Port {
             this.changeView('inst')
           }
         } else if (has('opt')) {
-          const big     = (this.options.invertedBigSteps ? -dir : dir) * 16
+          // As measured: Option+Down is +16 on Instruments, Option+Up on Tables.
+          const big     = (this.options.invertedBigSteps === isInst ? -dir : dir) * 16
           const max     = isInst ? 0x7f : 0xff
           const current = isInst ? this.inst : this.table
           const next    = Math.max(0, Math.min(max, current + (dir ? big : side)))

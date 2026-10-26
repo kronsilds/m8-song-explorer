@@ -10,7 +10,7 @@ import { hex2 } from '../../model/hex'
 import { referencedGrooves } from '../../model/music/groove'
 import { referencedScales } from '../../model/music/harmony'
 import { chainLength, emptyModel, SONG_ROWS, type SongModel, TRACKS, usedItems } from '../../model/song'
-import { ExploreCancelled, type ItemView, M8Driver, M8MoveError } from '../driver'
+import { type DriverOptions, ExploreCancelled, type ItemView, M8Driver, M8MoveError } from '../driver'
 import type { M8Port } from '../port'
 import { learnColumnColors } from '../screen/colorReader'
 import {
@@ -82,6 +82,17 @@ const NEXT_PHRASE_TIMEOUT_MS      = 900
 
 const capitalize = (text: string): string => text[0].toUpperCase() + text.slice(1)
 const messageOf  = (error: unknown): string => (error as Error).message
+
+/**
+ * Puts the M8 on the Song view with the cursor on the first cell (song row 00, track 1), so
+ * Play starts from the top. Moves with arrows and Option+arrows only.
+ */
+export async function moveToSongTop(port: M8Port, options: DriverOptions = {}): Promise<void> {
+  const driver = new M8Driver(port, options)
+  await driver.leaveSubViews()
+  await driver.goToView('song')
+  await driver.moveToSongCell(0, 0)
+}
 
 /** Explores the song on the M8 behind `port`; a cancelled run returns what was read. */
 export function exploreSong(port: M8Port, options: ExploreOptions = {}): Promise<SongModel> {
@@ -311,7 +322,8 @@ class SongExplorer {
         const instrument = readInstrument(view)
         if (instrument) this.model.instruments[id] = instrument
         const back = readTables ? await this.readInstrumentTable(view, id) : view
-        return readMods ? this.readModulators(id) : back
+        // An instrument of type NONE has no modulators: its Inst. Mods view is an empty page.
+        return readMods && instrument?.type !== 'NONE' ? this.readModulators(id) : back
       }
     })
   }

@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explorer Log Analyzer</title>
+<!-- Reads a debug log saved by M8 Song Explorer (double click on "?") and checks it. Everything runs in this page: nothing is uploaded. -->
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --line: #dde0e6;
+    --text: #1b1f27;
+    --muted: #5d6675;
+    --ok: #1f9d55;
+    --warn: #d9900a;
+    --fail: #d93636;
+    --info: #8a93a3;
+    --blue: #3b6fd4;
+    --chip: #eceff4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b;
+      --panel: #1a1e26;
+      --line: #2b313c;
+      --text: #e6e9ef;
+      --muted: #98a2b3;
+      --ok: #3ecf7a;
+      --warn: #f0b13a;
+      --fail: #ff6464;
+      --info: #707a8b;
+      --blue: #6e9bf5;
+      --chip: #262c37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  code, .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  header.top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 24px;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  header.top h1 { margin: 0; font-size: 18px; letter-spacing: 0.02em; }
+  header.top p { margin: 0; color: var(--muted); }
+  .spacer { flex: 1; }
+  button, .button {
+    font: inherit;
+    color: var(--text);
+    background: var(--chip);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  button:hover, .button:hover { border-color: var(--blue); }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; display: grid; gap: 16px; }
+  .drop {
+    border: 2px dashed var(--line);
+    border-radius: 14px;
+    padding: 48px 20px;
+    text-align: center;
+    color: var(--muted);
+    background: var(--panel);
+  }
+  .drop.over { border-color: var(--blue); color: var(--text); }
+  .drop strong { color: var(--text); }
+  .error { border: 1px solid var(--fail); color: var(--fail); background: var(--panel); border-radius: 10px; padding: 12px 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .card > h2 {
+    margin: 0;
+    padding: 12px 16px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .card > h2 .sub { color: var(--muted); font-weight: 400; margin-left: auto; font-size: 12.5px; }
+  .summary { padding: 16px; display: grid; gap: 14px; }
+  .verdict { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .verdict .big { font-size: 20px; font-weight: 650; }
+  .counts { display: flex; gap: 10px; flex-wrap: wrap; }
+  .count { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; }
+  .count b { font-size: 18px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--muted); }
+  .facts b { color: var(--text); font-weight: 600; }
+  .light {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--info);
+    box-shadow: 0 0 0 2px var(--panel);
+  }
+  .light.ok { background: var(--ok); box-shadow: 0 0 0 2px var(--panel), 0 0 9px var(--ok); }
+  .light.warn { background: var(--warn); box-shadow: 0 0 0 2px var(--panel), 0 0 9px var(--warn); }
+  .light.fail { background: var(--fail); box-shadow: 0 0 0 2px var(--panel), 0 0 9px var(--fail); }
+  .light.info { background: transparent; border: 2px solid var(--info); box-shadow: none; }
+  .checks { list-style: none; margin: 0; padding: 4px 0; }
+  .checks > li { padding: 7px 16px; display: grid; grid-template-columns: 22px 1fr; gap: 0 8px; align-items: start; }
+  .checks > li + li { border-top: 1px solid var(--line); }
+  .checks .light { margin-top: 4px; }
+  .checks .title { font-weight: 560; }
+  .checks .tag { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; margin-left: 8px; }
+  .tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.fail { color: var(--fail); } .tag.info { color: var(--info); }
+  .checks .detail { color: var(--muted); }
+  details { margin-top: 4px; }
+  details summary { cursor: pointer; color: var(--blue); font-size: 12.5px; }
+  details ul { margin: 4px 0 2px; padding-left: 18px; color: var(--muted); }
+  details li { padding: 1px 0; overflow-wrap: anywhere; }
+  .timeline { padding: 12px 16px 16px; display: grid; gap: 6px; }
+  .lane { display: grid; grid-template-columns: 130px 1fr; align-items: center; gap: 10px; }
+  .lane .name { color: var(--muted); font-size: 12.5px; }
+  .track { position: relative; height: 24px; background: var(--chip); border-radius: 6px; overflow: hidden; }
+  .bar { position: absolute; top: 3px; bottom: 3px; border-radius: 4px; min-width: 3px; background: var(--blue); opacity: 0.9; }
+  .bar.ok { background: var(--ok); } .bar.warn { background: var(--warn); } .bar.fail { background: var(--fail); }
+  .mark { position: absolute; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: var(--info); }
+  .mark.ok { background: var(--ok); } .mark.warn { background: var(--warn); } .mark.fail { background: var(--fail); } .mark.blue { background: var(--blue); }
+  .axis { display: grid; grid-template-columns: 130px 1fr; gap: 10px; }
+  .axis .ticks { position: relative; height: 16px; color: var(--muted); font-size: 11px; }
+  .axis .tick { position: absolute; transform: translateX(-50%); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 12px; padding: 0 16px 12px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--c, var(--blue)); }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--chip); cursor: pointer; }
+  .chip[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .scroll { max-height: 420px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 4px 10px; vertical-align: top; border-top: 1px solid var(--line); }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500; }
+  td.data { color: var(--muted); word-break: break-word; }
+  td.t { white-space: nowrap; }
+  .hidden { display: none; }
+  @media (max-width: 640px) {
+    .lane, .axis { grid-template-columns: 1fr; gap: 2px; }
+    .axis > :first-child { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>M8 Song Explorer · Log Analyzer</h1>
+    <p>Open a debug log saved with a double click on the “?” button. Nothing leaves this page.</p>
+  </div>
+  <div class="spacer"></div>
+  <button id="copy" class="hidden" type="button">Copy summary</button>
+  <label class="button primary">Open a log…<input id="file" type="file" accept="application/json,.json" hidden></label>
+</header>
+<main id="app">
+  <div id="drop" class="drop"><strong>Drop a log file here</strong><br>or use “Open a log…”. Files look like <code>m8-explorer-debug-&lt;song&gt;-&lt;date&gt;.json</code>.</div>
+</main>
+
+<script>
+'use strict'
+
+// ---------------------------------------------------------------------------
+// Small helpers
+
+const OK = 'ok', WARN = 'warn', FAIL = 'fail', INFO = 'info'
+const LABEL = { ok: 'OK', warn: 'Check', fail: 'Failed', info: 'Info' }
+const TARGET_SYNC = 'CLK+TRANSP+SPP'
+
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag)
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value == null || value === false) continue
+    if (key === 'class') el.className = value
+    else if (key === 'text') el.textContent = value
+    else if (key.startsWith('on')) el.addEventListener(key.slice(2), value)
+    else el.setAttribute(key, value)
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)))
+  return el
+}
+
+const fmtMs = (ms) => (ms == null ? '–' : ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`)
+const fmtT = (ms) => `${Math.floor(ms / 60000)}:${((ms % 60000) / 1000).toFixed(1).padStart(4, '0')}`
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+const sum = (list) => list.reduce((a, b) => a + b, 0)
+const worst = (checks) => (checks.some((c) => c.status === FAIL) ? FAIL : checks.some((c) => c.status === WARN) ? WARN : checks.some((c) => c.status === OK) ? OK : INFO)
+
+const check = (status, title, detail, items) => ({ status, title, detail: detail || '', items: items || [] })
+const ok = (...a) => check(OK, ...a)
+const warn = (...a) => check(WARN, ...a)
+const fail = (...a) => check(FAIL, ...a)
+const info = (...a) => check(INFO, ...a)
+
+function browserOf(ua = '') {
+  const firefox = /Firefox\/(\d+)/.exec(ua)
+  if (firefox) return `Firefox ${firefox[1]}`
+  const edge = /Edg\/(\d+)/.exec(ua)
+  if (edge) return `Edge ${edge[1]}`
+  const chrome = /Chrome\/(\d+)/.exec(ua)
+  if (chrome) return `${/Claude\//.test(ua) ? 'Claude app (Chromium' : 'Chrome'} ${chrome[1]}${/Claude\//.test(ua) ? ')' : ''}`
+  return ua.slice(0, 40) || 'unknown browser'
+}
+
+// ---------------------------------------------------------------------------
+// Playback sessions, rebuilt from the events
+
+function playSessions(report) {
+  const events = report.events || []
+  const uptime = report.uptimeMs || 0
+  const sessions = []
+  let open = null
+  for (const e of events) {
+    if (e.type === 'play-start') {
+      if (open) sessions.push(open)
+      open = { start: e, stop: null, drifts: [], reanchors: [], clockLost: [], longTasks: [], hidden: 0, views: new Set(e.view ? [e.view.kind] : []) }
+    } else if (!open) {
+      continue
+    } else if (e.type === 'play-stop') {
+      open.stop = e
+      sessions.push(open)
+      open = null
+    } else if (e.type === 'drift') open.drifts.push(e)
+    else if (e.type === 'reanchor') open.reanchors.push(e)
+    else if (e.type === 'clock-lost') open.clockLost.push(e)
+    else if (e.type === 'long-task') open.longTasks.push(e)
+    else if (e.type === 'visibility' && e.state === 'hidden') open.hidden += 1
+    else if (e.type === 'device-view' && e.view) open.views.add(e.view)
+  }
+  if (open) sessions.push(open)
+  for (const s of sessions) {
+    s.endT = s.stop ? s.stop.t : uptime
+    s.playedMs = s.stop?.playedMs ?? s.endT - s.start.t
+    const summary = s.stop?.session ?? (report.global?.playback?.session ?? null)
+    s.corrections = summary?.corrections ?? s.drifts.length
+    s.reanchorCount = summary?.reanchors ?? s.reanchors.length
+    s.maxSteps = summary?.maxSteps ?? Math.max(0, ...s.drifts.map((d) => Math.abs(d.difference)))
+    s.byTrack = summary?.byTrack ?? []
+    s.clockGaps = summary?.clockGaps ?? 0
+  }
+  return sessions
+}
+
+// ---------------------------------------------------------------------------
+// The analysis: sections of checks
+
+function analyze(report) {
+  const g = report.global || {}
+  const events = report.events || []
+  const problems = report.problems || []
+  const sections = []
+  const add = (id, title, checks, sub) => sections.push({ id, title, checks, sub: sub || '' })
+  const sessions = playSessions(report)
+
+  // --- Log file --------------------------------------------------------------
+  {
+    const c = []
+    c.push(ok('Valid explorer debug log', `format version ${report.version}, exported ${report.exportedAt}`))
+    c.push(info('Page uptime', fmtMs(report.uptimeMs), [`page started ${report.pageStartedAt}`]))
+    if (report.eventsDropped > 0) c.push(warn('Rolling buffer overflowed', `${plural(report.eventsDropped, 'older event')} fell out of the last ${report.eventLimit}: the start of the session is not in the events.`))
+    else c.push(ok('Rolling buffer complete', `${events.length} events, none dropped (limit ${report.eventLimit})`))
+    add('log', 'Log file', c)
+  }
+
+  // --- Environment & permissions -----------------------------------------------
+  {
+    const env = g.environment || {}
+    const p = g.permissions || {}
+    const c = []
+    c.push(info('Browser', `${browserOf(env.userAgent)} · ${env.platform || '?'} · ${env.inFrame ? 'inside the yam8d iframe' : 'own tab (standalone)'}`, [env.userAgent]))
+    if (env.secureContext === false) c.push(fail('Not a secure context', 'Web MIDI and Web Serial need https or localhost.'))
+    if (env.sdkVersion) c.push(info('SDK version', env.sdkVersion))
+    if (g.handshake) c.push(g.handshake.ok ? ok('SDK handshake', `${g.handshake.mode} mode in ${g.handshake.ms} ms`) : fail('SDK handshake failed', g.handshake.error || '', [`after ${g.handshake.ms} ms`]))
+    const midi = p.midi
+    if (midi) {
+      if (!midi.supported) c.push(fail('Web MIDI not available in this browser', 'No MIDI clock and no mute / solo.'))
+      else if (midi.permission === 'granted') c.push(ok('Web MIDI permission granted', midi.sysexPermission === 'granted' ? 'with SysEx' : `SysEx: ${midi.sysexPermission}`))
+      else if (midi.permission === 'prompt') c.push(warn('Web MIDI not granted yet', 'The browser asks when the page first needs it (clock, mute / solo).'))
+      else c.push(fail(`Web MIDI permission ${midi.permission}`, 'The MIDI clock and the mute / solo notes cannot work.'))
+      if (env.inFrame && midi.allowedByFramePolicy === false) c.push(fail('The frame does not allow MIDI', 'yam8d’s External Apps iframe must allow "midi".'))
+      if (midi.ports && typeof midi.ports === 'object') {
+        const named = (list) => (list || []).find((port) => /\bM8\b/.test(port.name || ''))
+        const input = named(midi.ports.inputs), output = named(midi.ports.outputs)
+        c.push(input ? ok('MIDI input “M8” present', input.state) : warn('No MIDI input named M8', 'The MIDI clock cannot reach the page.'))
+        c.push(output ? ok('MIDI output “M8” present', output.state) : warn('No MIDI output named M8', 'Mute / solo notes cannot be sent.'))
+        c.push(info('MIDI ports', `${midi.ports.inputs.length} in · ${midi.ports.outputs.length} out`, [...midi.ports.inputs.map((x) => `in: ${x.name}`), ...midi.ports.outputs.map((x) => `out: ${x.name}`)]))
+      } else if (typeof midi.ports === 'string') c.push(info('MIDI ports not listed', midi.ports))
+    }
+    if (p.audioInput) {
+      const a = p.audioInput.permission
+      c.push(a === 'granted' ? ok('Audio input permission granted') : a === 'prompt' ? info('Audio input not asked yet') : warn(`Audio input permission ${a}`, 'The M8’s sound cannot play through the page.'))
+    }
+    if (p.serial) {
+      const ports = p.serial.grantedPorts
+      if (Array.isArray(ports)) {
+        const m8 = ports.some((x) => x.vendorId === '0x16c0')
+        c.push(m8 ? ok('Web Serial: M8 port granted', '0x16c0:0x048b (Teensy)') : (g.connection?.deviceTransport === 'serial' ? warn('Web Serial: no port granted', 'The browser will show its picker on the next connection.') : info('Web Serial: no port granted')))
+      } else c.push(info('Web Serial', p.serial.supported ? 'supported' : 'not supported'))
+    }
+    add('env', 'Setup & permissions', c)
+  }
+
+  // --- Connection --------------------------------------------------------------
+  {
+    const con = g.connection || {}
+    const c = []
+    if (con.client === null || !g.connection) c.push(fail('No SDK client created'))
+    else {
+      c.push(con.connected ? ok('M8 connected', con.mode === 'host' ? 'through yam8d' : `directly over ${con.deviceTransport}`) : fail('M8 not connected at export', con.mode === 'standalone' ? 'Connect M8 was not pressed, or the port is held by another page (yam8d?).' : 'yam8d has no M8.'))
+      if (con.deviceModel) c.push(ok('Device model', con.deviceModel, con.systemInfo ? [JSON.stringify(con.systemInfo)] : []))
+      else if (con.connected) c.push(warn('Device model unknown', 'The M8’s system message was not received.'))
+      if (con.mode === 'standalone' && con.connected) c.push(con.audio ? ok('M8 audio playing through the page') : warn('Connected without sound', 'No M8 audio input found, or the audio permission was refused.'))
+    }
+    const downs = events.filter((e) => e.type === 'connection' && e.up === false)
+    const ups = events.filter((e) => e.type === 'connection' && e.up === true)
+    const lost = downs.length - 1
+    if (lost > 0) c.push(warn(`The connection dropped ${plural(lost, 'time')}`, `${ups.length} connects in total`, downs.map((e) => `down at ${fmtT(e.t)}`)))
+    else c.push(ok('Connection stable', `${plural(ups.length, 'connect event')}, no drop after start`))
+    add('conn', 'Connection', c)
+  }
+
+  // --- MIDI clock link (the page, not a song) ---------------------------------------
+  {
+    const m = g.midi || {}
+    const pb = g.playback || {}
+    const c = []
+    const t = pb.midiTransport
+    if (!t) c.push(info('MIDI clock never requested'))
+    else if (t.ok) {
+      const refused = events.find((e) => e.type === 'midi-clock' && !e.ok)
+      const accepted = refused && events.find((e) => e.type === 'midi-clock' && e.ok && e.t > refused.t)
+      c.push(ok('MIDI clock enabled', accepted ? `first refused (“${refused.error}”), accepted at ${fmtT(accepted.t)}` : ''))
+    } else c.push(fail('MIDI clock refused', t.error || ''))
+    if (pb.clock) c.push(pb.clock.events > 0 ? ok('MIDI clock events received', `${pb.clock.events} events in the session${pb.clock.bpm ? ` · last tempo ${pb.clock.bpm} BPM` : ''}`) : info('No MIDI clock event received in the session', 'Normal when no song had SYNC OUT on.'))
+    if (m.muteSoloOutput?.lastError) c.push(fail('Mute / solo output could not open', m.muteSoloOutput.lastError))
+    // Without an exploration there is no per-song section: the settings read last stand in.
+    if (!(report.exploration || []).length && m.songSettings) c.push(...syncSettingChecks(m.songSettings, null, m.muteSoloOutput?.channel))
+    add('clocklink', 'MIDI clock link', c)
+  }
+
+  // --- Song ----------------------------------------------------------------------
+  {
+    const s = g.song
+    const c = []
+    if (s) {
+      c.push(info(`Song “${s.name ?? 'UNTITLED'}”`, `${s.source} · ${s.tempo ?? '?'} BPM · ${s.rows} rows · ${s.chains} chains · ${s.phrases} phrases · ${s.instruments?.used ?? '?'} instruments · ${s.tables?.used ?? '?'} tables used`))
+      if (s.source === 'demo') c.push(warn('The demo song is shown', 'Nothing was explored from the M8 in this session.'))
+      const list = s.instrumentList || []
+      if (list.length) {
+        const missing = list.filter((i) => !i.modsRead && i.type !== 'NONE')
+        const none = list.filter((i) => i.type === 'NONE')
+        c.push(missing.length ? fail(`Modulators missing for ${plural(missing.length, 'instrument')}`, '', missing.map((i) => `instrument ${i.id.toString(16).toUpperCase().padStart(2, '0')} (${i.type})`)) : ok('Modulators read for every instrument that has them', `${list.length} instruments${none.length ? `, ${none.length} of type NONE (no modulators)` : ''}`))
+      }
+      if (s.tables && s.tables.read < s.tables.used) c.push(fail('Some used tables were not read', `${s.tables.read} read, ${s.tables.used} used`))
+      else if (s.tables) c.push(ok('Every used table read', `${s.tables.read} read for ${s.tables.used} used`))
+      const grooves = s.grooves || []
+      const unread = grooves.filter((x) => !x.read)
+      if (unread.length) c.push(fail('Grooves used but never read', 'The default 6-6 is assumed for them.', unread.map((x) => `groove ${x.id} (${x.usedBy.join(', ')})`)))
+      const odd = grooves.filter((x) => !x.standard && x.read)
+      if (odd.length) c.push(info(`${plural(odd.length, 'non-standard groove')} in use`, 'Step lengths other than 6-6 sixteenths.', odd.map((x) => `groove ${x.id}: ${x.loop.join(' ')} ticks at PPQ ${x.ppq} · ${x.usedBy.join(', ')}`)))
+      else if (grooves.length) c.push(ok('Only the plain 6-6 groove', 'every step lasts one sixteenth'))
+      c.push(s.themeRead ? ok('Device theme read') : info('Device theme not read', 'Colours come from the screens (use Read theme for the exact ones).'))
+      const runWarnings = new Set((report.exploration || []).flatMap((r) => r.warnings || []))
+      const extra = (s.warnings || []).filter((w) => !runWarnings.has(w))
+      if (extra.length) c.push(fail(`${plural(extra.length, 'warning')} on the current song`, '', extra))
+    } else c.push(info('No song information'))
+    add('song', 'Song', c)
+  }
+
+  // --- Exploration runs -----------------------------------------------------------
+  const runs = [...(report.exploration || []), ...(report.deviceTasks || [])].sort((a, b) => a.t - b.t)
+  const explorations = report.exploration || []
+  if (!explorations.length) add('explore-none', 'Exploration', [info('No exploration in this session', 'Press Explore song to read the song from the M8.')])
+  explorations.forEach((run, index) => {
+    add(`explore-${run.id}`, `Exploration ${index + 1}`, exploreChecks(run, problems), `${fmtT(run.t)} · ${run.info?.previousSong ?? ''} → ${run.result?.name ?? ''}`)
+    const win = songWindow(run, explorations[index + 1], events, sessions, report.uptimeMs || 0)
+    add(`sync-${run.id}`, `MIDI sync & clock · ${run.result?.name ?? 'song'}`, songSyncChecks(run, win), `${fmtT(win.t0)} – ${fmtT(win.t1)}`)
+  })
+  const tasks = report.deviceTasks || []
+  if (tasks.length) {
+    add('tasks', 'Other device tasks', tasks.map((t) => {
+      const text = `${t.kind} at ${fmtT(t.t)} · ${fmtMs(t.durationMs)}`
+      return t.outcome === 'done' ? ok(text) : t.outcome === 'cancelled' ? warn(text, 'cancelled') : fail(text, t.result?.error || t.outcome, (t.messages || []).map((x) => x.text.split('\n')[0]))
+    }))
+  }
+
+  // --- Playback ---------------------------------------------------------------------
+  {
+    const c = []
+    const syncOk = g.midi?.songSettings?.syncOut === TARGET_SYNC
+    if (!sessions.length) c.push(info('No song played in this session', 'Play the song on the M8 with Follow M8 on to measure the playheads.'))
+    sessions.forEach((s, i) => {
+      const label = `Play ${i + 1} · ${fmtT(s.start.t)} · ${fmtMs(s.playedMs)}${s.stop ? '' : ' (still playing)'}`
+      const rate = s.playedMs > 0 ? s.corrections / (s.playedMs / 1000) : 0
+      const how = `started from ${s.start.source === 'transport' ? 'the MIDI Start message' : 'the screen markers'} · ${s.start.timeBase || '?'}`
+      const exactTracks = (s.start.tracks || []).filter((t) => t.exact).length
+      const items = [
+        how,
+        `${plural((s.start.tracks || []).length, 'track')} placed, ${exactTracks} exact`,
+        `cursor ${s.start.cursor ? `row ${(s.start.cursor.songRow).toString(16).toUpperCase().padStart(2, '0')} track ${s.start.cursor.track + 1}` : 'unknown'} · view ${s.start.view?.kind ?? '?'} · Follow M8 ${s.start.app?.following ? 'on' : 'off'}`,
+        s.stop ? `stopped: ${s.stop.reason}` : 'no stop event',
+      ]
+      const oddTracks = (s.start.tracks || []).filter((t) => t.ticks && t.ticks.nonStandard > 0)
+      if (oddTracks.length) items.push(`non-standard step lengths on ${oddTracks.map((t) => `track ${t.track + 1} (${t.ticks.distinct.join('/')} ticks)`).join(', ')}`)
+      const signs = s.drifts.map((d) => Math.sign(d.difference)).filter(Boolean)
+      const sameWay = signs.length >= 5 && Math.abs(sum(signs)) / signs.length >= 0.8
+      let status, detail
+      if (s.corrections === 0) {
+        const phraseSeen = s.views.has('phrase')
+        status = phraseSeen ? OK : INFO
+        detail = phraseSeen ? 'no correction needed on a Phrase view: the playheads kept up' : 'no correction, but no Phrase view was visited: drift cannot be measured from the Song view'
+      } else if (rate < 0.1) {
+        status = OK
+        detail = `${plural(s.corrections, 'small correction')} (${rate.toFixed(2)}/s), largest ${s.maxSteps} step${s.maxSteps === 1 ? '' : 's'}`
+      } else if (rate < 0.5) {
+        status = WARN
+        detail = `${plural(s.corrections, 'correction')} (${rate.toFixed(2)}/s), largest ${s.maxSteps} steps`
+      } else {
+        status = FAIL
+        detail = `${plural(s.corrections, 'correction')} (${rate.toFixed(1)}/s), largest ${s.maxSteps} steps`
+      }
+      if (sameWay) {
+        const ahead = sum(signs) < 0
+        detail += `. Always the same way: the playhead runs ${ahead ? 'ahead of' : 'behind'} the M8 — a wrong tempo or a stale clock`
+        if (status === OK) status = WARN
+      }
+      if (status === OK && !syncOk && s.start.timeBase === 'MIDI clock') status = OK
+      if (s.reanchorCount) items.push(`${plural(s.reanchorCount, 'reanchor')} (a track’s position restarted)`)
+      if (s.byTrack.some(Boolean)) items.push(`corrections per track: ${s.byTrack.map((n, t) => (n ? `${t + 1}:${n}` : null)).filter(Boolean).join(' ')}`)
+      if (s.clockLost.length) items.push(`MIDI clock lost at ${s.clockLost.map((e) => fmtT(e.t)).join(', ')}`)
+      c.push(check(status, label, detail, items))
+      if (s.longTasks.length) c.push(warn(`Play ${i + 1}: the page stalled ${plural(s.longTasks.length, 'time')}`, 'A busy main thread delays the screen reads the playheads are corrected by.', s.longTasks.map((e) => `${fmtT(e.t)}: ${e.ms} ms`)))
+      if (s.hidden) c.push(warn(`Play ${i + 1}: the tab was in the background`, 'Browsers slow the timers of hidden tabs: the playheads can drift.'))
+    })
+    const unplaced = events.filter((e) => e.type === 'play-not-placed')
+    if (unplaced.length) c.push(warn(`${plural(unplaced.length, 'MIDI start')} could not be placed on a song row`, 'The screen markers took over.', unplaced.map((e) => `${fmtT(e.t)}: ${e.kind} at position ${e.spp}`)))
+    const tot = g.playback?.totals
+    if (tot && tot.sessions) c.push(info('Totals', `${plural(tot.sessions, 'play')} · ${plural(tot.corrections, 'correction')} · ${plural(tot.reanchors, 'reanchor')}`))
+    add('play', 'Playback & playheads', c, sessions.length ? `${plural(sessions.length, 'play')}` : '')
+  }
+
+  // --- Problems ------------------------------------------------------------------------
+  {
+    const c = []
+    if (!problems.length) c.push(ok('No errors or failed operations recorded'))
+    for (const p of problems) {
+      const times = p.count > 1 ? ` ×${p.count}` : ''
+      const when = `${fmtT(p.firstT)}${p.count > 1 ? ` – ${fmtT(p.lastT)}` : ''}`
+      const title = `${p.source}: ${p.message}${times}`
+      // Logs from before problems were marked resolved: a later successful MIDI clock request counts.
+      const laterClock = p.source === 'midi-clock' ? events.find((e) => e.type === 'midi-clock' && e.ok && e.t > p.firstT) : null
+      const resolvedT = p.resolvedT ?? laterClock?.t
+      if (resolvedT != null) c.push(ok(title, `${when} · worked again at ${fmtT(resolvedT)}`))
+      else if (p.source === 'notice') c.push((/another song/i.test(p.message) ? info : /^(Could not|Exploration failed)/.test(p.message) ? fail : warn)(title, when))
+      else c.push(fail(title, when, p.detail ? [JSON.stringify(p.detail)] : []))
+    }
+    add('problems', 'Problems & errors', c)
+  }
+
+  return { sections, sessions, runs }
+}
+
+// ---------------------------------------------------------------------------
+// MIDI sync & clock, per explored song
+
+/** SYNC OUT and the channels of one song's settings; `before` holds what the song had before the explorer changed it. */
+function syncSettingChecks(sync, before, mixerChannel) {
+  const c = []
+  const was = (key) => (before && before[key] != null && before[key] !== sync[key] ? ` (was ${before[key]})` : '')
+  c.push(sync.syncOut === TARGET_SYNC
+    ? ok(`SYNC OUT is ${TARGET_SYNC}${was('syncOut')}`, 'the clock, Start / Stop and the song position reach the page')
+    : warn(`SYNC OUT is ${sync.syncOut}`, `Without ${TARGET_SYNC} the playheads follow the tempo on the screen, less exactly.`))
+  const cc = sync.ccMapChan, cue = sync.songRowCueChan
+  if (cc == null) c.push(info('CC MAP CHAN not read'))
+  else if (cc === 'ALL') c.push(warn('CC MAP CHAN is ALL', 'The mute / solo notes cannot address one track.'))
+  else if (cc === cue) c.push(fail('CC MAP CHAN equals SONG ROW CUE CHAN', `both ${cc}: the mute / solo notes would cue song rows.`))
+  else c.push(ok(`CC MAP CHAN ${cc}${was('ccMapChan')}`, `song row cue channel ${cue}`))
+  if (cc && cc !== 'ALL' && mixerChannel != null && Number(cc) !== mixerChannel) c.push(warn('Mute / solo channel differs from CC MAP CHAN', `explorer sends on ${mixerChannel}, the M8 listens on ${Number(cc)}.`))
+  return c
+}
+
+/** What belongs to a song: from its exploration until the M8 loads another song, or the next exploration. */
+function songWindow(run, nextRun, events, sessions, uptime) {
+  const after = run.endT ?? run.t
+  const otherSong = events.find((e) => e.type === 'other-song' && e.other && e.t > after)
+  const t1 = Math.min(nextRun ? nextRun.t : Infinity, otherSong ? otherSong.t : Infinity, uptime || Infinity)
+  const inside = (e) => e.t >= run.t && e.t <= t1
+  return {
+    t0: run.t,
+    after,
+    t1: Number.isFinite(t1) ? t1 : after,
+    events: events.filter(inside),
+    sessions: sessions.filter((x) => x.start.t >= after - 1 && x.start.t <= t1 + 1),
+  }
+}
+
+function songSyncChecks(run, win) {
+  const c = []
+  const messages = (run.messages || []).map((m) => m.text)
+  const sync = run.result?.midiSync
+  let before = null
+  const read = messages.find((t) => /^\[sync\] read /.test(t))
+  const json = read && /read (\{.*?\}); channel plan/.exec(read)
+  if (json) {
+    try { before = JSON.parse(json[1]) } catch { before = null }
+  }
+  const mixer = [...win.events].reverse().find((e) => e.type === 'mixer-channel')
+  if (!sync) c.push(run.outcome === 'done' ? warn('MIDI settings not read', 'The sync check did not run after this exploration.') : info('MIDI settings not read', 'The exploration did not finish.'))
+  else {
+    c.push(...syncSettingChecks(sync, before, mixer ? mixer.to : null))
+    if (mixer && sync.ccMapChan && sync.ccMapChan !== 'ALL' && Number(sync.ccMapChan) === mixer.to) c.push(ok('Mute / solo channel follows CC MAP CHAN', `${mixer.from} → ${mixer.to}`))
+  }
+  if (messages.some((t) => /changes declined/.test(t))) c.push(info('MIDI settings changes declined', 'You chose not to let the explorer set SYNC OUT / CC MAP CHAN.'))
+  const notSet = messages.filter((t) => /(SYNC OUT|CC MAP CHAN) not set/.test(t))
+  if (notSet.length) c.push(fail('The explorer could not change a MIDI setting', 'The song keeps its old value.', notSet.map((t) => t.split('\n')[0])))
+
+  const syncOn = sync?.syncOut === TARGET_SYNC
+  const plays = win.sessions
+  if (!plays.length) c.push(info('Not played while this song was loaded', 'No play to judge the clock on.'))
+  plays.forEach((x) => {
+    const onClock = x.start.timeBase === 'MIDI clock'
+    const label = `Play at ${fmtT(x.start.t)} ran on ${onClock ? 'the MIDI clock' : 'the tempo shown on the screen'}`
+    if (syncOn) c.push(onClock ? ok(label) : warn(label, 'SYNC OUT is on, yet no clock was running when it started.'))
+    else if (sync) c.push(onClock ? warn(label, 'SYNC OUT is off for this song: that clock was the previous song’s (a stale clock).') : info(label, 'Expected: SYNC OUT is off.'))
+    else c.push(info(label))
+  })
+  const gapsPlaying = win.events.filter((e) => e.type === 'clock-gap' && e.playing)
+  if (gapsPlaying.length) c.push(fail(`Clock stalled while playing (${gapsPlaying.length}×)`, 'A gap in the clock moves the playheads off.', gapsPlaying.map((e) => `${fmtT(e.t)}: ${fmtMs(e.gapMs)} instead of ${e.expected} ms`)))
+  const resumed = win.events.filter((e) => e.type === 'clock-gap' && !e.playing && e.t >= win.after)
+  if (resumed.length) c.push(info('The clock came back after a pause', 'It stops when the song is changed or SYNC OUT is off.', resumed.map((e) => `${fmtT(e.t)} after ${fmtMs(e.gapMs)}`)))
+  const lost = win.events.filter((e) => e.type === 'clock-lost')
+  if (lost.length) c.push((lost.some((e) => e.playing) ? warn : info)(`MIDI clock went silent ${plural(lost.length, 'time')}`, 'Positions go back to the tempo shown on the screen.', lost.map((e) => `${fmtT(e.t)} after ${fmtMs(e.silentMs)}${e.playing ? ' · while playing' : ''}`)))
+  const noClock = win.events.filter((e) => e.type === 'no-clock-while-playing')
+  if (noClock.length) c.push(warn('Playing without a MIDI clock', 'The playheads ran on the screen tempo.', noClock.map((e) => `${fmtT(e.t)}: silent for ${fmtMs(e.silentMs)}`)))
+  const transports = win.events.filter((e) => e.type === 'transport' && (e.kind === 'start' || e.kind === 'continue'))
+  if (transports.length) c.push(ok(`${plural(transports.length, 'MIDI Start / Continue message')} received`, 'Every track was placed from the song position.'))
+  else if (plays.length && syncOn) c.push(info('Play detected from the screen only', 'No MIDI Start / Continue arrived (the song was already playing when it was explored).'))
+  // The last one: the first tempo logged after a start is the least settled.
+  const tempoEvent = [...win.events].reverse().find((e) => e.type === 'tempo' && e.t >= win.after)
+  const songTempo = run.result?.tempo
+  if (tempoEvent && songTempo) {
+    c.push(Math.abs(tempoEvent.bpm - songTempo) / songTempo > 0.03
+      ? warn('Clock tempo differs from the song tempo', `clock ${tempoEvent.bpm} BPM at ${fmtT(tempoEvent.t)}, song ${songTempo} BPM (a tempo change in the song, or the clock is the previous song’s)`)
+      : ok('Clock tempo matches the song tempo', `${tempoEvent.bpm} BPM on the clock, ${songTempo} in the song`))
+  }
+  return c
+}
+
+function exploreChecks(run, problems) {
+  const c = []
+  const messages = (run.messages || []).map((m) => m.text)
+  const count = (re) => messages.filter((text) => re.test(text))
+  c.push(run.outcome === 'done' ? ok('Finished', fmtMs(run.durationMs)) : run.outcome === 'cancelled' ? warn('Cancelled', 'the song model is incomplete') : fail(`Outcome: ${run.outcome}`, run.result?.error || ''))
+  const warnings = run.warnings || []
+  c.push(warnings.length ? fail(`${plural(warnings.length, 'warning')} while reading the song`, 'Something could not be read.', warnings) : ok('No warnings', 'every chain, phrase, instrument, table, scale and groove was read'))
+  const r = run.result || {}
+  if (r.chains === 0 || r.rows === 0) c.push(fail('Nothing was read', 'The song came back empty.'))
+  else if (r.chains != null) c.push(info(`“${r.name ?? 'UNTITLED'}” · ${r.tempo ?? '?'} BPM`, `${r.rows} rows · ${r.chains} chains · ${r.phrases} phrases · ${r.instruments} instruments · ${r.tables} tables · ${r.scales} scales · ${r.grooves} grooves`))
+
+  const phases = run.phases || []
+  if (phases.length) {
+    const items = phases.map((p, i) => `${p.phase}: ${fmtMs((phases[i + 1]?.t ?? run.endT ?? p.t) - p.t)}`)
+    c.push(info('Time per phase', '', items))
+  }
+
+  const retries = count(/pressing it again/)
+  const failures = count(/ failed: /)
+  const notFound = count(/not read|not set|cursor is not on|cursor not moved/)
+  const bigOff = count(/does not step 16/)
+  const swapped = count(/swapped/)
+  if (failures.length) c.push(fail(`${plural(failures.length, 'view')} never settled`, 'The M8 did not show what was expected.', failures.map((t) => t.split('\n')[0])))
+  if (notFound.length) c.push(fail('Device operations that failed', '', notFound.map((t) => t.split('\n')[0])))
+  if (retries.length) c.push(warn(`${plural(retries.length, 'key press')} had to be repeated`, 'The M8 missed a press.', retries))
+  if (bigOff.length) c.push(warn('Option+Up/Down big steps turned off', 'Tables / instruments were stepped one at a time (slow).', bigOff))
+  if (swapped.length) c.push(info('Option+Up/Down direction learnt', '', swapped))
+  if (!failures.length && !notFound.length && !retries.length && !bigOff.length) c.push(ok('The driver needed no retries'))
+
+  const midiSync = r.midiSync
+  if (midiSync) {
+    const declined = messages.some((t) => /changes declined/.test(t))
+    c.push(info('MIDI settings after the run', `SYNC OUT ${midiSync.syncOut} · CC MAP CHAN ${midiSync.ccMapChan} · song row cue ${midiSync.songRowCueChan}${declined ? ' · changes declined by the user' : ''}`))
+  } else if (run.outcome === 'done') c.push(warn('MIDI settings not read', 'The sync check did not run.'))
+
+  if (run.outcome === 'done') {
+    const hasTop = phases.some((p) => p.phase === 'song-top')
+    const topProblem = problems.find((p) => p.source === 'song-top')
+    if (topProblem) c.push(fail('Cursor not returned to the top of the song', topProblem.message))
+    else if (hasTop) c.push(ok('Cursor returned to the top of the song'))
+    else c.push(info('No “back to the top” step', 'This log comes from a version before that step existed.'))
+  }
+  return c
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+
+function lightEl(status) {
+  return h('span', { class: `light ${status}`, role: 'img', 'aria-label': LABEL[status] })
+}
+
+function sectionEl(section) {
+  const status = worst(section.checks)
+  return h('section', { class: 'card', id: section.id },
+    h('h2', {}, lightEl(status), section.title, section.sub ? h('span', { class: 'sub', text: section.sub }) : null),
+    h('ul', { class: 'checks' }, section.checks.map((cItem) => h('li', {},
+      lightEl(cItem.status),
+      h('div', {},
+        h('span', { class: 'title', text: cItem.title }),
+        h('span', { class: `tag ${cItem.status}`, text: LABEL[cItem.status] }),
+        cItem.detail ? h('div', { class: 'detail', text: cItem.detail }) : null,
+        cItem.items.length ? h('details', { open: cItem.status === FAIL || cItem.status === WARN }, h('summary', { text: `${cItem.items.length} detail${cItem.items.length === 1 ? '' : 's'}` }), h('ul', {}, cItem.items.map((text) => h('li', { class: 'mono', text })))) : null,
+      )))))
+}
+
+function summaryEl(result, report, fileName) {
+  const all = result.sections.flatMap((s) => s.checks)
+  const n = { ok: all.filter((x) => x.status === OK).length, warn: all.filter((x) => x.status === WARN).length, fail: all.filter((x) => x.status === FAIL).length }
+  const overall = n.fail ? FAIL : n.warn ? WARN : OK
+  const headline = n.fail ? `${plural(n.fail, 'thing')} failed` : n.warn ? `Works, ${plural(n.warn, 'point')} to check` : 'Everything checks out'
+  const song = report.global?.song
+  return h('section', { class: 'card summary' },
+    h('div', { class: 'verdict' }, h('span', { class: `light ${overall}`, style: 'width:26px;height:26px', role: 'img', 'aria-label': LABEL[overall] }), h('span', { class: 'big', text: headline }),
+      h('div', { class: 'spacer' }),
+      h('div', { class: 'counts' },
+        [[OK, n.ok, 'good'], [WARN, n.warn, 'to check'], [FAIL, n.fail, 'failed']].map(([status, value, text]) => h('div', { class: 'count' }, lightEl(status), h('b', { text: String(value) }), h('span', { class: 'detail', text })))),
+    ),
+    h('div', { class: 'facts' },
+      h('span', {}, 'File ', h('b', { text: fileName })),
+      h('span', {}, 'Song ', h('b', { text: song?.name ?? '—' })),
+      h('span', {}, 'Session ', h('b', { text: fmtMs(report.uptimeMs) })),
+      h('span', {}, 'Events ', h('b', { text: String((report.events || []).length) })),
+      h('span', {}, 'Explorations ', h('b', { text: String((report.exploration || []).length) })),
+      h('span', {}, 'Plays ', h('b', { text: String(result.sessions.length) })),
+    ))
+}
+
+function timelineEl(report, result) {
+  const events = report.events || []
+  const last = Math.max(report.uptimeMs || 0, ...events.map((e) => e.t), ...result.runs.map((r) => r.endT ?? r.t), 1)
+  const pct = (t) => `${Math.min(100, Math.max(0, (t / last) * 100))}%`
+  const bar = (t0, t1, cls, title) => h('div', { class: `bar ${cls}`, style: `left:${pct(t0)};width:${Math.max(0.3, ((t1 - t0) / last) * 100)}%`, title })
+  const mark = (t, cls, title) => h('div', { class: `mark ${cls}`, style: `left:${pct(t)}`, title })
+  const lane = (name, items) => h('div', { class: 'lane' }, h('div', { class: 'name', text: name }), h('div', { class: 'track' }, items))
+  const outcomeClass = { done: 'ok', cancelled: 'warn', failed: 'fail', running: 'warn' }
+  const runs = result.runs.map((r) => bar(r.t, r.endT ?? last, r.kind === 'explore' ? outcomeClass[r.outcome] || '' : '', `${r.kind} · ${r.outcome} · ${fmtT(r.t)} · ${fmtMs(r.durationMs)}`))
+  const plays = result.sessions.map((s) => {
+    const rate = s.playedMs > 0 ? s.corrections / (s.playedMs / 1000) : 0
+    return bar(s.start.t, s.endT, rate >= 0.5 ? 'fail' : rate >= 0.1 ? 'warn' : 'ok', `play · ${fmtMs(s.playedMs)} · ${s.corrections} corrections`)
+  })
+  const marks = [
+    ...events.filter((e) => e.type === 'connection').map((e) => mark(e.t, e.up ? 'blue' : 'fail', `${e.up ? 'connected' : 'disconnected'} · ${fmtT(e.t)}`)),
+    ...events.filter((e) => ['clock-lost', 'clock-gap', 'other-song', 'no-clock-while-playing'].includes(e.type)).map((e) => mark(e.t, 'warn', `${e.type} · ${fmtT(e.t)}`)),
+    ...(report.problems || []).map((p) => mark(p.firstT, p.resolvedT != null ? 'ok' : 'fail', `${p.source}: ${p.message} · ${fmtT(p.firstT)}`)),
+  ]
+  const drifts = events.filter((e) => e.type === 'drift').map((e) => mark(e.t, 'fail', `drift ${e.difference > 0 ? '+' : ''}${e.difference} on track ${e.track} · ${fmtT(e.t)}`))
+  const ticks = []
+  const stepMs = [1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000].find((s) => last / s <= 10) || 600000
+  for (let t = 0; t <= last; t += stepMs) ticks.push(h('span', { class: 'tick', style: `left:${pct(t)}`, text: fmtT(t).replace(/\.0$/, '') }))
+  return h('section', { class: 'card' },
+    h('h2', {}, 'Timeline', h('span', { class: 'sub', text: 'hover a bar or a mark' })),
+    h('div', { class: 'timeline' },
+      lane('Exploration & tasks', runs), lane('Playback', plays), lane('Events', marks), lane('Drifts', drifts),
+      h('div', { class: 'axis' }, h('div'), h('div', { class: 'ticks' }, ticks))),
+    h('div', { class: 'legend' },
+      h('span', { style: '--c:var(--ok)', text: 'done / good' }), h('span', { style: '--c:var(--warn)', text: 'cancelled / to check' }), h('span', { style: '--c:var(--fail)', text: 'failed' }), h('span', { style: '--c:var(--blue)', text: 'connection / task' })))
+}
+
+function eventsEl(report) {
+  const events = report.events || []
+  const types = [...new Set(events.map((e) => e.type))].sort()
+  const hidden = new Set()
+  const tbody = h('tbody')
+  const draw = () => {
+    tbody.replaceChildren(...events.filter((e) => !hidden.has(e.type)).slice(0, 600).map((e) => {
+      const { seq, t, type, ...rest } = e
+      return h('tr', {}, h('td', { class: 't mono', text: fmtT(t) }), h('td', { class: 'mono', text: type }), h('td', { class: 'data mono', text: JSON.stringify(rest) }))
+    }))
+  }
+  const chips = types.map((type) => {
+    const n = events.filter((e) => e.type === type).length
+    const chip = h('button', { class: 'chip', type: 'button', 'aria-pressed': 'true', text: `${type} ${n}` })
+    chip.addEventListener('click', () => {
+      if (hidden.has(type)) hidden.delete(type)
+      else hidden.add(type)
+      chip.setAttribute('aria-pressed', String(!hidden.has(type)))
+      draw()
+    })
+    return chip
+  })
+  draw()
+  return h('section', { class: 'card' },
+    h('h2', {}, 'Events', h('span', { class: 'sub', text: `${events.length} in the rolling buffer (first 600 shown)` })),
+    h('div', { class: 'filters' }, chips),
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', { text: 'time' }), h('th', { text: 'type' }), h('th', { text: 'data' }))), tbody)))
+}
+
+function textSummary(result, fileName) {
+  const lines = [`Explorer log analysis — ${fileName}`]
+  for (const section of result.sections) {
+    lines.push('', `## ${section.title}`)
+    for (const item of section.checks) {
+      lines.push(`[${LABEL[item.status]}] ${item.title}${item.detail ? ` — ${item.detail}` : ''}`)
+      for (const sub of item.items.slice(0, 12)) lines.push(`    · ${String(sub).split('\n')[0]}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+
+const app = document.getElementById('app')
+const copyButton = document.getElementById('copy')
+let lastText = ''
+
+function show(report, fileName) {
+  const result = analyze(report)
+  lastText = textSummary(result, fileName)
+  copyButton.classList.remove('hidden')
+  document.title = `Log · ${report.global?.song?.name ?? fileName}`
+  app.replaceChildren(summaryEl(result, report, fileName), timelineEl(report, result), ...result.sections.map(sectionEl), eventsEl(report))
+}
+
+function showError(message) {
+  app.replaceChildren(h('div', { class: 'error', role: 'alert', text: message }), dropEl())
+  copyButton.classList.add('hidden')
+}
+
+function dropEl() {
+  return h('div', { id: 'drop', class: 'drop' }, h('strong', { text: 'Drop a log file here' }), h('br'), 'or use “Open a log…”.')
+}
+
+async function load(file) {
+  if (!file) return
+  let report
+  try {
+    report = JSON.parse(await file.text())
+  } catch (error) {
+    return showError(`${file.name} is not valid JSON (${error.message}).`)
+  }
+  if (!report || report.format !== 'm8-song-explorer-debug') return showError(`${file.name} is not an M8 Song Explorer debug log (its "format" is not "m8-song-explorer-debug").`)
+  try {
+    show(report, file.name)
+  } catch (error) {
+    showError(`The log could not be analysed: ${error.message}`)
+    console.error(error)
+  }
+}
+
+document.getElementById('file').addEventListener('change', (event) => load(event.target.files[0]))
+window.addEventListener('dragover', (event) => {
+  event.preventDefault()
+  document.getElementById('drop')?.classList.add('over')
+})
+window.addEventListener('dragleave', () => document.getElementById('drop')?.classList.remove('over'))
+window.addEventListener('drop', (event) => {
+  event.preventDefault()
+  load(event.dataTransfer.files[0])
+})
+copyButton.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(lastText)
+    copyButton.textContent = 'Copied'
+  } catch {
+    copyButton.textContent = 'Copy failed'
+  }
+  setTimeout(() => (copyButton.textContent = 'Copy summary'), 1500)
+})
+
+// Exposed for tests and for pasting a log by hand.
+window.analyzeLog = analyze
+window.showLog = show
+</script>
+</body>
+</html>

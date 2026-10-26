@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { isPage, viewOf } from '../src/m8/screen/screenReader'
-import { exploreSong } from '../src/m8/tasks/explorer'
+import { exploreSong, moveToSongTop } from '../src/m8/tasks/explorer'
 import { demoSong } from '../src/model/demo'
 import { chainScreen, phraseScreen } from '../src/model/screens'
 import { chainLength, lastSongRow, type SongModel, usedItems } from '../src/model/song'
@@ -54,6 +54,27 @@ describe('exploreSong', () => {
     for (const chain of Object.values(model.chains)) {
       for (const row of chain.rows.slice(chainLength(chain))) if (row.phrase != null) expect(model.phrases[row.phrase]).toBeDefined()
     }
+  })
+
+  test('an instrument of type NONE has an empty Inst. Mods page: it is skipped, not a warning', async () => {
+    const device           = demoSong()
+    const id               = usedItems(device).instruments[0]
+    device.instruments[id] = {
+      id,
+      name : null,
+      type : 'NONE',
+      lines: []
+    }
+    const { fake, model }  = await explore(device)
+    expect(model.warnings).toEqual([])
+    expect(model.instruments[id].type).toBe('NONE')
+    expect(model.instruments[id].mods).toBeUndefined()
+    // The other instruments still have theirs.
+    const others = usedItems(device).instruments.filter((other) => other !== id)
+    expect(others.length).toBeGreaterThan(0)
+    for (const other of others) expect(model.instruments[other].mods?.length).toBeGreaterThan(0)
+    expect(fake.view).toBe('song')
+    expect(fake.forbidden).toEqual([])
   })
 
   test('indicators after the number in a title are not part of the id', () => {
@@ -136,7 +157,49 @@ describe('exploreSong', () => {
     }
     const { model, logs }      = await explore(device, { invertedBigSteps: true })
     expect(model.instruments[0x40]?.name).toBe('FAR')
-    expect(logs.some((l) => l.includes('single steps'))).toBe(true)
+    // The first big step went 16 the wrong way: the keys are swapped and the far instrument is reached by big steps.
+    expect(logs.some((l) => l.includes('the other way round: swapped'))).toBe(true)
+    expect(logs.some((l) => l.includes('single steps'))).toBe(false)
+  })
+
+  test('reads a far table when Option+Up/Down goes the other way too', async () => {
+    const device               = demoSong()
+    device.tables[0x90]        = {
+      ...device.tables[Object.keys(device.tables).map(Number)[0]],
+      id: 0x90
+    }
+    device.phrases[0].steps[1] = {
+      ...device.phrases[0].steps[1],
+      fx: [{
+        cmd: 'TBL',
+        val: 0x90
+      }, ...device.phrases[0].steps[1].fx.slice(1)]
+    }
+    for (const invertedBigSteps of [false, true]) {
+      const { model, logs, fake } = await explore(device, { invertedBigSteps })
+      expect(model.warnings).toEqual([])
+      expect(model.tables[0x90]?.id).toBe(0x90)
+      expect(fake.forbidden).toEqual([])
+      expect(logs.some((l) => l.includes('single steps'))).toBe(false)
+      // With the device's own keys (Up is +16 on tables) nothing needs swapping.
+      expect(logs.some((l) => l.includes('swapped'))).toBe(invertedBigSteps)
+    }
+  })
+
+  test('puts the cursor back on the first cell of the Song view, from wherever the exploration left it', async () => {
+    const device      = demoSong()
+    device.song[0xf3] = [null, null, null, null, null, null, null, 0x0b]
+    const { fake }    = await explore(device)
+    // The exploration leaves the cursor on the last chain it entered, not at the top.
+    expect([fake.songRow, fake.songTrack]).not.toEqual([0, 0])
+    fake.view = 'phrase'
+    await moveToSongTop(fake, {
+      pollMs         : 0,
+      settleTimeoutMs: 400
+    })
+    expect(fake.view).toBe('song')
+    expect([fake.songRow, fake.songTrack]).toEqual([0, 0])
+    expect(fake.forbidden).toEqual([])
   })
 
   test('reads chains that start far down the song', async () => {

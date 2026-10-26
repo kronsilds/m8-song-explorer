@@ -105,7 +105,7 @@ instruments → tables) and shows it as a 3D tracker:
 | `Enter` | Show on M8 | Walk the device to the selected cell |
 | `Esc` | | Clear the selection |
 | Space / Shift+Space | | Play / stop the M8, continue from the cursor |
-| `?` | ? | Keys and mouse |
+| `?` | ? | Keys and mouse; double click saves the debug log |
 | `D` | | Print what the SDK reads on the M8 (screen, colours) to the console |
 | | Explore song, Read theme, Follow M8, Connect M8 | See above |
 | | Export / Import | Save the explored song as JSON, or load one |
@@ -128,8 +128,8 @@ page can hold the M8, so disconnect it in yam8d first. A device the page was gra
 reopened at start. Standalone mode has not been tried on the device yet.
 
 `bun run test` runs the explorer against a fake M8 (`tests/fakeM8.ts`) and tests the semantics,
-transpose and scales (`harmony`), the layout, playback, the MIDI sync check and the other-song
-check; `bun run typecheck` and `bun run build` check the rest.
+transpose and scales (`harmony`), the layout, playback, the MIDI sync check, the other-song
+check and the debug log; `bun run typecheck` and `bun run build` check the rest.
 
 ## How the exploration moves
 
@@ -149,6 +149,16 @@ used on the Song view, where it solos tracks):
    OFFSET), KEY and NAME.
 6. Groove view (the Project view's GROOVE first) and Option+Left/Right to each groove `GRV` /
    `GGR` point at: the ticks of each row and the PPQ.
+
+A view counts as drawn when two reads in a row match (the `>` play markers aside). A view that does
+not get there ends the item with a warning that says whether it never passed the fully-drawn check
+or kept changing, and the run's log holds the screen at that moment. An instrument of type NONE has
+no modulators and its Inst. Mods view is an empty page, so the exploration does not open it.
+(Exploring a playing song first showed this as a timeout on a NONE instrument; the dots the M8
+draws under the bars of the Mods view while playing are rectangles and never reach the screen text.)
+
+When it is done (not when cancelled) and after the MIDI sync check, the M8 is left on the Song view with
+the cursor on the first cell (row 00, track 1), so Play starts from the top.
 
 *Read theme* is the only action that presses Edit: on SYSTEM SETTINGS (Project row 20) and EDIT
 THEME (System Settings row 7), each time only after checking the cursor row says so.
@@ -185,6 +195,10 @@ CLK+TRANSP+SPP, measured on the device:
 The clock is the time base; the screen markers keep checking where each track is (HOP, grooves,
 chains of different lengths).
 
+A clock that goes silent for 2 s (SYNC OUT set to OFF, another song loaded) is dropped: positions go
+back to the tempo the Song / Chain / Phrase view shows. Before this the last clock's tempo kept
+running the playheads (140 BPM on a song at 120: a one-step correction every half second).
+
 The tracks keep their positions when the M8 leaves the Song view: a chain or phrase view only
 corrects the track(s) playing what it shows, and a view with no marker (a chain or phrase nothing
 plays) says nothing about the song. With the MIDI transport only Stop (`FC`) ends the song; without
@@ -214,6 +228,43 @@ accuracy against the M8's own table playhead and the rules below were not measur
 - a table tick is one MIDI clock tick (24 per quarter note, the groove's unit);
 - `HOP XY` hops its own FX lane and the transpose / volume columns, X times (0 for ever), then
   runs on; `THO` hops every column; `TIC` in a lane sets that lane's speed from its row on.
+
+## Debug log
+
+A double click on the **?** button saves `m8-explorer-debug-<song>-<date>-<time>.json`, to attach to a
+bug report. It has three parts with three lifetimes (`src/model/debugLog.ts`):
+
+- **Global state**, read at the moment of the export (`global`): `environment` (browser, frame, SDK
+  version), `permissions` (Web MIDI with and without SysEx, audio input, Web Serial and WebUSB
+  grants, the frame's permission policy, the MIDI ports the browser lists when MIDI is already
+  granted: nothing is asked for), `connection` (through yam8d or standalone, serial / USB / MIDI,
+  audio, device model), `midi` (SYNC OUT, CC MAP CHAN and SONG ROW CUE CHAN of the song, whether
+  SYNC OUT is the CLK+TRANSP+SPP the playheads need, the mute / solo output), `playback` (time base,
+  MIDI clock enabled or refused, clock events, tempo and gaps, totals), `song` (sizes, project
+  settings, the grooves the song plays with and which are not plain 6-6 sixteenths with what points
+  at them, the exploration's warnings), `settings` and `handshake`.
+- **Exploration runs, device tasks and problems**, kept for the whole session: the last 5 runs of
+  *Explore song* (`exploration`: phases with their time, what the driver said while it went, the
+  warnings, the counts it ended with, cancelled or failed), the MIDI sync checks and theme reads
+  (`deviceTasks`), and `problems` (errors, warning notices, a failing screen read or sync, a refused
+  MIDI clock, storage that cannot be written), each counted once with its first and last time.
+- **Rolling events** (`events`, the last 400, `eventsDropped` says how many left): user activity and
+  playback. Play pressed (`play-key`) and the start (`play-start`: from the MIDI transport or the
+  screen, the cursor's song row and track, the view, Follow M8 and Auto select, the time base, and
+  per track the chain, whether its position is exact and how its step lengths differ from 6 ticks),
+  `transport` messages, `clock-gap`, `tempo`, `no-clock-while-playing`, `drift` (a phrase view
+  showed another step than predicted: track, song row, predicted and shown step, difference, step
+  length, time since the start), `reanchor` (a track's position restarted), `play-stop` (why, how
+  long, the corrections of that stretch), `long-task` (main thread stalls while playing),
+  `visibility` (a background tab slows the page), Follow M8 / Auto select, `device-view` (the view
+  the M8 moved to, not every cursor move), `device-edit` (an edit made on the M8 folded in),
+  `other-song`, `connection`, mute / solo and channel changes, show on M8, toolbar actions and
+  notices. Bursts of drifts and gaps are thinned out (`suppressed` counts what was left out).
+
+`public/debug-log-analyzer.html` (served at `/debug-log-analyzer.html`) reads such a file (open it in a browser, drop the log on it): a
+green / amber / red light per check (permissions, connection, the MIDI clock link, song, each
+exploration with its own MIDI sync & clock card, each play with its corrections, problems), a timeline and the raw events. Everything
+stays in the page; "Copy summary" gives a text version to paste into a bug report.
 
 ## Device facts (Model:02, firmware 6.5, checked live)
 
@@ -298,8 +349,11 @@ accuracy against the M8's own table playhead and the rules below were not measur
 - Phrase titles can end with `^` as well as `*` (`PHRASE 27^`).
 - Names are padded with dashes to 12 characters (`NAME--------`).
 - Option+Down in a phrase goes to the chain's next phrase.
-- Option+Up/Down on the Table view does not step 16 tables toward the target (the explorer
-  steps one by one there).
+- Option+Up/Down steps 16 on the Instrument and Table views, but not the same way round: Option+Down
+  is +16 on instruments and Option+Up is +16 on tables (log of 2026-10-26: Option+Down went from
+  table 14 to 04). An earlier exploration took that for "big steps do not work" and stepped one
+  table at a time. The explorer starts with those keys, and if a big step goes the other way (or
+  wraps round by 16) it swaps them once; only another miss turns big steps off.
 - Shift+Right from the Instrument view once stayed on the Instrument view; the explorer
   retries from the TYPE row.
 

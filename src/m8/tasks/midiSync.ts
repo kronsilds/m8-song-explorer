@@ -2,7 +2,7 @@
 // the CC MAP / SONG ROW CUE channels, set SYNC OUT to what the explorer needs to follow
 // playback, and set CC MAP CHAN to the channel the mute / solo notes go out on.
 
-import type { M8Screen } from '@yam8d/m8-sdk'
+import type { M8Screen, M8State } from '@yam8d/m8-sdk'
 import type { MidiSync } from '../../model/song'
 import { type DriverOptions, M8Driver, M8MoveError } from '../driver'
 import type { M8Port } from '../port'
@@ -28,6 +28,9 @@ const SYNC_OUT_CHANGE_TIMEOUT_MS = 1200
 const EDIT_HOLD_MS               = 200
 const RIGHT_TAP_MS               = 80
 const RELEASE_WAIT_MS            = 120
+/** The text under the cursor can lag the cursor by a moment: it is read again this often, this many times. */
+const CURSOR_TEXT_TRIES          = 8
+const CURSOR_TEXT_WAIT_MS        = 100
 /** Settings labels and values sit left of this screen column. */
 const SETTINGS_WIDTH             = 31
 
@@ -115,8 +118,33 @@ export function planChannel(sync: MidiSync, explorerChannel: number): ChannelPla
   }
 }
 
+/**
+ * Reads the state until `accept` holds: right after the cursor moved across rows the text
+ * under it can still be the old one (CTRL SURFACE reads NONE, on the way to CC MAP CHAN). When
+ * it never does, the cursor and the screen go to the log. Returns the last state read.
+ */
+async function waitForCursor(port: M8Port, driver: M8Driver, accept: (state: M8State) => boolean, what: string, log?: (message: string) => void): Promise<M8State> {
+  let state = await port.getState()
+  for (let attempt = 1; attempt < CURSOR_TEXT_TRIES && !accept(state); attempt += 1) {
+    await driver.sleep(CURSOR_TEXT_WAIT_MS)
+    state = await port.getState()
+  }
+  if (!accept(state)) {
+    const screen = await port.getScreen()
+    const dump   = screen.lines.map((line, y) => `${String(y).padStart(2, '0')}|${line}|`).join('\n')
+    log?.(`the cursor is not on ${what}: it reads "${state.textUnderCursor ?? ''}" at ${JSON.stringify(state.cursorPos)}, line "${state.currentLine ?? ''}"; the screen:\n${dump}`)
+  }
+  return state
+}
+
+/** True when the text under the cursor starts like `value` (the first word of a value is what the cursor covers). */
+const onValue = (value: string) => (state: M8State): boolean => {
+  const text = state.textUnderCursor?.toUpperCase() ?? ''
+  return text !== '' && value.startsWith(text.split(' ')[0])
+}
+
 /** Project > MIDI SETTINGS: Edit is pressed on SETTINGS only once the cursor row says MIDI and the cell SETTINGS. */
-async function openMidiSettings(port: M8Port, driver: M8Driver): Promise<ScreenView> {
+async function openMidiSettings(port: M8Port, driver: M8Driver, log?: (message: string) => void): Promise<ScreenView> {
   const here = await driver.read()
   if (readMidiSettings(here.screen)) return here
   await driver.leaveSubViews()
@@ -127,10 +155,9 @@ async function openMidiSettings(port: M8Port, driver: M8Driver): Promise<ScreenV
   const x       = y >= 0 ? (project.screen.lines[y] ?? '').toUpperCase().indexOf('SETTINGS') : -1
   if (x < 0) throw new M8MoveError('the Project view shows no MIDI SETTINGS entry')
   await driver.moveCursor(x, y)
-  const state = await port.getState()
-  if (!/MIDI/i.test(state.currentLine ?? '') || !/SETTINGS/i.test(state.textUnderCursor ?? '')) {
-    throw new M8MoveError(`the cursor is on "${state.textUnderCursor ?? ''}", not MIDI SETTINGS`)
-  }
+  const onEntry = (state: M8State) => /MIDI/i.test(state.currentLine ?? '') && /SETTINGS/i.test(state.textUnderCursor ?? '')
+  const state   = await waitForCursor(port, driver, onEntry, 'the MIDI SETTINGS entry', log)
+  if (!onEntry(state)) throw new M8MoveError(`the cursor is on "${state.textUnderCursor ?? ''}", not MIDI SETTINGS`)
   await driver.press(['edit'])
   return driver.settle((view) => readMidiSettings(view.screen) != null, 'the MIDI Settings view', MIDI_SETTINGS_TIMEOUT_MS)
 }
@@ -143,7 +170,7 @@ async function backToSong(driver: M8Driver): Promise<void> {
 /** Reads SYNC IN / OUT from the MIDI Settings, then goes back to the Song view. */
 export async function readMidiSync(port: M8Port, options: DriverOptions = {}): Promise<MidiSync> {
   const driver = new M8Driver(port, options)
-  const view   = await openMidiSettings(port, driver)
+  const view   = await openMidiSettings(port, driver, options.log)
   const sync   = readMidiSettings(view.screen) as MidiSync
   await backToSong(driver)
   return sync
@@ -156,14 +183,12 @@ export async function readMidiSync(port: M8Port, options: DriverOptions = {}): P
  */
 export async function setMidiSyncOut(port: M8Port, options: DriverOptions = {}): Promise<string> {
   const driver = new M8Driver(port, options)
-  const view   = await openMidiSettings(port, driver)
+  const view   = await openMidiSettings(port, driver, options.log)
   const row    = settingRow(view.screen, 'SYNC OUT')
   if (!row) throw new M8MoveError('no SYNC OUT row on the MIDI Settings view')
   await driver.moveCursor(row.x, row.y)
-  const underCursor = (await port.getState()).textUnderCursor?.toUpperCase() ?? ''
-  if (!underCursor || !row.value.startsWith(underCursor.split(' ')[0])) {
-    throw new M8MoveError(`the cursor is on "${underCursor}", not the SYNC OUT value`)
-  }
+  const atValue = await waitForCursor(port, driver, onValue(row.value), 'the SYNC OUT value', options.log)
+  if (!onValue(row.value)(atValue)) throw new M8MoveError(`the cursor is on "${atValue.textUnderCursor ?? ''}", not the SYNC OUT value`)
   let value      = row.value
   const position = SYNC_OUT_VALUES.indexOf(value)
   const maxSteps = position >= 0 ? SYNC_OUT_VALUES.length - 1 - position : SYNC_OUT_VALUES.length
@@ -198,14 +223,12 @@ export async function setMidiSyncOut(port: M8Port, options: DriverOptions = {}):
  */
 export async function setCcMapChannel(port: M8Port, channel: number, options: DriverOptions = {}): Promise<string> {
   const driver = new M8Driver(port, options)
-  const view   = await openMidiSettings(port, driver)
+  const view   = await openMidiSettings(port, driver, options.log)
   const row    = settingRow(view.screen, CC_MAP_LABEL)
   if (!row) throw new M8MoveError('no CC MAP CHAN row on the MIDI Settings view')
   await driver.moveCursor(row.x, row.y)
-  const underCursor = (await port.getState()).textUnderCursor?.toUpperCase() ?? ''
-  if (!underCursor || !row.value.startsWith(underCursor.split(' ')[0])) {
-    throw new M8MoveError(`the cursor is on "${underCursor}", not the CC MAP CHAN value`)
-  }
+  const atValue = await waitForCursor(port, driver, onValue(row.value), 'the CC MAP CHAN value', options.log)
+  if (!onValue(row.value)(atValue)) throw new M8MoveError(`the cursor is on "${atValue.textUnderCursor ?? ''}", not the CC MAP CHAN value`)
   let value = row.value
   /** One Edit+side tap; false when the value did not change (the end of its range). */
   const tap = async (side: 'left' | 'right'): Promise<boolean> => {

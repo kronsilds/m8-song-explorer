@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { M8Screen } from '@yam8d/m8-sdk'
-import { PlaybackTracker } from '../src/m8/playback'
+import { type PlaybackEvent, PlaybackTracker } from '../src/m8/playback'
 import { demoSong } from '../src/model/demo'
 import { FIRST_CONTENT_ROW, phraseScreen, songScreen } from '../src/model/screens'
 import { chainLength, ROWS_PER_PHRASE } from '../src/model/song'
@@ -392,5 +392,44 @@ describe('each track loops its own run of chains', () => {
     const later = 601 + chain + 12
     tracker.clockTick(later, ms(later), 20)
     expect(rows(ms(later))).toEqual(solo.song[2].map((c) => (c == null ? null : 2)))
+  })
+})
+
+describe('a MIDI clock that stops', () => {
+  test('is dropped after a silence: the playheads go on from where they were, at the tempo the screen shows', () => {
+    const tracker   = new PlaybackTracker(model, timeline)
+    const events    : PlaybackEvent[] = []
+    tracker.onEvent = (event) => events.push(event)
+    const ms        = (tick: number) => tick * 20
+    // 125 BPM on the clock; the song starts and plays on it.
+    tracker.clockTick(600, ms(600), 20)
+    expect(tracker.transportStart(bandRow(3), ms(600))).toBe(true)
+    for (let tick = 606; tick <= 700; tick += 6) tracker.clockTick(tick, ms(tick), 20)
+    const lastClock = ms(696)
+    // Just before the silence is long enough, and just after it: the same step.
+    const before    = tracker.playheads(lastClock + 1999.9).map((h) => h?.step)
+    const after     = tracker.playheads(lastClock + 2000).map((h) => h?.step)
+    expect(after).toEqual(before)
+    expect(events.filter((event) => event.kind === 'clock-lost')).toEqual([{
+      kind    : 'clock-lost',
+      silentMs: 2000
+    }])
+    // The M8 shows 60 BPM: a step lasts 250 ms from now on, not the 120 ms of the lost clock.
+    tracker.observe(songWithMarkers([], 60), lastClock + 2000)
+    expect(tracker.bpm).toBe(60)
+    const start = tracker.playheads(lastClock + 2000)[0]?.step as number
+    expect(tracker.playheads(lastClock + 2000 + 10 * 250)[0]?.step).toBe(start + 10)
+    expect(tracker.playing).toBe(true)
+  })
+
+  test('a clock that keeps coming is never dropped, also while the song is stopped', () => {
+    const tracker   = new PlaybackTracker(model, timeline)
+    const events    : PlaybackEvent[] = []
+    tracker.onEvent = (event) => events.push(event)
+    for (let tick = 6; tick <= 600; tick += 6) {
+      tracker.clockTick(tick, tick * 20, 20)
+      tracker.observe(songWithMarkers([]), tick * 20)
+    }
+    expect(events).toEqual([])
   })
 })

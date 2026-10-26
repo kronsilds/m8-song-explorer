@@ -59,10 +59,16 @@ const VIEW_NAME_POLL_MS         = 40
 /** Song pages scrolled at most (256 rows, 16 a page, with room to spare). */
 const MAX_SONG_PAGES            = 24
 const SONG_PAGE_TIMEOUT_MS      = 1000
-const MAX_ITEM_STEPS            = 160
+/** Instruments and tables go up to FF, and single steps are all some views offer. */
+const MAX_ITEM_STEPS            = 260
 const ITEM_STEP_TIMEOUT_MS      = 1200
 /** Option+Up/Down steps this many instruments or tables. */
 const BIG_STEP                  = 16
+/** How many instruments and tables the M8 has (numbers wrap around at these). */
+const ITEMS_IN_POOL             = {
+  inst : 128,
+  table: 256
+}
 
 const ITEM_NAMES                : Record<ItemView, string> = {
   inst  : 'instrument',
@@ -81,6 +87,18 @@ export class M8Driver {
   private readonly bigStepsWork   : Record<'inst' | 'table', boolean> = {
     inst : true,
     table: true
+  }
+  private readonly swapped        : Record<'inst' | 'table', boolean> = {
+    inst : false,
+    table: false
+  }
+  /**
+   * Whether Option+Down is the +16 step. Measured on the device: Down on Instruments, Up on Tables
+   * (Down went from table 14 to 04). Still learnt from the first big step, in case it differs.
+   */
+  private readonly bigStepDown    : Record<'inst' | 'table', boolean> = {
+    inst : true,
+    table: false
   }
 
   constructor(port: M8Port, options: DriverOptions = {}) {
@@ -105,22 +123,30 @@ export class M8Driver {
 
   /**
    * Reads the screen until `accept` holds for two reads in a row with the same content:
-   * the M8 draws a view over several frames, the title first.
+   * the M8 draws a view over several frames, the title first. A timeout says whether the view
+   * never passed the fully-drawn check or kept changing, and the log gets the screen.
    */
   async settle(accept: (view: ScreenView) => boolean, what: string, timeoutMs = this.settleTimeoutMs): Promise<ScreenView> {
     const deadline      = Date.now() + timeoutMs
     let previousContent : string | null = null
+    let everAccepted    = false
     for (;;) {
       this.throwIfCancelled()
       const view = await this.read()
       if (accept(view)) {
+        everAccepted  = true
         const content = stableContent(view.screen)
         if (content === previousContent) return view
         previousContent = content
       } else {
         previousContent = null
       }
-      if (Date.now() > deadline) throw new M8MoveError(`waited ${timeoutMs} ms for ${what}; the M8 shows "${view.title || 'no title'}"`)
+      if (Date.now() > deadline) {
+        const reason = everAccepted ? 'its content kept changing between reads' : 'it never passed the fully-drawn check'
+        const dump   = view.screen.lines.map((line, y) => `${String(y).padStart(2, '0')}|${line}|`).join('\n')
+        this.log(`${what} failed: ${reason}; the screen then:\n${dump}`)
+        throw new M8MoveError(`waited ${timeoutMs} ms for ${what}; the M8 shows "${view.title || 'no title'}" (${reason})`)
+      }
       await this.sleep(this.pollMs)
     }
   }
@@ -281,6 +307,26 @@ export class M8Driver {
   }
 
   /**
+   * A big step (Option+Up/Down) did not get closer. When it went the other way (or wrapped round
+   * by 16), Option+Down is -16 on this view: the keys are swapped from now on, once. Anything else
+   * turns big steps off for the view, and the log says where it went.
+   */
+  private learnBigStep(kind: 'inst' | 'table', from: number, to: number, distance: number, wanted: number): void {
+    const modulus = kind === 'inst' ? ITEMS_IN_POOL.inst : ITEMS_IN_POOL.table
+    const change  = (((to - from) % modulus) + modulus) % modulus
+    const wrapped = distance > 0 ? change === modulus - BIG_STEP : change === BIG_STEP
+    const other   = wrapped || Math.sign(to - from) === -Math.sign(distance)
+    if (other && !this.swapped[kind]) {
+      this.swapped[kind]     = true
+      this.bigStepDown[kind] = !this.bigStepDown[kind]
+      this.log(`Option+${this.bigStepDown[kind] ? 'Down' : 'Up'} steps +16 on the ${kind} view, the other way round: swapped (${from.toString(16)} -> ${to.toString(16)}, wanted ${wanted.toString(16)})`)
+      return
+    }
+    this.log(`Option+Up/Down does not step 16 ${kind} items toward the target here (${from.toString(16)} -> ${to.toString(16)}, wanted ${wanted.toString(16)}); using single steps`)
+    this.bigStepsWork[kind] = false
+  }
+
+  /**
    * Instrument, Table, Scale or Groove view: Option+arrows until item `id` is shown. On the Scale view
    * Option+Up/Down jump to the first / last scale, so only Option+Left/Right are used there (and
    * on the Groove view, where there are only 32).
@@ -291,14 +337,11 @@ export class M8Driver {
       const current  = view.id as number
       const distance = id - current
       const bigStep  = (kind === 'inst' || kind === 'table') && this.bigStepsWork[kind] && Math.abs(distance) >= BIG_STEP
-      const keys     : M8KeyName[] = bigStep ? ['opt', distance > 0 ? 'down' : 'up'] : ['opt', distance > 0 ? 'right' : 'left']
+      const keys     : M8KeyName[] = bigStep ? ['opt', distance > 0 === this.bigStepDown[kind as 'inst' | 'table'] ? 'down' : 'up'] : ['opt', distance > 0 ? 'right' : 'left']
       await this.press(keys)
       const next = await this.settleOrNull((v) => isPage(v, kind) && v.id !== current, `${kind} ${id}`, ITEM_STEP_TIMEOUT_MS)
       if (!next) throw new M8MoveError(`${ITEM_NAMES[kind]} ${current.toString(16)} does not move on`)
-      if (bigStep && Math.abs(id - (next.id as number)) >= Math.abs(distance)) {
-        this.log(`Option+Up/Down does not step 16 ${kind} items toward the target here; using single steps`)
-        this.bigStepsWork[kind as 'inst' | 'table'] = false
-      }
+      if (bigStep && Math.abs(id - (next.id as number)) >= Math.abs(distance)) this.learnBigStep(kind as 'inst' | 'table', current, next.id as number, distance, id)
       view = next
     }
     if (view.id !== id) throw new M8MoveError(`${kind} ${id.toString(16)} is out of reach`)

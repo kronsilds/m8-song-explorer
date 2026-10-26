@@ -9,7 +9,7 @@
 // Anchoring at the reading time instead runs a poll interval (or more) behind the M8.
 
 import { type M8Screen, readPlayPositions } from '@yam8d/m8-sdk'
-import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey } from '../model/music/groove'
+import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey, summarizeTicks, type TicksSummary } from '../model/music/groove'
 import { chainLength, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
 import type { Timeline } from '../model/timeline'
 import { viewOf } from './screen/screenReader'
@@ -21,6 +21,12 @@ const STOPPED_AFTER_MS   = 900
 /** A step window at most this share of the step counts as an exact position. */
 const EXACT_WINDOW_SHARE = 0.6
 const MIN_BPM            = 20
+/**
+ * The MIDI clock comes once per sixteenth, and runs even while the song is stopped. Without an
+ * event for this long it is gone (SYNC OUT changed, another song loaded) and positions go back to
+ * the tempo the screen shows; extrapolating a stale clock runs the playheads at the old tempo.
+ */
+const CLOCK_STALE_MS     = 2000
 /** Walks through at most this many chains when moving a track on or measuring between steps. */
 const MAX_CHAIN_WALK     = 512
 const MAX_CHAINS_AHEAD   = 16
@@ -71,6 +77,40 @@ export interface TrackPlayhead {
   step   : number
 }
 
+/** Why the song counts as stopped. */
+export type StopReason = 'transport-stop' | 'markers-gone' | 'unmarked-view' | 'restart' | 'device-down' | 'other-song' | 'reset'
+
+/** Things the tracker went through, for the debug log. */
+export type PlaybackEvent =
+  /** Playing began: from a MIDI Start / Continue (placed on a song row) or from a play marker on the screen. */
+  | { kind: 'started'; source: 'transport' | 'screen'; spp: number | null; startRow: number | null }
+  | { kind: 'stopped'; reason: StopReason }
+  /** The MIDI clock went silent: positions are measured in ms again, at the tempo the screen shows. */
+  | { kind: 'clock-lost'; silentMs: number }
+  /** A reading did not fit the track's window: its position was restarted (a jump, a HOP, a tempo change, a drift). */
+  | {
+      kind    : 'reanchor'
+      track   : number
+      reason  : 'no-path' | 'window'
+      /**
+       * How far the M8 was from the prediction, in clock ticks: positive when it reached the step
+       * later than the tracker had it, negative when earlier; null when no path led to it.
+       */
+      offTicks: number | null
+      from    : { songRow: number; step: number }
+      to      : { songRow: number; step: number }
+    }
+
+/** Where one track was placed, and how its steps differ from the plain sixteenth. */
+export interface TrackPlacement {
+  track  : number
+  songRow: number
+  step   : number
+  chain  : number | null
+  exact  : boolean
+  ticks  : TicksSummary | null
+}
+
 const perTrack = <T>(): (T | null)[] => Array(TRACKS).fill(null)
 
 function withStarts(steps: number[]): ChainTicks {
@@ -89,7 +129,8 @@ export class PlaybackTracker {
   /** Song row and track the M8 was last on (Song / Chain view), to tell which place a phrase on screen is. */
   context      : { songRow: number; track: number } | null = null
   /** Called when a phrase view shows another step than predicted (in steps). */
-  onCorrection : (track: number, predicted: number, actual: number, clocked: boolean) => void = () => {}
+  onCorrection : (track: number, predicted: number, actual: number, clocked: boolean, songRow: number) => void = () => {}
+  onEvent      : (event: PlaybackEvent) => void = () => {}
 
   private anchors                    = perTrack<Anchor>()
   /** Last Song view reading per track. */
@@ -130,6 +171,27 @@ export class PlaybackTracker {
   private now(ms: number): number {
     if (!this.clock) return ms
     return this.clock.ticks + (ms - this.clock.at) / this.clock.msPerTick
+  }
+
+  /** Forgets a clock that stopped: the anchors, measured in its ticks, are re-expressed in ms. */
+  private dropStaleClock(ms: number): void {
+    const clock = this.clock
+    if (!clock || ms - clock.at < CLOCK_STALE_MS) return
+    const toMs = (ticks: number) => clock.at + (ticks - clock.ticks) * clock.msPerTick
+    for (const anchor of this.anchors) {
+      if (!anchor) continue
+      anchor.earliest = toMs(anchor.earliest)
+      anchor.latest   = toMs(anchor.latest)
+    }
+    for (const reading of this.lastSongViewReading) if (reading) reading.at = toMs(reading.at)
+    for (const reading of this.lastStepReading) if (reading) reading.at = toMs(reading.at)
+    this.clock = null
+    // Until the screen shows the tempo, the clock's own keeps the playheads where they are.
+    this.bpm   = Math.max(MIN_BPM, 60000 / clock.msPerTick / CLOCK_PPQ)
+    this.onEvent({
+      kind    : 'clock-lost',
+      silentMs: Math.round(ms - clock.at)
+    })
   }
 
   /** One clock tick in the units the anchors are measured in. */
@@ -209,7 +271,7 @@ export class PlaybackTracker {
    * is used. Returns false when no row is known (the screen markers take over).
    */
   transportStart(spp: number, ms: number): boolean {
-    this.transportReset()
+    this.transportReset('restart')
     this.transportRunning = true
     const startRow        = this.context?.songRow ?? this.rowAtPosition(spp)
     if (startRow == null) return false
@@ -228,6 +290,12 @@ export class PlaybackTracker {
     }
     this.playing      = true
     this.lastMarkerAt = ms
+    this.onEvent({
+      kind  : 'started',
+      source: 'transport',
+      spp,
+      startRow
+    })
     return true
   }
 
@@ -244,13 +312,18 @@ export class PlaybackTracker {
   }
 
   /** MIDI Start or Stop: positions start over (the clock itself keeps running). */
-  transportReset(): void {
+  transportReset(reason: StopReason = 'reset'): void {
+    const wasPlaying         = this.playing
     this.playing             = false
     this.transportRunning    = false
     this.unmarkedSince       = null
     this.anchors             = perTrack()
     this.lastSongViewReading = perTrack()
     this.lastStepReading     = perTrack()
+    if (wasPlaying) this.onEvent({
+      kind: 'stopped',
+      reason
+    })
   }
 
   // ---------------------------------------------------------------------------
@@ -325,6 +398,7 @@ export class PlaybackTracker {
     const anchor = this.anchors[track]
     if (anchor) {
       const between = this.ticksBetween(track, anchor.songRow, anchor.step, songRow, step)
+      let offTicks  : number | null = null
       if (between != null) {
         const shift            = between * this.unitsPerTick()
         const narrowedEarliest = Math.max(anchor.earliest, earliest - shift)
@@ -334,7 +408,25 @@ export class PlaybackTracker {
           anchor.latest   = narrowedLatest
           return
         }
+        // The two windows do not meet: the gap between them is how far off the prediction was.
+        const late = (earliest - shift - anchor.latest) / this.unitsPerTick()
+        const soon = (latest - shift - anchor.earliest) / this.unitsPerTick()
+        offTicks   = Math.round((late > 0 ? late : soon) * 10) / 10
       }
+      this.onEvent({
+        kind  : 'reanchor',
+        track,
+        reason: between == null ? 'no-path' : 'window',
+        offTicks,
+        from  : {
+          songRow: anchor.songRow,
+          step   : anchor.step
+        },
+        to    : {
+          songRow,
+          step
+        }
+      })
     }
     this.anchors[track] = { songRow, step, earliest, latest }
   }
@@ -344,6 +436,7 @@ export class PlaybackTracker {
 
   /** Feeds a screen read at `ms`. Returns true when it showed a play marker. */
   observe(screen: M8Screen, ms: number): boolean {
+    this.dropStaleClock(ms)
     const view  = viewOf(screen)
     const tempo = /T.(\d{2,3}(?:\.\d+)?)/.exec(screen.lines[5]?.slice(30) ?? '')
     if (tempo && !this.clock) this.bpm = Math.max(MIN_BPM, Number.parseFloat(tempo[1]))
@@ -411,7 +504,7 @@ export class PlaybackTracker {
       }
       if (kind === 'phrase' && this.model.chains[chainId]?.rows[chainRow]?.phrase === id) {
         const actual = chainRow * ROWS_PER_PHRASE + markedRow
-        if (actual !== step) this.onCorrection(track, step, actual, this.clock != null)
+        if (actual !== step) this.onCorrection(track, step, actual, this.clock != null, songRow)
         // Showing now: it started within the last step. Just after the step before it was
         // showing: it started between the two readings, a much tighter window.
         const stepUnits = this.stepUnits(songRow, track, actual)
@@ -452,20 +545,27 @@ export class PlaybackTracker {
   /** Whether the song still plays after a reading with or without a marker. */
   private updatePlaying(markerSeen: boolean, kind: 'song' | 'chain' | 'phrase', id: number | null, ms: number, now: number): void {
     if (markerSeen) {
+      const started      = !this.playing
       this.playing       = true
       this.lastMarkerAt  = ms
       this.unmarkedSince = null
+      if (started) this.onEvent({
+        kind    : 'started',
+        source  : 'screen',
+        spp     : null,
+        startRow: null
+      })
       return
     }
     if (!this.playing) return
     if (kind === 'song') {
       // Every playing track has a marker on the Song view: none left means stopped, unless
       // the MIDI transport says it plays (the playing rows are scrolled off screen).
-      if (!this.transportRunning && ms - this.lastMarkerAt > STOPPED_AFTER_MS) this.transportReset()
+      if (!this.transportRunning && ms - this.lastMarkerAt > STOPPED_AFTER_MS) this.transportReset('markers-gone')
     } else if (this.expectsMarker(kind, id, now)) {
       // The chain / phrase on screen should be playing by what we know, yet it shows no marker.
       this.unmarkedSince ??= ms
-      if (ms - this.unmarkedSince > STOPPED_AFTER_MS) this.transportReset()
+      if (ms - this.unmarkedSince > STOPPED_AFTER_MS) this.transportReset('unmarked-view')
     } else {
       // Another chain / phrase than the ones playing: no marker is expected there, which says
       // nothing about the song (the positions keep running from the clock and the anchors).
@@ -493,8 +593,32 @@ export class PlaybackTracker {
     return false
   }
 
+  /** Clock ticks step `step` of the chain a track plays on a song row lasts (0 for a skipped step); null when it has no chain there. */
+  ticksAt(songRow: number, track: number, step: number): number | null {
+    return this.chainTicks(songRow, track)?.steps[step] ?? null
+  }
+
+  /** The tracks that have a position now: where they are and how their steps' lengths differ from the plain sixteenth. */
+  describeTracks(): TrackPlacement[] {
+    const placements: TrackPlacement[] = []
+    this.anchors.forEach((anchor, track) => {
+      if (!anchor) return
+      const chain = this.chainTicks(anchor.songRow, track)
+      placements.push({
+        track,
+        songRow: anchor.songRow,
+        step   : anchor.step,
+        chain  : this.model.song[anchor.songRow]?.[track] ?? null,
+        exact  : this.isExact(anchor, track),
+        ticks  : chain ? summarizeTicks(chain.steps) : null
+      })
+    })
+    return placements
+  }
+
   /** Each track's playhead at time `ms`. */
   playheads(ms: number): (TrackPlayhead | null)[] {
+    this.dropStaleClock(ms)
     if (!this.playing) return perTrack()
     const now = this.now(ms)
     return this.anchors.map((anchor, track) => {
