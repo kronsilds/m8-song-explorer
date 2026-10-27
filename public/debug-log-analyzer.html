@@ -157,6 +157,7 @@
   </div>
   <div class="spacer"></div>
   <button id="copy" class="hidden" type="button">Copy summary</button>
+  <button id="save" class="hidden" type="button">Download JSON</button>
   <label class="button primary">Open a log…<input id="file" type="file" accept="application/json,.json" hidden></label>
 </header>
 <main id="app">
@@ -717,12 +718,16 @@ function textSummary(result, fileName) {
 
 const app = document.getElementById('app')
 const copyButton = document.getElementById('copy')
+const saveButton = document.getElementById('save')
 let lastText = ''
+let current = null
 
 function show(report, fileName) {
   const result = analyze(report)
   lastText = textSummary(result, fileName)
+  current = report
   copyButton.classList.remove('hidden')
+  saveButton.classList.remove('hidden')
   document.title = `Log · ${report.global?.song?.name ?? fileName}`
   app.replaceChildren(summaryEl(result, report, fileName), timelineEl(report, result), ...result.sections.map(sectionEl), eventsEl(report))
 }
@@ -730,6 +735,7 @@ function show(report, fileName) {
 function showError(message) {
   app.replaceChildren(h('div', { class: 'error', role: 'alert', text: message }), dropEl())
   copyButton.classList.add('hidden')
+  saveButton.classList.add('hidden')
 }
 
 function dropEl() {
@@ -772,6 +778,37 @@ copyButton.addEventListener('click', async () => {
   }
   setTimeout(() => (copyButton.textContent = 'Copy summary'), 1500)
 })
+
+saveButton.addEventListener('click', () => {
+  if (!current) return
+  const song = (current.global?.song?.name ?? 'song').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+  const stamp = String(current.exportedAt || '').slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
+  const link = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(current, null, 1)], { type: 'application/json' })), download: `m8-explorer-debug-${song}-${stamp}.json` })
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000)
+})
+
+// Opened from the explorer (double click on its "?" button): say so, then take the log it sends.
+// Only the explorer page that opened this tab, on this origin, is listened to.
+window.addEventListener('message', (event) => {
+  if (event.source !== window.opener || event.origin !== location.origin) return
+  if (!event.data || event.data.type !== 'm8-debug-log') return
+  const report = event.data.report
+  if (!report || report.format !== 'm8-song-explorer-debug') return showError('The explorer sent something that is not a debug log.')
+  try {
+    show(report, 'from the explorer')
+  } catch (error) {
+    showError(`The log could not be analysed: ${error.message}`)
+  }
+})
+if (window.opener) {
+  app.replaceChildren(h('div', { id: 'drop', class: 'drop' }, h('strong', { text: 'Waiting for the log from the explorer…' }), h('br'), 'You can also drop a log file here.'))
+  try {
+    window.opener.postMessage({ type: 'm8-analyzer-ready' }, location.origin === 'null' ? '*' : location.origin)
+  } catch {
+    // The opener is gone or on another origin: drop a file instead.
+  }
+}
 
 // Exposed for tests and for pasting a log by hand.
 window.analyzeLog = analyze

@@ -28,6 +28,7 @@ import { hex2 } from '../model/hex'
 import { TablePlayback } from '../model/music/tablePlayback'
 import { isWallCell, type Selection, sameSelection, selectionTrack } from '../model/selection'
 import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../model/song'
+import { phraseMoved, trackMoved } from '../model/stepMoves'
 import type { PhraseInstance } from '../model/timeline'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
 import { fitDistance, type Lens, rayMeets, rayThrough, screenX, shiftTarget, sideShift } from './camera/framing'
@@ -90,6 +91,8 @@ const FRAME_MIN_ROWS      = 50
 const FRAME_MIN_ROW_PX    = 12
 /** Turned toward the walls, a pan opens the next track this far (world x) past the halfway mark, either way. */
 const PAN_SLACK           = TRACK_PITCH / 4
+/** Where a cell lands after the view scrolls to it, as a fraction of the visible stretch from the edge opposite to where it left (so a scroll is about 4/5 of a page). */
+const SCROLL_LAND         = 0.2
 /** A turn by hand brings the open track to the middle of the view over this much turn. */
 const CENTRE_TURN         = MathUtils.degToRad(25)
 
@@ -650,7 +653,7 @@ export class World implements PointerTarget {
     // Keep the cell in view, measured where it will be once the walls have moved.
     const point = this.settledPoint(selection)
     const half  = this.visibleHalfHeight(goal.distance) * 0.7
-    if (point && scroll && Math.abs(point.y - goal.target.y) > half) goal.target.y = point.y
+    if (point && scroll) this.scrollRowsInto(point.y + ROW_H / 2, point.y - ROW_H / 2)
     if (goal.yaw >= FACING_FRONT_YAW) {
       // Turned: another track takes the same framing, at the same distance; the cell stays on screen.
       if (trackChanged) goal.target.copy(this.trackCentre(goal, selectionTrack(selection), true))
@@ -700,14 +703,30 @@ export class World implements PointerTarget {
     this.invalidate()
   }
 
+  /**
+   * Scrolls a cell (spanning heights bottom..top) into the stretch between the sticky headers
+   * and the bottom of the view. A cell that left it at the bottom comes back near the top, one
+   * that left at the top comes back near the bottom: SCROLL_LAND of the stretch from the far
+   * edge, so the view moves most of a page and the next moves need no scrolling.
+   */
+  private scrollRowsInto(top: number, bottom: number): void {
+    const goal        = this.rig.goal
+    const range       = this.stickRange(goal.target.y, this.visibleHalfHeight(goal.distance))
+    const viewTop     = range.headerTop - ROW_H - 0.4
+    const span        = viewTop - range.bottom
+    const aboveCentre = viewTop - goal.target.y
+    const belowCentre = goal.target.y - range.bottom
+    if (bottom < range.bottom) goal.target.y = top - aboveCentre + span * SCROLL_LAND
+    else if (top > viewTop) goal.target.y = bottom + belowCentre - span * SCROLL_LAND
+  }
+
   private scrollIntoView(selection: Selection): void {
     const rect = this.rectsOf(selection).at(-1)
     if (!rect) return
     const world = rect.parent.localToWorld(new Vector3(rect.x, rect.y, 0))
     const goal  = this.rig.goal
     const half  = this.visibleHalfHeight(goal.distance) * 0.8
-    if (world.y > goal.target.y + half) goal.target.y = world.y - half * 0.5
-    if (world.y < goal.target.y - half) goal.target.y = world.y + half * 0.5
+    this.scrollRowsInto(world.y, world.y - rect.h)
     const halfWidth = half * this.camera.aspect
     if (world.x > goal.target.x + halfWidth || world.x < goal.target.x - halfWidth) goal.target.x = world.x
   }
@@ -910,8 +929,12 @@ export class World implements PointerTarget {
     view.wall.add(this.selectedLinks)
   }
 
-  /** Arrow keys: rows down the song, columns across the step then the next track. */
-  moveSelection(rowDelta: number, columnDelta: number): void {
+  /**
+   * Arrow keys: rows down the song, columns across the step then the next track. Coarse
+   * (Shift+arrows): up / down a whole phrase, left / right the same cell in the next track;
+   * on a table, up / down go to its first or last row.
+   */
+  moveSelection(rowDelta: number, columnDelta: number, coarse = false): void {
     const layout = this.layout
     if (!layout) return
     let selection = this.selection
@@ -965,13 +988,28 @@ export class World implements PointerTarget {
       }
     }
     if (selection.kind === 'step') {
-      const moved = this.movedStep(layout, selection, rowDelta, columnDelta)
+      const moved = coarse ? this.coarseStep(layout, selection, rowDelta, columnDelta) : this.movedStep(layout, selection, rowDelta, columnDelta)
       if (moved) this.select(moved, { turn: true })
       return
     }
-    const column = TABLE_COLUMNS[MathUtils.clamp(TABLE_COLUMNS.indexOf(selection.column) + columnDelta, 0, TABLE_COLUMNS.length - 1)]
-    const row    = MathUtils.clamp(selection.row + rowDelta, 0, ROWS_PER_TABLE - 1)
+    const column = coarse ? selection.column : TABLE_COLUMNS[MathUtils.clamp(TABLE_COLUMNS.indexOf(selection.column) + columnDelta, 0, TABLE_COLUMNS.length - 1)]
+    const row    = MathUtils.clamp(selection.row + (coarse ? rowDelta * ROWS_PER_TABLE : rowDelta), 0, ROWS_PER_TABLE - 1)
     this.select({ ...selection, row, column }, { turn: true })
+  }
+
+  /** A step selection moved by Shift+arrows: a whole phrase up / down, or the same cell (row and column) in the next track. */
+  private coarseStep(layout: SongLayout, selection: Extract<Selection, { kind: 'step' }>, rowDelta: number, columnDelta: number): Selection | null {
+    const from = {
+      instance: selection.instance,
+      step    : selection.step
+    }
+    const to   = columnDelta ? trackMoved(layout.tracks.map((track) => track.instances), from, columnDelta) : phraseMoved(layout.tracks[from.instance.track].instances, from, rowDelta)
+    return to ? {
+      kind    : 'step',
+      instance: to.instance,
+      step    : to.step,
+      column  : selection.column
+    } : null
   }
 
   /** A step selection moved by the arrows: across the columns into the next track, down the rows past empty stretches. */

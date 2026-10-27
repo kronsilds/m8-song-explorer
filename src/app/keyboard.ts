@@ -12,7 +12,7 @@ export function bindKeyboard(commands: KeyCommands, play: (fromCursor: boolean) 
       if (!event.repeat) play(event.shiftKey)
       return
     }
-    const command = commands[event.key]
+    const command = (event.shiftKey && commands[`Shift+${event.key}`]) || commands[event.key]
     if (!command) return
     event.preventDefault()
     command()

@@ -44,6 +44,7 @@ const HELP_HTML         = `
     <dt>Wheel</dt><dd>scroll the song · Ctrl/pinch zooms</dd>
     <dt>Click · Double click</dt><dd>select · focus</dd>
     <dt>Arrows · PgUp/PgDn</dt><dd>move the selection · scroll 16 rows</dd>
+    <dt>Shift+Arrows</dt><dd>a whole phrase up / down · the same cell in the next / previous track</dd>
     <dt>0 1 2 3</dt><dd>all · front · turn · side</dd>
     <dt>E · F</dt><dd>open every wall · focus selection</dd>
     <dt>I</dt><dd>turn the selected instrument panel over: its table or its instrument (parameters and modulators). It turns by itself while the M8 shows that instrument</dd>

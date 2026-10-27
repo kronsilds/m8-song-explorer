@@ -21,7 +21,7 @@ import { loadModel, loadTheme, saveModel, saveTheme } from '../model/storage'
 import type { ThemeColors } from '../scene/palette'
 import { preloadText } from '../scene/text'
 import { World } from '../scene/world'
-import { downloadDebugReport } from '../ui/debugFile'
+import { downloadDebugReport, openInAnalyzer } from '../ui/debugFile'
 import { type Action, Hud } from '../ui/hud'
 import { downloadSong, pickSongFile } from '../ui/songFile'
 import { registerDebugProviders, watchPage } from './debugReport'
@@ -179,31 +179,35 @@ export class ExplorerApp {
   private keyCommands(command: Record<Action, () => void>): KeyCommands {
     const { world } = this
     return {
-      ArrowUp   : () => world.moveSelection(-1, 0),
-      ArrowDown : () => world.moveSelection(1, 0),
-      ArrowLeft : () => world.moveSelection(0, -1),
-      ArrowRight: () => world.moveSelection(0, 1),
-      PageUp    : () => world.scrollRows(-16),
-      PageDown  : () => world.scrollRows(16),
-      Home      : command.overview,
-      '0'       : command.overview,
-      '1'       : command.front,
-      '2'       : command.angle,
-      '3'       : command.side,
-      e         : command.expand,
-      x         : command.dramatic,
-      t         : command.played,
-      a         : command.autoselect,
-      f         : () => world.focusSelection(),
-      i         : () => world.toggleSelectedFace(),
-      Enter     : command.show,
-      Escape    : () => world.select(null),
-      '+'       : () => world.zoom(0.8),
-      '='       : () => world.zoom(0.8),
-      '-'       : () => world.zoom(1.25),
-      '?'       : command.help,
-      d         : () => void dumpScreen(this.client, this.port),
-      m         : () => void this.checkSyncNow()
+      ArrowUp           : () => world.moveSelection(-1, 0),
+      ArrowDown         : () => world.moveSelection(1, 0),
+      ArrowLeft         : () => world.moveSelection(0, -1),
+      ArrowRight        : () => world.moveSelection(0, 1),
+      'Shift+ArrowUp'   : () => world.moveSelection(-1, 0, true),
+      'Shift+ArrowDown' : () => world.moveSelection(1, 0, true),
+      'Shift+ArrowLeft' : () => world.moveSelection(0, -1, true),
+      'Shift+ArrowRight': () => world.moveSelection(0, 1, true),
+      PageUp            : () => world.scrollRows(-16),
+      PageDown          : () => world.scrollRows(16),
+      Home              : command.overview,
+      '0'               : command.overview,
+      '1'               : command.front,
+      '2'               : command.angle,
+      '3'               : command.side,
+      e                 : command.expand,
+      x                 : command.dramatic,
+      t                 : command.played,
+      a                 : command.autoselect,
+      f                 : () => world.focusSelection(),
+      i                 : () => world.toggleSelectedFace(),
+      Enter             : command.show,
+      Escape            : () => world.select(null),
+      '+'               : () => world.zoom(0.8),
+      '='               : () => world.zoom(0.8),
+      '-'               : () => world.zoom(1.25),
+      '?'               : command.help,
+      d                 : () => void dumpScreen(this.client, this.port),
+      m                 : () => void this.checkSyncNow()
     }
   }
 
@@ -809,12 +813,17 @@ export class ExplorerApp {
     })
   }
 
-  /** Double click on the ? button: saves the debug log as a JSON file. */
+  /** Double click on the ? button: the debug log opens in the log analyzer, or is saved as a JSON file when that cannot be. */
   private async exportDebugLog(): Promise<void> {
     debugLog.event('debug-export')
-    const report = await debugLog.report()
-    const file   = downloadDebugReport(report, this.model.name)
-    this.hud.notify(`Debug log saved: ${file} (${report.events.length} events, ${report.problems.length} problems)`, 'info', 5000, false)
+    // The analyzer's tab opens inside the click; the log (permission queries take a moment) follows.
+    const report  = debugLog.report()
+    const opened  = await openInAnalyzer(report)
+    const data    = await report
+    const summary = `${data.events.length} events, ${data.problems.length} problems`
+    if (opened) return this.hud.notify(`Debug log opened in the analyzer (${summary})`, 'info', 5000, false)
+    const file = downloadDebugReport(data, this.model.name)
+    this.hud.notify(`Debug log saved: ${file} (${summary})`, 'info', 5000, false)
   }
 
   /** A handle for the console and for automated checks. */

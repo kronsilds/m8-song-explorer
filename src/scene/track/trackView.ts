@@ -381,7 +381,7 @@ export class TrackView {
     tableFace.position.x = -PANEL_U0
     tableFace.add(background, barMesh)
     tableFrame.add(tableFace)
-    const flash   = rectangles([{
+    const flash                       = rectangles([{
       x    : 0,
       y    : FACE_PAD_TOP,
       w    : 1,
@@ -389,7 +389,7 @@ export class TrackView {
       z    : 0.03,
       color: palette.device
     }], 0)
-    flash.visible = false
+    flash.visible                     = false
     // Only 0.03 above the panel: at a slant or a distance the depth buffer cannot tell them apart, so pull the flash toward the camera.
     const flashMaterial               = flash.material as MeshBasicMaterial
     flashMaterial.polygonOffset       = true

@@ -98,7 +98,9 @@ instruments → tables) and shows it as a 3D tracker:
 | `I` | `INST ›` tab | Turn the selected instrument panel over (table / instrument) |
 | `A` | Auto select | Selection follows the M8 cursor |
 | `M` | | MIDI sync check |
-| Arrows | | Move the selection |
+| Arrows | | Move the selection; the view scrolls about 4/5 of a page when the cursor leaves it |
+| Shift + Up / Down | | Move a whole phrase (same step in the previous / next phrase of the track) |
+| Shift + Left / Right | | Same cell (row and column) in the previous / next track |
 | PageUp / PageDown | | Scroll 16 rows |
 | `F` | | Bring the selection into view |
 | `+` / `-` | | Zoom |
