@@ -29,14 +29,25 @@ instruments → tables) and shows it as a 3D tracker:
   with what modulates it, or the whole modulator for a modulator value. With Auto select the M8
   cursor's value is selected as it moves.
 - **Many instruments at once**: panels that would overlap tile into extra columns deeper along the
-  wall (up to three, the wall grows only for tracks that need them) and then stack downward. A panel
-  keeps its column while you scroll, so the grid does not reshuffle.
+  wall (up to four, the wall grows only for tracks that need them) and then stack downward. A
+  panel's column says how far away it is used: on screen or close in the first column, further
+  uses deeper along the wall, and panels used far away show only their title lines while there is
+  room. A panel keeps its column while you scroll (a margin stops it changing band at every
+  phrase of a fast song), so the grid does not reshuffle; zooming far enough lays it out afresh.
+  When room runs short, panels used far from the view fold to their title lines first; the
+  selected panel, the ones linked from the selected step and the one under the M8 cursor never
+  fold. A table card opens and folds with an eased height, and the panels below it move with it.
+- **Trim tables** (Options panel, on by default): a table shows its rows down to the last one with
+  a transpose, volume or FX command (down to the selected or M8 cursor row), and an empty table
+  only its title lines. Off shows all 16 rows.
 - **Moving the selection** with the arrows onto a velocity / instrument / FX cell or a table turns the view and
   opens the wall; back on a note it turns back (the same rule as Follow M8).
 - **Camera**: Turn and Side centre the open track's column and wall (the panel columns in use)
   and stand back as far as they need, within readable distances: the same framing for every
   track. Front centres on all the tracks and slides only as far as it takes to show the open
-  one; Follow M8 and the arrows do the same when the cell leaves the screen. A drag that turns
+  one; Follow M8 and the arrows do the same when the cell leaves the screen, landing the cell just
+  under the track headers (which stay clear of the top bar, even when it wraps onto more rows in
+  a narrow window). A drag that turns
   the view opens the track it starts on and turns around it, bringing it to the middle. Panning
   moves parallel to the tracks, so the zoom never changes. Turned, each track has its stretch of
   the pan, from where it is centred to halfway to its neighbours (longer when part of its wall is
@@ -96,6 +107,7 @@ instruments → tables) and shows it as a 3D tracker:
 | `X` | Dramatic | Skewed, tilted camera angles for front, turn, side and the turns toward a wall |
 | `T` | Played notes | Notes show what they play (transpose colour; scale colour when only the scale moved them) |
 | `I` | `INST ›` tab | Turn the selected instrument panel over (table / instrument) |
+| | Trim tables | Tables show only rows with content (Options panel) |
 | `A` | Auto select | Selection follows the M8 cursor |
 | `M` | | MIDI sync check |
 | Arrows | | Move the selection; the view scrolls about 4/5 of a page when the cursor leaves it |
@@ -110,8 +122,12 @@ instruments → tables) and shows it as a 3D tracker:
 | `?` | ? | Keys and mouse; double click saves the debug log |
 | `D` | | Print what the SDK reads on the M8 (screen, colours) to the console |
 | | Explore song, Read theme, Follow M8, Connect M8 | See above |
-| | Export / Import | Save the explored song as JSON, or load one |
-| | Demo | Show the demo song |
+| | Export / Import | Save the explored song as JSON, or load one (Options panel) |
+| | Demo | Show the demo song (Options panel) |
+
+The settings used less often (Dramatic, Played notes, Trim tables, Read theme, CC MAP CH, song
+file) are in the OPTIONS panel, a tab on the left edge: hover to open it, click the tab to keep
+it open.
 
 ## Run it
 
@@ -127,11 +143,24 @@ In yam8d, add `http://localhost:5176/` under External Apps. Opened on its own th
 last explored song (or a demo song) and runs the SDK in standalone mode: **Connect M8** connects
 to the device from the page (Web Serial, WebUSB or Web MIDI) and plays its USB audio. Only one
 page can hold the M8, so disconnect it in yam8d first. A device the page was granted before is
-reopened at start. Standalone mode has not been tried on the device yet.
+reopened at start. Standalone mode has been tried on the device and works.
 
 `bun run test` runs the explorer against a fake M8 (`tests/fakeM8.ts`) and tests the semantics,
 transpose and scales (`harmony`), the layout, playback, the MIDI sync check, the other-song
-check and the debug log; `bun run typecheck` and `bun run build` check the rest.
+check and the debug log; `bun run typecheck` and `bun run build` check the rest. `bun run lint`
+runs Biome; `bun run format` runs Biome (lint fixes, imports), then `scripts/alignObjects.ts`.
+Do not format the code with another formatter: the object layout (one property per line, colons
+aligned on the longest key, no trailing comma) is applied by that script, and Biome's own
+formatter is off because it would undo it.
+
+## Code layout
+
+Layers, each importing only from the ones above it: `src/model/` (plain data and pure
+functions: the song, timeline, columns, screens, selection, harmony, grooves, debug log) →
+`src/m8/` (the device: `port.ts`, `driver.ts`, `screen/`, `tasks/`, `playback.ts`,
+`semantics.ts`, `midiControl.ts`) → `src/scene/` (three.js: `layout.ts`, `world.ts`, `track/`,
+`input/`, `markers/`, `camera/`) and `src/ui/` (DOM: `hud.ts`, song and debug files) →
+`src/app/` (`ExplorerApp` and its helpers) → `src/main.ts`.
 
 ## How the exploration moves
 
