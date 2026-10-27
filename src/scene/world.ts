@@ -160,6 +160,7 @@ export class World implements PointerTarget {
   private dramatic                      = false
   /** Transposed phrases show the notes they play (else the notes written, as on the M8). */
   private playedNotes                   = true
+  private trimTables                    = true
   /** Cuts taken so far: dramatic takes alternate low / high. */
   private cuts                          = 0
   /** The preset the view was last set to, until it is turned by hand. */
@@ -235,7 +236,7 @@ export class World implements PointerTarget {
   setModel(model: SongModel, keepView = false): void {
     const previous     = this.layout
     const hadLayout    = previous != null
-    this.layout        = new SongLayout(model)
+    this.layout        = new SongLayout(model, this.trimTables)
     this.tablePlayback = new TablePlayback(model, this.layout.timeline, this.layout.effective)
     if (previous) {
       for (const track of this.layout.tracks) {
@@ -252,6 +253,14 @@ export class World implements PointerTarget {
     this.palette = palette
     this.applyPalette()
     this.rebuild()
+  }
+
+  /** Tables show only their rows down to the last with content (an empty one its title lines), or all 16. */
+  setTrimTables(on: boolean): void {
+    if (on === this.trimTables) return
+    this.trimTables = on
+    if (this.layout) this.layout.trimTables = on
+    this.invalidate()
   }
 
   /** Switches the NOTE column of transposed phrases between the notes played and the notes written. */
@@ -508,12 +517,11 @@ export class World implements PointerTarget {
     const lanes = this.layout?.tracks[track]
     if (!open || !this.layout || !lanes) return front
     const onWall = (u: number) => new Vector3(left + WALL_HINGE + u * Math.cos(WALL_ANGLE), y, -u * Math.sin(WALL_ANGLE))
-    // Which panels the rows in view show, and in which columns.
+    // Which panels the rows in view would show, and in which columns (the panels themselves stay where they are).
     const range  = this.stickRange(y, this.visibleHalfHeight(goal.distance))
-    this.layout.stick(track, range.panelTop, range.bottom)
     let end      = Math.min(lanes.wallLen, PANEL_U0 + PANEL_COL_W)
-    for (const panel of lanes.panels) {
-      if (panel.visible && panel.flip < 0.05) end = Math.max(end, Math.min(lanes.wallLen, panel.u + PANEL_CHARS * CHAR_W + 1))
+    for (const { panel, u } of this.layout.probe(track, range.panelTop, range.bottom, range.view)) {
+      if (panel.flip < 0.05) end = Math.max(end, Math.min(lanes.wallLen, u + PANEL_CHARS * CHAR_W + 1))
     }
     const turned = (this.trackViews[track]?.turnedPanelEnds() ?? []).map((point) => new Vector3(point.x + left, y, point.z))
     return [...front, onWall(end), ...turned]
@@ -860,6 +868,7 @@ export class World implements PointerTarget {
 
   private refreshMarkers(): void {
     const { palette } = this
+    this.markPanels()
     for (const marker of this.selectionMarkers) marker.hide()
     const rects = this.selection ? this.rectsOf(this.selection) : []
     rects.forEach((rect, i) => {
@@ -890,27 +899,57 @@ export class World implements PointerTarget {
     this.selectedLinks = null
   }
 
+  /** The links of a selection: a step's own, a phrase's (its chain labels) all of them, a panel's all of its panel's. */
+  private selectionLinks(selection: Selection): Link[] {
+    const layout = this.layout
+    if (!layout) return []
+    if (selection.kind !== 'step' && selection.kind !== 'chain') {
+      return layout.tracks[selection.track]?.links.filter((link) => link.panel.table === selection.table) ?? []
+    }
+    const inRow = (link: Link) => selection.kind === 'chain' || link.step === selection.step
+    const links = layout.instanceLinks(selection.instance).filter(inRow)
+    // Each note also links to the instrument it plays (the last one set when its I column is empty).
+    const drawn = new Set(links.map((link) => `${link.row}:${link.col}:${link.panel.table}`))
+    for (const link of layout.noteInstrumentLinks(selection.instance).filter(inRow)) {
+      if (!drawn.has(`${link.row}:${link.col}:${link.panel.table}`)) links.push(link)
+    }
+    return links
+  }
+
+  /**
+   * Tells the sticky layout which panels matter now: the selected one and the one under the M8
+   * cursor are pinned (whole on screen, their table down to the row pointed at), the ones the
+   * selected step links to are kept open.
+   */
+  private markPanels(): void {
+    const layout = this.layout
+    if (!layout) return
+    for (const track of layout.tracks) {
+      for (const panel of track.panels) {
+        panel.pinned      = false
+        panel.linked      = false
+        panel.selectedRow = null
+      }
+    }
+    for (const place of [...this.devicePlaces, ...(this.selection ? [this.selection] : [])]) {
+      if (place.kind === 'step' || place.kind === 'chain') continue
+      const panel = this.panelOf(place.track, place.table)
+      if (!panel) continue
+      panel.pinned = true
+      if (place.kind === 'table') panel.selectedRow = Math.max(panel.selectedRow ?? 0, place.row)
+    }
+    if (this.selection?.kind === 'step') for (const link of this.selectionLinks(this.selection)) link.panel.linked = true
+  }
+
   /** The links of the selection, drawn thick. */
   private refreshSelectedLinks(): void {
     this.removeSelectedLinks()
     const { selection, layout } = this
     if (!selection || !layout) return
-    const track = selectionTrack(selection)
-    const view  = this.trackViews[track]
-    let links   : Link[]
+    const view  = this.trackViews[selectionTrack(selection)]
+    const links = this.selectionLinks(selection)
     // A selected row draws its own links; the phrase draws all of them, faintly; a panel header draws all of its panel's.
     const faint = selection.kind === 'chain'
-    if (selection.kind === 'step' || selection.kind === 'chain') {
-      const inRow = (link: Link) => selection.kind === 'chain' || link.step === selection.step
-      links       = layout.instanceLinks(selection.instance).filter(inRow)
-      // Each note also links to the instrument it plays (the last one set when its I column is empty).
-      const drawn = new Set(links.map((link) => `${link.row}:${link.col}:${link.panel.table}`))
-      for (const link of layout.noteInstrumentLinks(selection.instance).filter(inRow)) {
-        if (!drawn.has(`${link.row}:${link.col}:${link.panel.table}`)) links.push(link)
-      }
-    } else {
-      links = layout.tracks[track].links.filter((link) => link.panel.table === selection.table)
-    }
     if (!links.length || !view) return
     const positions: number[] = []
     for (const link of links) {
@@ -1273,13 +1312,19 @@ export class World implements PointerTarget {
    * Where things stick for a view centred at height y showing `half` above and below:
    * headers at the screen height they have in the overview, panels a little below them (low
    * enough for the tab over their corner to stay clear of the header) and down to `bottom`.
+   * Headers rest lower at the start of the song (see SongLayout.headerRestY), and panels stay
+   * below them; `view` is the panels' height when the headers are stuck (it tells the zoom).
    */
-  private stickRange(centerY: number, half: number): { headerTop: number; panelTop: number; bottom: number } {
+  private stickRange(centerY: number, half: number): { headerTop: number; panelTop: number; bottom: number; view: number } {
     const headerTop = centerY + half * this.headerFraction() - HEADER_TOP
+    const below     = ROW_H + 0.95 + PANEL_TAB_ROOM
+    const bottom    = centerY - half * 0.92
+    const restY     = this.layout?.headerRestY ?? Number.POSITIVE_INFINITY
     return {
       headerTop,
-      panelTop: headerTop - ROW_H - 0.95 - PANEL_TAB_ROOM,
-      bottom  : centerY - half * 0.92
+      panelTop: Math.min(headerTop, restY) - below,
+      bottom,
+      view    : headerTop - below - bottom
     }
   }
 
@@ -1287,14 +1332,14 @@ export class World implements PointerTarget {
   private updateStickyParts(dt: number, textOn: boolean): boolean {
     const layout = this.layout
     if (!layout) return false
-    let busy                              = false
-    let panelsMoved                       = false
-    const half                            = this.visibleHalfHeight()
-    const centerY                         = this.rig.current.target.y
-    const { headerTop, panelTop, bottom } = this.stickRange(centerY, half)
+    let busy                                                = false
+    let panelsMoved                                         = false
+    const half                                              = this.visibleHalfHeight()
+    const centerY                                           = this.rig.current.target.y
+    const { headerTop, panelTop, bottom, view: viewHeight } = this.stickRange(centerY, half)
     for (const view of this.trackViews) {
       if (view.setHeaderY(headerTop)) busy = true
-      if ((view.wallAlpha > 0.01 || this.allWallsOpen) && layout.stick(view.track.track, panelTop, bottom)) panelsMoved = true
+      if ((view.wallAlpha > 0.01 || this.allWallsOpen) && layout.stick(view.track.track, panelTop, bottom, viewHeight)) panelsMoved = true
       view.panelCeiling = panelTop
       if (view.updatePanels(dt, textOn)) panelsMoved = true
       if (view.wallAlpha > 0.01 && view.updateLinks(centerY + half * 1.05, centerY - half * 1.05)) busy = true

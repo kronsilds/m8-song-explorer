@@ -20,6 +20,7 @@ export type Action =
   | 'expand'
   | 'dramatic'
   | 'played'
+  | 'trim'
   | 'export'
   | 'import'
   | 'demo'
@@ -180,6 +181,7 @@ export class Hud {
       'VIEW',
       ['dramatic', 'Dramatic', 'Skewed, tilted camera angles for front, turn, side and the turns toward a wall (X)'],
       ['played', 'Played notes', 'Notes show what they play instead of what is written: moved by a transpose in the transpose colour, moved only by the scale in the scale colour (T)'],
+      ['trim', 'Trim tables', 'Tables show their rows down to the last one with something in it; an empty table shows only its title'],
     )
     section('M8', ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'], this.buildChannelPicker())
     section(

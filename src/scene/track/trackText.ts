@@ -69,13 +69,13 @@ export class TrackTextBuilder {
     return rich
   }
 
-  /** Title, subtitle and the 16 rows of an instrument's (or an aux) table. */
-  panelText(panel: Panel): RichText {
+  /** A panel's table face: its title lines, then its first `rows` rows; a folded panel names how many rows with content it hides. */
+  panelText(panel: Panel, rows = ROWS_PER_TABLE): RichText {
     const { palette }                         = this
     const { model }                           = this.layout
     const { instrument: instrumentId, table } = panel
     const instrument                          = instrumentId != null ? model.instruments[instrumentId] : null
-    const rows                                : TableRow[] | undefined = model.tables[table]?.rows
+    const tableRows                           : TableRow[] | undefined = model.tables[table]?.rows
     const rich                                = new RichText()
     if (instrumentId != null) {
       rich.add(`I${hex2(instrumentId)} `, palette.title)
@@ -90,10 +90,14 @@ export class TrackTextBuilder {
     rich
       .newLine()
       .add(type.slice(0, TYPE_WIDTH - 1).padEnd(TYPE_WIDTH), palette.label)
-      .add(`TBL ${hex2(table)}`, palette.empty)
-    for (let i = 0; i < ROWS_PER_TABLE; i += 1) {
+      // Bright when the table has something in it, dim when it is empty.
+      .add(`TBL ${hex2(table)}`, panel.contentRows > 0 ? palette.value : palette.empty)
+    // Ø: an empty table (the font has no ∅); +N: rows with something in them that a folded panel hides.
+    if (panel.contentRows === 0) rich.add(' Ø', palette.label)
+    else if (rows < panel.contentRows) rich.add(` +${panel.contentRows - rows}`, palette.label)
+    for (let i = 0; i < rows; i += 1) {
       rich.newLine()
-      const row = rows?.[i]
+      const row = tableRows?.[i]
       rich.add(hexDigit(i), palette.table.rowIndex.filled).add(' ', palette.empty)
       if (!row) {
         rich.add(i === 0 ? 'not read' : '', palette.empty)

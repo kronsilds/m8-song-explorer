@@ -6,10 +6,10 @@
 import { fxColumn } from '../../model/columns'
 import type { TablePlayback } from '../../model/music/tablePlayback'
 import { FX_LANES, TRACKS } from '../../model/song'
-import { CHAR_W, PANEL_CHARS, PANEL_FIELDS, ROW_H, type SongLayout } from '../layout'
+import { CHAR_W, PANEL_CHARS, PANEL_FIELDS, ROW_H, type SongLayout, TITLE_ROWS } from '../layout'
 import type { Palette } from '../palette'
 import type { TrackView } from '../track/trackView'
-import { CellMarker, type CellRect } from './cellMarker'
+import { CellMarker } from './cellMarker'
 
 /** A row's marker and the markers of the lanes, per table of a track (its own and its aux one). */
 const MARKERS_PER_TABLE = 1 + FX_LANES
@@ -38,16 +38,19 @@ export class TablePlayheadView {
         if (!panel || panel.alpha < 0.05 || view.shownFace(panel) !== 'table') continue
         const frame = view.faceFrame(panel, 'table')
         const alpha = panel.alpha * view.wallAlpha * (cursors.aux ? 0.7 : 1)
-        const row   : CellRect = {
-          parent: frame,
-          x     : -ROW_PAD,
-          y     : -(cursors.main + 2) * ROW_H,
-          w     : PANEL_CHARS * CHAR_W + 2 * ROW_PAD,
-          h     : ROW_H
+        // Only rows the panel shows: a trimmed, empty or folded table hides the rest.
+        const shown = (tableRow: number) => tableRow + TITLE_ROWS < view.shownRows(panel)
+        if (shown(cursors.main)) {
+          markers[used++].show({
+            parent: frame,
+            x     : -ROW_PAD,
+            y     : -(cursors.main + 2) * ROW_H,
+            w     : PANEL_CHARS * CHAR_W + 2 * ROW_PAD,
+            h     : ROW_H
+          }, palette.device, ROW_FILL * alpha, ROW_OUTLINE * alpha)
         }
-        markers[used++].show(row, palette.device, ROW_FILL * alpha, ROW_OUTLINE * alpha)
         cursors.lanes.forEach((laneRow, lane) => {
-          if (laneRow == null || laneRow === cursors.main) return
+          if (laneRow == null || laneRow === cursors.main || !shown(laneRow)) return
           const [cmdStart]           = PANEL_FIELDS[fxColumn(lane, 'cmd')]
           const [valStart, valWidth] = PANEL_FIELDS[fxColumn(lane, 'val')]
           markers[used++].show({

@@ -17,7 +17,7 @@ const DEFAULT_BUDGET  = 24
 export const preloadText = (): Promise<void> =>
   new Promise((resolve) => preloadFont({
     font      : fontUrl,
-    characters: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-#:·.>|/ '
+    characters: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-#:·.>|/+Ø '
   }, () => resolve()))
 
 /** A string with a colour per run of characters (a builder: add() and newLine() chain). */

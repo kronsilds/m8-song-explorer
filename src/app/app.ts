@@ -168,6 +168,7 @@ export class ExplorerApp {
       expand    : () => hud.setActive('expand', world.toggleAllWalls()),
       dramatic  : () => this.toggleDramatic(),
       played    : () => this.togglePlayedNotes(),
+      trim      : () => this.toggleTrimTables(),
       export    : () => downloadSong(this.model),
       import    : () => void this.importSong(),
       demo      : () => this.setModel(demoSong(), false),
@@ -275,6 +276,9 @@ export class ExplorerApp {
     const playedNotes = preferences.playedNotes.get()
     this.world.setPlayedNotes(playedNotes)
     this.hud.setActive('played', playedNotes)
+    const trimTables = preferences.trimTables.get()
+    this.world.setTrimTables(trimTables)
+    this.hud.setActive('trim', trimTables)
   }
 
   private toggleDramatic(): void {
@@ -289,6 +293,13 @@ export class ExplorerApp {
     preferences.playedNotes.set(playedNotes)
     this.world.setPlayedNotes(playedNotes)
     this.hud.setActive('played', playedNotes)
+  }
+
+  private toggleTrimTables(): void {
+    const trimTables = !preferences.trimTables.get()
+    preferences.trimTables.set(trimTables)
+    this.world.setTrimTables(trimTables)
+    this.hud.setActive('trim', trimTables)
   }
 
   private async importSong(): Promise<void> {

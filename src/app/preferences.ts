@@ -33,6 +33,8 @@ export const preferences = {
   dramatic   : flag('dramatic', false),
   /** Transposed phrases show the notes they play. */
   playedNotes: flag('played-notes', true),
+  /** Tables show only their rows with content; an empty one only its title. */
+  trimTables : flag('trim-tables', true),
   /** The selection panel stays open. */
   infoPinned : flag('info-pinned', false),
   ccMapChannel

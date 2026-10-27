@@ -2,7 +2,7 @@
 // instrument and table panels, links), its sticky header and the coloured bars shown when
 // zoomed out.
 
-import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, type MeshBasicMaterial, type Object3D, Vector3 } from 'three'
+import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, Matrix4, type MeshBasicMaterial, type Object3D, Vector3 } from 'three'
 import type { Text } from 'troika-three-text'
 import type { TrackToggle } from '../../m8/midiControl'
 import { fxColumn } from '../../model/columns'
@@ -17,15 +17,17 @@ import {
   NOTE_COL,
   PANEL_CHARS,
   PANEL_FIELDS,
-  PANEL_ROWS,
   PANEL_U0,
   type Panel,
   PHRASE_COL,
+  panelSpan,
   ROW_H,
   SIDE_CHARS,
   SIDE_FIELDS,
   SIDE_U0,
   type SongLayout,
+  shownPanelRows,
+  TITLE_ROWS,
   type TrackLayout,
   WALL_ANGLE,
   WALL_HINGE,
@@ -47,6 +49,8 @@ const BAR_HEIGHT               = ROW_H * 0.72
 /** Ease rates per second of a panel's fade and glide. */
 const PANEL_FADE_RATE          = 3
 const PANEL_GLIDE_RATE         = 15
+/** How near (along the wall) a panel must be to its column to count as in it, and keep its gaps there. */
+const COLUMN_SETTLED           = 0.5
 /** Seconds a panel takes to turn to its other face. */
 const FLIP_SECONDS             = 0.10
 /** Part of the flip the turn off the wall takes, and where the crossfade of the faces starts (it overlaps the end of the turn). */
@@ -61,7 +65,8 @@ const FACE_PAD_TOP             = 0.25
 /** How far a panel's tab reaches above its title line: panels stick that much lower under the header. */
 export const PANEL_TAB_ROOM    = FACE_PAD_TOP + TAB_HEIGHT
 const TABLE_WIDTH              = PANEL_CHARS * CHAR_W + 0.9
-const TABLE_HEIGHT             = PANEL_ROWS * ROW_H + 0.5
+/** Height of a table card showing `rows` rows (title lines included). */
+const tableHeight              = (rows: number): number => rows * ROW_H + 0.5
 /** A header's flash: seconds it takes to die out, its opacity at the note, and its height (the two title lines). */
 const FLASH_SECONDS            = 0.4
 const FLASH_OPACITY            = 0.3
@@ -84,6 +89,9 @@ export function flipPose(flip: number): { turn: number; fade: number } {
     fade: easeInOut((flip - FADE_START) / (1 - FADE_START))
   }
 }
+
+/** 1 while a table shows every row with content (its FX bars are on those rows), else 0. */
+const barsShown                = (view: PanelView): number => (view.tableRows >= TITLE_ROWS + view.panel.contentRows ? 1 : 0)
 
 /** How opaque a panel's table content (text, bars) is: it leaves in the first part of the crossfade. */
 const tableContentAlpha        = (panel: Panel): number => panel.alpha * (1 - smoothstep(0, 0.6, flipPose(panel.flip).fade))
@@ -124,6 +132,12 @@ interface PanelView {
   tableFace : Group
   instFrame : Group
   text      : Text | null
+  /** Rows of the table the text was made for. */
+  textRows  : number
+  /** Rows of the table shown now (title lines included): fewer when it is folded or has empty rows at its end. */
+  tableRows : number
+  /** The card's backgrounds: the body (instance 0, sized to tableRows) and the title band. */
+  backdrop  : InstancedMesh
   background: MeshBasicMaterial
   bars      : MeshBasicMaterial
   /** The instrument face's layout (null for an aux table or an instrument not read) and its 3D view, made when first shown. */
@@ -195,7 +209,7 @@ export class TrackView {
     this.links = new LinkLines(layout, track, palette)
     this.wall.add(this.fadesWith(this.links.lines, true))
 
-    const headerY           = layout.rowY(0) + ROW_H * 1.9
+    const headerY           = layout.headerRestY
     this.header             = new TrackHeader(palette, track.track, headerY, track.wallLen)
     this.header.onTextReady = () => this.onTextReady()
     this.front.add(this.header.front)
@@ -338,13 +352,12 @@ export class TrackView {
 
   private buildPanel(panel: Panel): void {
     const { palette } = this
-    const height      = PANEL_ROWS * ROW_H
     const width       = PANEL_CHARS * CHAR_W + 0.9
     const backgrounds : ColoredRect[] = [{
       x    : PANEL_U0 - 0.45,
       y    : 0.25,
       w    : width,
-      h    : height + 0.5,
+      h    : tableHeight(this.layout.tableFaceRows(panel)),
       z    : -0.06,
       color: palette.panel
     }, {
@@ -355,6 +368,15 @@ export class TrackView {
       z    : -0.05,
       color: palette.panelHeader
     }]
+    // A table with something in it has a strip down the left of its title lines; an empty one has none.
+    if (panel.contentRows > 0) backgrounds.push({
+      x    : PANEL_U0 - 0.45,
+      y    : 0.25,
+      w    : 0.24,
+      h    : ROW_H * 2 + 0.35,
+      z    : -0.04,
+      color: palette.title
+    })
     const bars        : ColoredRect[] = []
     this.layout.model.tables[panel.table]?.rows.forEach((row, r) => {
       row.fx.forEach((fx, lane) => {
@@ -410,6 +432,9 @@ export class TrackView {
       tableFace,
       instFrame,
       text      : null,
+      textRows  : 0,
+      tableRows : this.layout.tableFaceRows(panel),
+      backdrop  : background,
       background: background.material as MeshBasicMaterial,
       bars      : barMesh.material as MeshBasicMaterial,
       face,
@@ -450,7 +475,8 @@ export class TrackView {
   /** Rows of the face a panel shows. */
   shownRows(panel: Panel): number {
     const face = this.panelViews.get(panel)?.face
-    return this.shownFace(panel) === 'inst' && face ? face.rows : PANEL_ROWS
+    if (this.shownFace(panel) === 'inst' && face) return face.rows
+    return this.panelViews.get(panel)?.tableRows ?? this.layout.tableFaceRows(panel)
   }
 
   /** The face a panel shows now (they swap half way through the crossfade). */
@@ -525,7 +551,7 @@ export class TrackView {
   private applyFades(): void {
     ;(this.frontBars.material as MeshBasicMaterial).opacity = this.barsAlpha * this.frontAlpha
     ;(this.wallBars.material as MeshBasicMaterial).opacity  = this.barsAlpha * this.wallAlpha
-    for (const view of this.panels) view.bars.opacity = this.barsAlpha * this.wallAlpha * tableContentAlpha(view.panel)
+    for (const view of this.panels) view.bars.opacity = this.barsAlpha * this.wallAlpha * tableContentAlpha(view.panel) * barsShown(view)
     this.header?.setFade(this.frontAlpha, this.wallAlpha)
   }
 
@@ -577,11 +603,15 @@ export class TrackView {
     const fade  = easeFactor(dt, PANEL_FADE_RATE)
     const glide = easeFactor(dt, PANEL_GLIDE_RATE)
     for (const view of this.panels) {
-      const { panel } = view
-      if (this.easePanel(panel, fade, glide)) busy = true
+      if (this.easePanel(view.panel, fade, glide)) busy = true
       if (this.turnPanel(view, dt)) busy = true
-      const alpha = panel.alpha * this.wallAlpha
-      const pose  = flipPose(panel.flip)
+    }
+    this.keepPanelGaps()
+    for (const view of this.panels) {
+      const { panel } = view
+      const alpha     = panel.alpha * this.wallAlpha
+      const pose      = flipPose(panel.flip)
+      this.sizeTable(view)
       view.group.position.set(panel.shownU - FACE_PAD_LEFT, panel.shownY, 0)
       // The wall is turned WALL_ANGLE from the front: turning back as much faces the front.
       view.group.rotation.y = -pose.turn * WALL_ANGLE
@@ -594,6 +624,25 @@ export class TrackView {
       if (this.updateFlash(view, dt, alpha)) busy = true
     }
     return busy
+  }
+
+  /**
+   * Keeps gliding panels apart: down each column, in the order stick() stacked them, a panel is
+   * shown no higher than the one above it allows (its rows and the gap), so the lag of the glide
+   * (the top one held under the header, the others catching up) never makes them overlap. A panel
+   * still moving to another column is left out: it may cross the others on its way.
+   */
+  private keepPanelGaps(): void {
+    const { cols, panels } = this.track
+    const settled          = (panel: Panel) => panel.visible && Math.abs(panel.shownU - panel.u) < COLUMN_SETTLED
+    const takes            = (panel: Panel, col: number) => panel.col === col || (panel.chars > PANEL_CHARS && cols > 1 && panel.col === col - 1)
+    for (let col = 0; col < cols; col += 1) {
+      let floor = Number.POSITIVE_INFINITY
+      for (const panel of panels.filter((p) => settled(p) && takes(p, col)).sort((a, b) => b.y - a.y)) {
+        panel.shownY = Math.min(panel.shownY, floor)
+        floor        = panel.shownY - panelSpan(shownPanelRows(panel))
+      }
+    }
   }
 
   /** Fades the glow of a panel's header out after a note; returns true while it glows. */
@@ -614,10 +663,11 @@ export class TrackView {
    * (`fade` 0..1), so the two fill the same card while they crossfade. Returns its width.
    */
   private cardSize(view: PanelView, fade: number): number {
-    const faceHeight = view.face ? view.face.rows * ROW_H + 0.5 : TABLE_HEIGHT
+    const table      = tableHeight(view.tableRows)
+    const faceHeight = view.face ? view.face.rows * ROW_H + 0.5 : table
     const width      = TABLE_WIDTH + (FACE_WIDTH - TABLE_WIDTH) * fade
-    const height     = TABLE_HEIGHT + (faceHeight - TABLE_HEIGHT) * fade
-    placeFrame(view.tableFrame, width / TABLE_WIDTH, height / TABLE_HEIGHT)
+    const height     = table + (faceHeight - table) * fade
+    placeFrame(view.tableFrame, width / TABLE_WIDTH, height / table)
     placeFrame(view.instFrame, width / FACE_WIDTH, height / faceHeight)
     return view.face ? width : TABLE_WIDTH
   }
@@ -631,7 +681,7 @@ export class TrackView {
     const content           = this.wallAlpha * tableContentAlpha(view.panel)
     view.tableFrame.visible = back > 0.01
     view.background.opacity = PANEL_BACKGROUND_OPACITY * back
-    view.bars.opacity       = this.barsAlpha * content
+    view.bars.opacity       = this.barsAlpha * content * barsShown(view)
     this.updatePanelText(view, textOn && content > 0.01, content)
   }
 
@@ -654,7 +704,7 @@ export class TrackView {
     const { panel } = view
     const goal      = view.face && this.faceGoal(panel) === 'inst' ? 1 : 0
     // The layout makes room for the face it turns to at once.
-    panel.rows      = goal ? (view.face?.rows ?? PANEL_ROWS) : PANEL_ROWS
+    panel.rows      = goal ? (view.face?.rows ?? this.layout.tableFaceRows(panel)) : this.layout.tableFaceRows(panel)
     panel.chars     = goal ? FACE_CHARS : PANEL_CHARS
     if (panel.flip === goal) return false
     const step = dt / FLIP_SECONDS
@@ -708,15 +758,33 @@ export class TrackView {
     return panel.alpha !== goalAlpha || panel.shownY !== panel.y || panel.shownU !== panel.u
   }
 
+  /** Fits the table card to the rows it shows now (folded: its title lines only). */
+  private sizeTable(view: PanelView): void {
+    const { panel } = view
+    const rows      = panel.folded ? TITLE_ROWS : this.layout.tableFaceRows(panel)
+    if (rows === view.tableRows) return
+    view.tableRows = rows
+    const matrix   = new Matrix4()
+    view.backdrop.getMatrixAt(0, matrix)
+    const corner   = new Vector3().setFromMatrixPosition(matrix)
+    view.backdrop.setMatrixAt(0, matrix.makeScale(TABLE_WIDTH, tableHeight(rows), 1).setPosition(corner))
+    view.backdrop.instanceMatrix.needsUpdate = true
+  }
+
   private updatePanelText(view: PanelView, wanted: boolean, alpha: number): void {
+    if (view.text && view.textRows !== view.tableRows) {
+      disposeText(view.text)
+      view.text = null
+    }
     if (wanted && !view.text) {
-      const text = makeText(this.text.panelText(view.panel))
+      const text = makeText(this.text.panelText(view.panel, view.tableRows - TITLE_ROWS))
       text.position.set(PANEL_U0, 0, 0.01)
       text.renderOrder = 2
       text.fillOpacity = alpha
       view.tableFace.add(text)
       text.sync(() => this.onTextReady())
-      view.text = text
+      view.text     = text
+      view.textRows = view.tableRows
     } else if (!wanted && view.text) {
       disposeText(view.text)
       view.text = null
