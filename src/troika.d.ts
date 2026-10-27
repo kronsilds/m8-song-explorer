@@ -19,6 +19,8 @@ declare module 'troika-three-text' {
     outlineOpacity: number
     sdfGlyphSize: number | null
     depthOffset: number
+    /** [minX, minY, maxX, maxY] in the text's own coordinates: what lies outside is not drawn. */
+    clipRect: [number, number, number, number] | null
     material: Material
     sync(callback?: () => void): void
     dispose(): void

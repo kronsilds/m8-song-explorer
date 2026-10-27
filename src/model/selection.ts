@@ -7,8 +7,11 @@ import type { PhraseInstance } from './timeline'
 export type Selection =
   /** A cell of a phrase as played at one place of the song. */
   | { kind: 'step'; instance: PhraseInstance; step: number; column: PhraseColumn }
-  /** The chain / phrase labels in a track's gutter. */
-  | { kind: 'chain'; instance: PhraseInstance }
+  /**
+   * The chain / phrase labels in a track's gutter. `view` says which M8 view the place came from:
+   * a Song view cell marks the whole chain, a Chain view row marks one phrase of it. Unset (a click): both labels.
+   */
+  | { kind: 'chain'; instance: PhraseInstance; view?: 'song' | 'chain' }
   /** A table row cell, shown in the panel of `instrument` on `track`'s wall. */
   | { kind: 'table'; table: number; row: number; column: TableColumn; track: number; instrument: number | null }
   /** The header of an instrument / table panel. */
@@ -25,7 +28,7 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
     case 'step':
       return b.kind === 'step' && a.instance.key === b.instance.key && a.step === b.step && a.column === b.column
     case 'chain':
-      return b.kind === 'chain' && a.instance.key === b.instance.key
+      return b.kind === 'chain' && a.instance.key === b.instance.key && a.view === b.view
     case 'table':
       return b.kind === 'table' && a.table === b.table && a.row === b.row && a.column === b.column && a.track === b.track
     case 'instrument':

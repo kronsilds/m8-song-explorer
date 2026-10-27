@@ -4,7 +4,7 @@ import type { PhraseColumn } from '../../model/columns'
 import type { Selection } from '../../model/selection'
 import { ROWS_PER_PHRASE } from '../../model/song'
 import { INST_CHARS, placeOf } from '../instrumentFace'
-import { CHAR_W, INST_COL, NOTE_COL, PANEL_CHARS, PANEL_FIELDS, type Panel, ROW_H, SIDE_FIELDS, SIDE_U0, type SongLayout } from '../layout'
+import { CHAIN_COL, CHAR_W, INST_COL, NOTE_COL, PANEL_CHARS, PANEL_FIELDS, type Panel, PHRASE_COL, ROW_H, SIDE_FIELDS, SIDE_U0, type SongLayout } from '../layout'
 import { FACE_HEADER_WIDTH } from '../track/instrumentFaceView'
 import { FRONT_NOTES_W, FRONT_NOTES_X, type TrackView, WALL_STEPS_U, WALL_STEPS_W } from '../track/trackView'
 import type { CellRect } from './cellMarker'
@@ -26,6 +26,26 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
   switch (selection.kind) {
     case 'chain': {
       const y = layout.rowY(selection.instance.row)
+      // Song view cell: the whole chain (every phrase of its song row) and its own label.
+      if (selection.view === 'song') {
+        const phrases = layout.timeline.byTrack[selection.instance.track].filter((i) => i.songRow === selection.instance.songRow)
+        const last    = phrases.at(-1) ?? selection.instance
+        return [{
+          parent: view.front,
+          x     : FRONT_NOTES_X,
+          y,
+          w     : FRONT_NOTES_W,
+          h     : (last.row - selection.instance.row + ROWS_PER_PHRASE) * ROW_H
+        }, fieldRect(view.front, CHAIN_COL * CHAR_W, y, 2)]
+      }
+      // Chain view row: one phrase of the chain and the phrase label.
+      if (selection.view === 'chain') return [{
+        parent: view.front,
+        x     : FRONT_NOTES_X,
+        y,
+        w     : FRONT_NOTES_W,
+        h     : ROWS_PER_PHRASE * ROW_H
+      }, fieldRect(view.front, PHRASE_COL * CHAR_W, y, 2)]
       return [{
         parent: view.front,
         x     : FRONT_NOTES_X,

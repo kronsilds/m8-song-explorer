@@ -115,12 +115,14 @@ export class ExplorerApp {
   }
 
   private constructor(hud: Hud, world: World, theme: ThemeColorsSource, model: SongModel) {
-    this.hud               = hud
-    this.world             = world
-    this.theme             = theme
-    this.model             = model
-    this.hud.onInfoPinned  = (pinned) => preferences.infoPinned.set(pinned)
-    this.hud.onDebugExport = () => void this.exportDebugLog()
+    this.hud                = hud
+    this.world              = world
+    this.theme              = theme
+    this.model              = model
+    this.hud.onInfoPinned   = (pinned) => preferences.infoPinned.set(pinned)
+    this.hud.onDebugExport  = () => void this.exportDebugLog()
+    this.hud.onTopBarResize = (bottom) => this.world.setTopInset(bottom)
+    this.world.setTopInset(this.hud.topBarBottom())
     this.world.setModel(this.model)
     this.playback          = new PlaybackFeed(
       this.world,
@@ -537,7 +539,10 @@ export class ExplorerApp {
       this.world.select(place, this.following ? {
         silent: true,
         reveal: false
-      } : { turn: true })
+      } : {
+        turn   : true,
+        landTop: true
+      })
       if (this.following) this.renderSelection(place)
     }
     // While the song plays, following scrolls with the playheads; the cursor still picks the open track.

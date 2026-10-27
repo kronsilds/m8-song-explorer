@@ -80,13 +80,18 @@ export class CameraRig {
   }
 
   apply(camera: PerspectiveCamera): void {
-    const { target, yaw, pitch, distance, roll } = this.current
-    camera.position.set(
-      target.x + Math.sin(yaw) * Math.cos(pitch) * distance,
-      target.y + Math.sin(pitch) * distance,
-      target.z + Math.cos(yaw) * Math.cos(pitch) * distance,
-    )
-    camera.lookAt(target)
-    if (roll) camera.rotateZ(roll)
+    placeCamera(this.current, camera)
   }
+}
+
+/** Puts a camera where a pose looks from. */
+export function placeCamera(pose: RigPose, camera: PerspectiveCamera): void {
+  const { target, yaw, pitch, distance, roll } = pose
+  camera.position.set(
+    target.x + Math.sin(yaw) * Math.cos(pitch) * distance,
+    target.y + Math.sin(pitch) * distance,
+    target.z + Math.cos(yaw) * Math.cos(pitch) * distance,
+  )
+  camera.lookAt(target)
+  if (roll) camera.rotateZ(roll)
 }

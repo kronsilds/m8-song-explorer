@@ -76,13 +76,17 @@ const PALETTE_VARIABLES : [variable: string, color: keyof Palette][] = [
 ]
 
 export class Hud {
-  onAction     : (action: Action) => void = () => {}
+  onAction       : (action: Action) => void = () => {}
   /** The mute / solo MIDI channel was changed (1..16). */
-  onChannel    : (channel: number) => void = () => {}
+  onChannel      : (channel: number) => void = () => {}
   /** The selection panel was pinned open or unpinned. */
-  onInfoPinned : (pinned: boolean) => void = () => {}
+  onInfoPinned   : (pinned: boolean) => void = () => {}
   /** The ? button was double clicked: save the debug log. */
-  onDebugExport: () => void = () => {}
+  onDebugExport  : () => void = () => {}
+  /** Called with the bottom edge of the top bar (pixels) when its size changes. */
+  onTopBarResize : (bottom: number) => void = () => {}
+  private topBar!: HTMLElement
+  private root!  : HTMLElement
 
   private readonly channelSelect = element('select', 'channel-select')
   private readonly status        = element('div', 'status')
@@ -128,6 +132,15 @@ export class Hud {
 
     root.append(topBar, this.menu, this.info, this.progress, this.confirmBox, this.toast, this.help, footer)
     this.renderInfo(null)
+    // The top bar wraps onto more rows in a narrow window; the 3D view keeps its track headers under whatever it takes.
+    this.topBar = topBar
+    this.root   = root
+    new ResizeObserver(() => this.onTopBarResize(this.topBarBottom())).observe(topBar)
+  }
+
+  /** Pixels from the top of the page to the bottom edge of the top bar. */
+  topBarBottom(): number {
+    return this.topBar.getBoundingClientRect().bottom - this.root.getBoundingClientRect().top
   }
 
   private button([action, label, title]: ButtonSpec): HTMLButtonElement {

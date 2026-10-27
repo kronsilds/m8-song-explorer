@@ -32,7 +32,7 @@ import { phraseMoved, trackMoved } from '../model/stepMoves'
 import type { PhraseInstance } from '../model/timeline'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
 import { fitDistance, type Lens, rayMeets, rayThrough, screenX, shiftTarget, sideShift } from './camera/framing'
-import { CameraRig, type RigPose } from './camera/rig'
+import { CameraRig, placeCamera, type RigPose } from './camera/rig'
 import { type SceneButton, ScenePicker } from './input/picker'
 import { bindPointerControls, PAN_MIN_COS, type PointerTarget } from './input/pointerControls'
 import { isTitlePlace, placeOf } from './instrumentFace'
@@ -93,35 +93,51 @@ const FRAME_MIN_ROW_PX    = 12
 const PAN_SLACK           = TRACK_PITCH / 4
 /** Where a cell lands after the view scrolls to it, as a fraction of the visible stretch from the edge opposite to where it left (so a scroll is about 4/5 of a page). */
 const SCROLL_LAND         = 0.2
+/** Following the M8: a cell lands this many rows under the headers, and the view scrolls when fewer rows than LOOKAHEAD_ROWS are left under it. */
+const LAND_TOP_ROWS       = 2
+const LOOKAHEAD_ROWS      = 4
+/** Pixels between the HUD and the headers' top edge. */
+const HEADER_GAP_PX       = 8
+/** Ease rate per second of the headers' glide to their height (the pose eases at 9). */
+const HEADER_GLIDE_RATE   = 15.5
 /** A turn by hand brings the open track to the middle of the view over this much turn. */
 const CENTRE_TURN         = MathUtils.degToRad(25)
 
 /** How the camera moves when a selection is made. */
 export interface SelectOptions {
   /** Not reported through onSelect (and the followed M8 cursor keeps the focus). */
-  silent?: boolean
+  silent? : boolean
   /** Moves the camera close to it. */
-  focus? : boolean
+  focus?  : boolean
   /** Scrolls just enough for it to be on screen (default on). */
-  reveal?: boolean
+  reveal? : boolean
   /** Turns toward the wall for wall cells, back for front cells. */
-  turn?  : boolean
+  turn?   : boolean
+  /** With `turn`: scrolls the cell just under the headers (the M8 cursor), rather than keeping the view where it is. */
+  landTop?: boolean
 }
 
 export class World implements PointerTarget {
-  readonly renderer : WebGLRenderer
-  readonly scene    = new Scene()
-  readonly camera   = new PerspectiveCamera(34, 1, 0.5, 4000)
-  readonly rig      = new CameraRig()
-  readonly pool     = new TextPool()
-  layout            : SongLayout | null = null
-  palette           : Palette
-  onSelect          : (selection: Selection | null) => void = () => {}
-  onHover           : (selection: Selection | null) => void = () => {}
+  readonly renderer            : WebGLRenderer
+  readonly scene               = new Scene()
+  readonly camera              = new PerspectiveCamera(34, 1, 0.5, 4000)
+  readonly rig                 = new CameraRig()
+  /** A camera put on other poses, to find where things would show. */
+  private readonly probeCamera = new PerspectiveCamera()
+  private readonly probePoint  = new Vector3()
+  /** Pixels at the top of the view that the HUD covers. */
+  private topInset             = 90
+  /** Where the headers' top stands above the view's centre now (gliding to where it belongs); null before the first frame. */
+  private headerOffset         : number | null = null
+  readonly pool                = new TextPool()
+  layout                       : SongLayout | null = null
+  palette                      : Palette
+  onSelect                     : (selection: Selection | null) => void = () => {}
+  onHover                      : (selection: Selection | null) => void = () => {}
   /** A track's mute or solo button was clicked. */
-  onTrackButton     : (track: number, kind: TrackToggle) => void = () => {}
+  onTrackButton                : (track: number, kind: TrackToggle) => void = () => {}
   /** Scroll with the playhead of the focused track while the song plays. */
-  followPlayback    = false
+  followPlayback               = false
 
   private readonly root                 = new Group()
   private readonly spine                = new Group()
@@ -388,15 +404,6 @@ export class World implements PointerTarget {
   }
 
   /**
-   * Screen height of the headers' top edge in the overview, as a fraction of the half view
-   * height above the centre: the height they stick at in every view.
-   */
-  private headerFraction(): number {
-    const half = this.visibleHalfHeight(this.overviewDistance())
-    return 0.82 + (ROW_H * 1.9 + HEADER_TOP - HEADER_H - ROW_H * 1.5) / half
-  }
-
-  /**
    * Left edge of a track's front column; `settled` gives where it will be once the walls
    * finish moving, for a view turned `turn` (0 facing the front, walls closed .. 1 turned).
    */
@@ -518,7 +525,7 @@ export class World implements PointerTarget {
     if (!open || !this.layout || !lanes) return front
     const onWall = (u: number) => new Vector3(left + WALL_HINGE + u * Math.cos(WALL_ANGLE), y, -u * Math.sin(WALL_ANGLE))
     // Which panels the rows in view would show, and in which columns (the panels themselves stay where they are).
-    const range  = this.stickRange(y, this.visibleHalfHeight(goal.distance))
+    const range  = this.stickRange(goal, true)
     let end      = Math.min(lanes.wallLen, PANEL_U0 + PANEL_COL_W)
     for (const { panel, u } of this.layout.probe(track, range.panelTop, range.bottom, range.view)) {
       if (panel.flip < 0.05) end = Math.max(end, Math.min(lanes.wallLen, u + PANEL_CHARS * CHAR_W + 1))
@@ -634,7 +641,7 @@ export class World implements PointerTarget {
     const from         = this.focusAnchor()
     this.handTrack     = null
     this.followedTrack = selectionTrack(selection)
-    this.turnFor(selection, from, options.scroll !== false)
+    this.turnFor(selection, from, options.scroll !== false, true)
     this.invalidate()
   }
 
@@ -643,7 +650,7 @@ export class World implements PointerTarget {
    * to the front when it was turned that way. Then scrolls the cell into view, unless
    * `scroll` is off (the playheads scroll the view while the song plays).
    */
-  private turnFor(selection: Selection, from: { track: number; left: number }, scroll = true): void {
+  private turnFor(selection: Selection, from: { track: number; left: number }, scroll = true, landTop = false): void {
     const goal         = this.rig.goal
     const trackChanged = from.track !== selectionTrack(selection)
     const onWall       = isWallCell(selection)
@@ -661,7 +668,7 @@ export class World implements PointerTarget {
     // Keep the cell in view, measured where it will be once the walls have moved.
     const point = this.settledPoint(selection)
     const half  = this.visibleHalfHeight(goal.distance) * 0.7
-    if (point && scroll) this.scrollRowsInto(point.y + ROW_H / 2, point.y - ROW_H / 2)
+    if (point && scroll) this.scrollRowsInto(point.y + ROW_H / 2, point.y - ROW_H / 2, landTop)
     if (goal.yaw >= FACING_FRONT_YAW) {
       // Turned: another track takes the same framing, at the same distance; the cell stays on screen.
       if (trackChanged) goal.target.copy(this.trackCentre(goal, selectionTrack(selection), true))
@@ -717,13 +724,18 @@ export class World implements PointerTarget {
    * that left at the top comes back near the bottom: SCROLL_LAND of the stretch from the far
    * edge, so the view moves most of a page and the next moves need no scrolling.
    */
-  private scrollRowsInto(top: number, bottom: number): void {
+  private scrollRowsInto(top: number, bottom: number, landTop = false): void {
     const goal        = this.rig.goal
-    const range       = this.stickRange(goal.target.y, this.visibleHalfHeight(goal.distance))
+    const range       = this.stickRange(goal, true)
     const viewTop     = range.headerTop - ROW_H - 0.4
     const span        = viewTop - range.bottom
     const aboveCentre = viewTop - goal.target.y
     const belowCentre = goal.target.y - range.bottom
+    if (landTop) {
+      // What follows a cell matters more than what precedes it: scroll when it sits too low, and land it just under the headers.
+      if (bottom < range.bottom + LOOKAHEAD_ROWS * ROW_H || top > viewTop) goal.target.y = top - aboveCentre + LAND_TOP_ROWS * ROW_H
+      return
+    }
     if (bottom < range.bottom) goal.target.y = top - aboveCentre + span * SCROLL_LAND
     else if (top > viewTop) goal.target.y = bottom + belowCentre - span * SCROLL_LAND
   }
@@ -843,7 +855,7 @@ export class World implements PointerTarget {
     }
     this.selection = selection
     this.refreshMarkers()
-    if (selection && options.turn) this.turnFor(selection, from)
+    if (selection && options.turn) this.turnFor(selection, from, true, options.landTop)
     else if (selection && options.reveal !== false) this.scrollIntoView(selection)
     if (selection && options.focus) this.focusSelection(selection)
     if (changed && !options.silent) this.onSelect(selection)
@@ -1308,15 +1320,61 @@ export class World implements PointerTarget {
     this.rig.bounds.maxX = x + FRONT_W / 2 + openness(last) * this.wallExtent(last) + turn * (FRONT_W + OPEN_GAP)
   }
 
+  /** Tells the view how many pixels at its top the HUD covers: the track headers stick right under them. */
+  setTopInset(pixels: number): void {
+    if (Math.abs(pixels - this.topInset) < 1) return
+    this.topInset = pixels
+    this.invalidate()
+  }
+
+  /** The tracks that guide the header height: the opened one (chosen, followed, selected or turned to), else all of them. */
+  private guideTracks(pose: RigPose): number[] {
+    const opened = this.handTrack != null || this.followedTrack != null || this.selection != null || this.wallTurn(pose.yaw) > 0.5
+    return opened ? [this.focusTrack()] : this.trackViews.map((_, track) => track)
+  }
+
   /**
-   * Where things stick for a view centred at height y showing `half` above and below:
-   * headers at the screen height they have in the overview, panels a little below them (low
-   * enough for the tab over their corner to stay clear of the header) and down to `bottom`.
+   * World height of the headers' top edge for a pose: the one at which the guide track's
+   * header shows right under the HUD (the other tracks share its height). With no track
+   * opened, the mean over every track. `settled` places the tracks where their columns will
+   * be once the walls have moved.
+   */
+  private headerTopEdge(pose: RigPose, settled: boolean): number {
+    const height = this.container.clientHeight
+    const ndcTop = height > 0 ? 1 - (2 * (this.topInset + HEADER_GAP_PX)) / height : 0.82
+    const probe  = this.probeCamera
+    placeCamera(pose, probe)
+    probe.projectionMatrix.copy(this.camera.projectionMatrix)
+    probe.updateMatrixWorld()
+    const turn   = this.wallTurn(pose.yaw)
+    const tracks = this.guideTracks(pose)
+    let sum      = 0
+    for (const track of tracks) {
+      const x    = (settled ? this.frontX(track, true, turn) : this.frontX(track)) + FRONT_W / 2
+      const miss = (y: number) => this.probePoint.set(x, y, 0).project(probe).y - ndcTop
+      // Perspective bends the height a little with depth: a few secant steps from the flat estimate.
+      let y      = pose.target.y + this.visibleHalfHeight(pose.distance) * ndcTop
+      for (let step = 0; step < 3; step += 1) {
+        const here  = miss(y)
+        const slope = (miss(y + 0.5) - here) / 0.5
+        if (Math.abs(slope) < 1e-6) break
+        y -= here / slope
+      }
+      sum += y
+    }
+    return sum / tracks.length
+  }
+
+  /**
+   * Where things stick for a pose: headers right under the HUD, panels a little below them
+   * (low enough for the tab over their corner to stay clear of the header) and down to `bottom`.
    * Headers rest lower at the start of the song (see SongLayout.headerRestY), and panels stay
    * below them; `view` is the panels' height when the headers are stuck (it tells the zoom).
    */
-  private stickRange(centerY: number, half: number): { headerTop: number; panelTop: number; bottom: number; view: number } {
-    const headerTop = centerY + half * this.headerFraction() - HEADER_TOP
+  private stickRange(pose: RigPose, settled = false, glidedOffset: number | null = null): { headerTop: number; panelTop: number; bottom: number; view: number } {
+    const centerY   = pose.target.y
+    const half      = this.visibleHalfHeight(pose.distance)
+    const headerTop = glidedOffset != null ? centerY + glidedOffset : this.headerTopEdge(pose, settled) - HEADER_TOP
     const below     = ROW_H + 0.95 + PANEL_TAB_ROOM
     const bottom    = centerY - half * 0.92
     const restY     = this.layout?.headerRestY ?? Number.POSITIVE_INFINITY
@@ -1332,11 +1390,16 @@ export class World implements PointerTarget {
   private updateStickyParts(dt: number, textOn: boolean): boolean {
     const layout = this.layout
     if (!layout) return false
-    let busy                                                = false
-    let panelsMoved                                         = false
-    const half                                              = this.visibleHalfHeight()
-    const centerY                                           = this.rig.current.target.y
-    const { headerTop, panelTop, bottom, view: viewHeight } = this.stickRange(centerY, half)
+    let busy          = false
+    let panelsMoved   = false
+    const half        = this.visibleHalfHeight()
+    const centerY     = this.rig.current.target.y
+    // The headers glide to where they belong (another guide track, a wrapped top bar), as an offset from the view's centre so scrolling stays exact.
+    const aimed       = this.stickRange(this.rig.current).headerTop - centerY
+    this.headerOffset = this.headerOffset == null ? aimed : this.headerOffset + (aimed - this.headerOffset) * easeFactor(dt, HEADER_GLIDE_RATE)
+    if (Math.abs(aimed - this.headerOffset) > 1e-3) busy = true
+    else this.headerOffset = aimed
+    const { headerTop, panelTop, bottom, view: viewHeight } = this.stickRange(this.rig.current, false, this.headerOffset)
     for (const view of this.trackViews) {
       if (view.setHeaderY(headerTop)) busy = true
       if ((view.wallAlpha > 0.01 || this.allWallsOpen) && layout.stick(view.track.track, panelTop, bottom, viewHeight)) panelsMoved = true

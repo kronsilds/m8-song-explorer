@@ -38,8 +38,8 @@ export class TablePlayheadView {
         if (!panel || panel.alpha < 0.05 || view.shownFace(panel) !== 'table') continue
         const frame = view.faceFrame(panel, 'table')
         const alpha = panel.alpha * view.wallAlpha * (cursors.aux ? 0.7 : 1)
-        // Only rows the panel shows: a trimmed, empty or folded table hides the rest.
-        const shown = (tableRow: number) => tableRow + TITLE_ROWS < view.shownRows(panel)
+        // Only rows the panel shows whole: a trimmed, empty or folded table hides the rest, and an opening one shows them as it grows.
+        const shown = (tableRow: number) => tableRow + TITLE_ROWS + 1 <= view.shownRows(panel) + 1e-6
         if (shown(cursors.main)) {
           markers[used++].show({
             parent: frame,

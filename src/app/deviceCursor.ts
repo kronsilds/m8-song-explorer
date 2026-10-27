@@ -29,7 +29,8 @@ export class DeviceCursor {
         const instance   = layout.timeline.byTrack[track].find((i) => i.songRow === row && i.chainRow === 0)
         return instance ? [{
           kind: 'chain',
-          instance
+          instance,
+          view: 'song'
         }] : []
       }
       case 'chain':
@@ -37,7 +38,8 @@ export class DeviceCursor {
         this.chainRow = row
         return layout.timeline.instances.filter((i) => i.chain === id && i.chainRow === row).map((instance) => ({
           kind: 'chain',
-          instance
+          instance,
+          view: 'chain'
         }))
       case 'phrase': {
         if (id == null) return []

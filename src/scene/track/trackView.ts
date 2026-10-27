@@ -51,7 +51,7 @@ const PANEL_FADE_RATE          = 3
 const PANEL_GLIDE_RATE         = 15
 /** How near (along the wall) a panel must be to its column to count as in it, and keep its gaps there. */
 const COLUMN_SETTLED           = 0.5
-/** Seconds a panel takes to turn to its other face. */
+/** Seconds a panel takes to turn to its other face, and its table card to open or fold. */
 const FLIP_SECONDS             = 0.10
 /** Part of the flip the turn off the wall takes, and where the crossfade of the faces starts (it overlaps the end of the turn). */
 const TURN_END                 = 180.0
@@ -90,8 +90,12 @@ export function flipPose(flip: number): { turn: number; fade: number } {
   }
 }
 
+/** Rows of a table card as drawn now: they ease from rowsFrom to tableRows while it opens or folds. */
+const cardTableRows            = (view: PanelView): number =>
+  view.resize >= 1 ? view.tableRows : view.rowsFrom + (view.tableRows - view.rowsFrom) * easeInOut(view.resize)
+
 /** 1 while a table shows every row with content (its FX bars are on those rows), else 0. */
-const barsShown                = (view: PanelView): number => (view.tableRows >= TITLE_ROWS + view.panel.contentRows ? 1 : 0)
+const barsShown                = (view: PanelView): number => (Math.min(view.tableRows, cardTableRows(view)) >= TITLE_ROWS + view.panel.contentRows ? 1 : 0)
 
 /** How opaque a panel's table content (text, bars) is: it leaves in the first part of the crossfade. */
 const tableContentAlpha        = (panel: Panel): number => panel.alpha * (1 - smoothstep(0, 0.6, flipPose(panel.flip).fade))
@@ -134,9 +138,17 @@ interface PanelView {
   text      : Text | null
   /** Rows of the table the text was made for. */
   textRows  : number
+  /** A text made for `nextRows` rows that takes over from `text` once it is laid out (the old one shows until then). */
+  nextText  : Text | null
+  nextRows  : number
   /** Rows of the table shown now (title lines included): fewer when it is folded or has empty rows at its end. */
   tableRows : number
-  /** The card's backgrounds: the body (instance 0, sized to tableRows) and the title band. */
+  /** Rows the card eased from, and how far it is on its way to tableRows (0..1, over FLIP_SECONDS). */
+  rowsFrom  : number
+  resize    : number
+  /** Rows the card's body was last drawn at. */
+  bodyRows  : number
+  /** The card's backgrounds: the body (instance 0, sized to the rows drawn) and the title band. */
   backdrop  : InstancedMesh
   background: MeshBasicMaterial
   bars      : MeshBasicMaterial
@@ -425,6 +437,7 @@ export class TrackView {
     group.visible = false
     this.wall.add(group)
     const face = this.layout.instrumentFace(panel.instrument)
+    const rows = this.layout.tableFaceRows(panel)
     const view : PanelView = {
       panel,
       group,
@@ -433,7 +446,12 @@ export class TrackView {
       instFrame,
       text      : null,
       textRows  : 0,
-      tableRows : this.layout.tableFaceRows(panel),
+      nextText  : null,
+      nextRows  : 0,
+      tableRows : rows,
+      rowsFrom  : rows,
+      resize    : 1,
+      bodyRows  : rows,
       backdrop  : background,
       background: background.material as MeshBasicMaterial,
       bars      : barMesh.material as MeshBasicMaterial,
@@ -472,11 +490,11 @@ export class TrackView {
     return this.shownFace(panel) === 'inst' ? FACE_WIDTH : TABLE_WIDTH
   }
 
-  /** Rows of the face a panel shows. */
+  /** Rows of the face a panel shows (a table's as drawn now, while it opens or folds). */
   shownRows(panel: Panel): number {
-    const face = this.panelViews.get(panel)?.face
-    if (this.shownFace(panel) === 'inst' && face) return face.rows
-    return this.panelViews.get(panel)?.tableRows ?? this.layout.tableFaceRows(panel)
+    const view = this.panelViews.get(panel)
+    if (this.shownFace(panel) === 'inst' && view?.face) return view.face.rows
+    return view ? cardTableRows(view) : this.layout.tableFaceRows(panel)
   }
 
   /** The face a panel shows now (they swap half way through the crossfade). */
@@ -605,13 +623,13 @@ export class TrackView {
     for (const view of this.panels) {
       if (this.easePanel(view.panel, fade, glide)) busy = true
       if (this.turnPanel(view, dt)) busy = true
+      if (this.sizeTable(view, dt)) busy = true
     }
     this.keepPanelGaps()
     for (const view of this.panels) {
       const { panel } = view
       const alpha     = panel.alpha * this.wallAlpha
       const pose      = flipPose(panel.flip)
-      this.sizeTable(view)
       view.group.position.set(panel.shownU - FACE_PAD_LEFT, panel.shownY, 0)
       // The wall is turned WALL_ANGLE from the front: turning back as much faces the front.
       view.group.rotation.y = -pose.turn * WALL_ANGLE
@@ -628,8 +646,9 @@ export class TrackView {
 
   /**
    * Keeps gliding panels apart: down each column, in the order stick() stacked them, a panel is
-   * shown no higher than the one above it allows (its rows and the gap), so the lag of the glide
-   * (the top one held under the header, the others catching up) never makes them overlap. A panel
+   * shown no higher than the one above it allows (its card as drawn now and the gap), so the lag
+   * of the glide (the top one held under the header, the others catching up) never makes them
+   * overlap, and a card opening, folding or turning pushes the ones below as it grows. A panel
    * still moving to another column is left out: it may cross the others on its way.
    */
   private keepPanelGaps(): void {
@@ -640,9 +659,17 @@ export class TrackView {
       let floor = Number.POSITIVE_INFINITY
       for (const panel of panels.filter((p) => settled(p) && takes(p, col)).sort((a, b) => b.y - a.y)) {
         panel.shownY = Math.min(panel.shownY, floor)
-        floor        = panel.shownY - panelSpan(shownPanelRows(panel))
+        floor        = panel.shownY - panelSpan(this.drawnRows(panel))
       }
     }
+  }
+
+  /** Rows of a panel's card as drawn now: its table's while it opens or folds, and toward its instrument face's while it turns. */
+  private drawnRows(panel: Panel): number {
+    const view = this.panelViews.get(panel)
+    if (!view) return shownPanelRows(panel)
+    const table = cardTableRows(view)
+    return view.face ? table + (view.face.rows - table) * flipPose(panel.flip).fade : table
   }
 
   /** Fades the glow of a panel's header out after a note; returns true while it glows. */
@@ -663,7 +690,7 @@ export class TrackView {
    * (`fade` 0..1), so the two fill the same card while they crossfade. Returns its width.
    */
   private cardSize(view: PanelView, fade: number): number {
-    const table      = tableHeight(view.tableRows)
+    const table      = tableHeight(cardTableRows(view))
     const faceHeight = view.face ? view.face.rows * ROW_H + 0.5 : table
     const width      = TABLE_WIDTH + (FACE_WIDTH - TABLE_WIDTH) * fade
     const height     = table + (faceHeight - table) * fade
@@ -758,38 +785,81 @@ export class TrackView {
     return panel.alpha !== goalAlpha || panel.shownY !== panel.y || panel.shownU !== panel.u
   }
 
-  /** Fits the table card to the rows it shows now (folded: its title lines only). */
-  private sizeTable(view: PanelView): void {
+  /**
+   * Eases the table card to the rows it shows now (folded: its title lines only) over
+   * FLIP_SECONDS, as a flip resizes it; returns true while it does.
+   */
+  private sizeTable(view: PanelView, dt: number): boolean {
     const { panel } = view
     const rows      = panel.folded ? TITLE_ROWS : this.layout.tableFaceRows(panel)
-    if (rows === view.tableRows) return
-    view.tableRows = rows
-    const matrix   = new Matrix4()
-    view.backdrop.getMatrixAt(0, matrix)
-    const corner   = new Vector3().setFromMatrixPosition(matrix)
-    view.backdrop.setMatrixAt(0, matrix.makeScale(TABLE_WIDTH, tableHeight(rows), 1).setPosition(corner))
-    view.backdrop.instanceMatrix.needsUpdate = true
+    if (rows !== view.tableRows) {
+      // From the rows drawn now: it may change again on its way.
+      view.rowsFrom  = cardTableRows(view)
+      view.tableRows = rows
+      view.resize    = 0
+    }
+    // A hidden panel takes its size at once.
+    view.resize = panel.alpha < 0.02 ? 1 : Math.min(1, view.resize + dt / FLIP_SECONDS)
+    const drawn = cardTableRows(view)
+    if (drawn !== view.bodyRows) {
+      view.bodyRows = drawn
+      const matrix  = new Matrix4()
+      view.backdrop.getMatrixAt(0, matrix)
+      const corner  = new Vector3().setFromMatrixPosition(matrix)
+      view.backdrop.setMatrixAt(0, matrix.makeScale(TABLE_WIDTH, tableHeight(drawn), 1).setPosition(corner))
+      view.backdrop.instanceMatrix.needsUpdate = true
+    }
+    return view.resize < 1
   }
 
+  /**
+   * The table's text, made for the rows it shows (while the card opens or folds, for the larger
+   * of its old and new rows) and clipped to the card. A new text takes over once it is laid out,
+   * so the old one shows until then and the title never blinks.
+   */
   private updatePanelText(view: PanelView, wanted: boolean, alpha: number): void {
-    if (view.text && view.textRows !== view.tableRows) {
-      disposeText(view.text)
-      view.text = null
+    const rows = view.resize < 1 ? Math.max(Math.ceil(view.rowsFrom - 1e-6), view.tableRows) : view.tableRows
+    if (view.nextText && (!wanted || view.nextRows !== rows)) {
+      disposeText(view.nextText)
+      view.nextText = null
     }
-    if (wanted && !view.text) {
-      const text = makeText(this.text.panelText(view.panel, view.tableRows - TITLE_ROWS))
-      text.position.set(PANEL_U0, 0, 0.01)
-      text.renderOrder = 2
-      text.fillOpacity = alpha
-      view.tableFace.add(text)
-      text.sync(() => this.onTextReady())
-      view.text     = text
-      view.textRows = view.tableRows
-    } else if (!wanted && view.text) {
-      disposeText(view.text)
+    if (!wanted) {
+      if (view.text) disposeText(view.text)
       view.text = null
+      return
     }
+    if (!view.nextText && (!view.text || view.textRows !== rows)) this.makePanelText(view, rows, alpha)
     if (view.text && Math.abs(view.text.fillOpacity - alpha) > 0.005) view.text.fillOpacity = alpha
+    this.clipPanelText(view)
+  }
+
+  /** Lays out a table text for `rows` rows; it replaces the shown one when ready. */
+  private makePanelText(view: PanelView, rows: number, alpha: number): void {
+    const text       = makeText(this.text.panelText(view.panel, rows - TITLE_ROWS))
+    text.position.set(PANEL_U0, 0, 0.01)
+    text.renderOrder = 2
+    text.fillOpacity = alpha
+    text.visible     = false
+    view.tableFace.add(text)
+    view.nextText = text
+    view.nextRows = rows
+    text.sync(() => {
+      if (view.nextText !== text) return
+      if (view.text) disposeText(view.text)
+      text.visible  = true
+      view.text     = text
+      view.textRows = rows
+      view.nextText = null
+      this.clipPanelText(view)
+      this.onTextReady()
+    })
+  }
+
+  /** Hides the rows of the table text below its card (while the card opens or folds). */
+  private clipPanelText(view: PanelView): void {
+    if (!view.text) return
+    const drawn        = cardTableRows(view)
+    view.text.clipRect = view.textRows > drawn + 1e-6 ? [-1, -drawn * ROW_H, PANEL_CHARS * CHAR_W + 1, 1] : null
   }
 
   /** Redraws the thin links for the view [yBottom, yTop]; returns true when redrawn. */
@@ -800,6 +870,8 @@ export class TrackView {
   dispose(): void {
     for (const view of this.panels) {
       view.text?.dispose()
+      view.nextText?.dispose()
+      view.nextText = null
       view.tab?.text?.dispose()
       view.faceView?.dispose()
     }
