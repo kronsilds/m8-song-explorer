@@ -245,15 +245,15 @@ describe('instrument on the device', () => {
     const cursor = new DeviceCursor()
     // CUTOFF of instrument 05 (FM): line 17, x 8.
     const places = cursor.placesOf(layout, {
-      view    : 'inst',
-      id      : 5,
-      row     : null,
-      column  : null,
-      cursor  : {
+      view      : 'inst',
+      id        : 5,
+      row       : null,
+      column    : null,
+      cursor    : {
         x: 8,
         y: 3 + 17
       },
-      chainRow: null
+      chainMarks: []
     })
     expect(places.length).toBeGreaterThan(0)
     for (const place of places) expect(place).toMatchObject({

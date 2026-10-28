@@ -370,6 +370,9 @@ export class ExplorerApp {
     client.onCursorMove(scheduleSync)
     client.onTextUpdate(scheduleSync)
     client.onStateChange(scheduleSync)
+    // Option+Up/Down between two repeats of a phrase only moves the '<': no view, cursor or text change.
+    client.onKeyPress(scheduleSync)
+    this.playback.onChainPosition = scheduleSync
     // The model arrives with the M8's first system message, after the connection itself.
     client.onStateChange(() => {
       if (this.port && !this.task && !this.otherSongLoaded) this.hud.setStatus(connectedStatus(client), 'ok')
@@ -490,8 +493,9 @@ export class ExplorerApp {
       const places = focus && layout ? this.cursor.placesOf(layout, focus) : []
       this.world.setDevicePlaces(places)
       // Choosing the place can move the context to the track or song row the M8 went to.
-      const followed                = this.cursor.preferred(places)
-      this.playback.tracker.context = this.cursor.songContext
+      const followed                     = this.cursor.preferred(places)
+      this.playback.tracker.context      = this.cursor.songContext
+      this.playback.tracker.viewChainRow = focus?.view === 'phrase' ? this.cursor.chainPosition : null
       this.followCursor(followed)
     } catch (error) {
       // The next event tries again.

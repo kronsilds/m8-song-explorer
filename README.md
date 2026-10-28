@@ -221,21 +221,34 @@ solid once a chain change or a Phrase view pins it.
 
 A phrase can play more than once in its chain, and its Phrase view looks the same for every
 repeat. The M8 marks the chain position, the chain row it shows the phrase of, with a `<` in the
-margin of the step row with that number. A track first placed from a Phrase view goes to the repeat
-the `<` marks, and so does the track the M8 is on while its position is too vague to tell the
-repeats apart (first seen on the Song view, somewhere in the chain). Once a reading has pinned
-it, the track's own steps decide.
+margin of the step row with that number, and while the song plays a second `<` on the chain row
+playing when that is another one. So on a Phrase view the track the M8 is on is placed on the chain
+row playing, whichever repeat (or other phrase) it is, with or without MIDI: the only mark, or the
+one that is not the view's. A second mark with no play marker (another phrase plays) still places
+it, keeps the song counted as playing, and its absence while the track should be on another row of
+that chain says the song stopped.
 
-Play on a Phrase view plays that phrase alone, over and over, while the song moves the `<` on with
-it. So a track loops its phrase, at the chain position the `<` marks, when playing starts on a
-Phrase view on the phrase's first beat without a MIDI Start (that Play sends none), or when the
-marker starts the phrase over while the `<` stays where it was (the song coming to the same
-phrase at the same position on the next song row looks the same and is not taken for a loop).
-The `<` moving on with the marker, or a reading of the track elsewhere, ends the loop.
+Play on a Phrase view plays that phrase alone, over and over, sends no MIDI transport and shows one
+mark. So a track loops its phrase, at the chain position the `<` marks, when playing starts on a
+Phrase view without a MIDI Start (the read before showed that view without a marker, or the first
+marker is on the phrase's first beat), or, with no MIDI transport running, when the marker starts
+the phrase over while one mark stays where it was (the song coming to the same phrase at the same
+position on the next song row looks the same and is not taken for a loop). Without MIDI, Shift+Play
+there looks the same at first, so it starts as a loop: the second mark that appears when the song
+goes on to the next row ends it, as does a reading of the track elsewhere. Shift+Play on a Chain or Phrase view continues
+the song at the chain position: the MIDI Song Position then counts the chain rows before it, and
+every track starts at that chain row. The play markers a read still shows just after a MIDI Stop
+are ignored, so they do not start a ghost playhead.
 
-A `HOP Y` in a phrase plays its step, then the track goes on at row Y of the next phrase: the
-chain's next one, or after the chain's last phrase the first one of the next chain (the row
-below, or the start of the run). `HOP FF` stops the track: its playhead goes away. Readings
+The M8 cursor follows the chain position too (of two marks, the one it knew, or after a key the
+nearer to it): a key press on the M8 or a change of the marks between two screen reads makes the
+explorer read the screen again, since moving between two repeats of a phrase changes nothing else. Before any Song view has been seen (after a reload), a Chain or Phrase view
+whose item is in one song cell only gives the song row and track.
+
+A `HOP Y` in a phrase sends the track on as it reaches the HOP's step, which does not play, to row
+Y of the next phrase: the chain's next one, or after the chain's last phrase the first one of the
+next chain (the row below, or the start of the run). `HOP FF` stops the track there: its playhead
+goes away. Readings
 measure along the same path, so a Phrase view after a HOP narrows the position instead of
 restarting it.
 
@@ -421,9 +434,23 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
 - Content rows start on screen row 6; row 5 holds column headers.
 - Phrase titles can end with `^` as well as `*` (`PHRASE 27^`).
 - The Phrase view draws a `<` in the margin (screen column 0) of the step row whose number is its
-  chain position: row 3 when it shows the phrase of chain row 3. It moves on as the song plays,
-  and stays put while Play on the Phrase view plays that phrase alone (reported by the user,
-  2026-10-28).
+  chain position: row 3 when it shows the phrase of chain row 3 (the Chain view has none). Option+Up/Down
+  moves it from repeat to repeat of a phrase; the cursor and its text stay the same, so only a
+  screen read sees it. While the song plays, a second `<` marks the chain row playing when that is
+  another row, whatever phrase it holds: from row 3 of chain 42 the marks read `3,4` (phrase 42
+  playing, no play marker), `3,5`, `0,3`, `1,3`, `2,3`, then `3` alone, a phrase each. Play on the
+  Phrase view plays that phrase alone: one mark, which stays. Stopped: one mark. Seen 2026-10-28 on
+  ECHODARKOD, with and without MIDI.
+- Shift+Play on a Phrase view sends Continue with a Song Position that counts the chain rows
+  before the chain position too (48 from chain row 3 of song row 00), and every track starts at
+  that chain row (track 8's chain played rows 3, then the next song row). Play there sends no
+  transport and plays the phrase alone, over and over.
+- HOP 00 on step 8 of phrase 10 (its chain alone on song row 0C): the play marker cycles steps 0-7
+  and never shows step 8, so the HOP's own step does not play.
+- A Phrase view shows the play marker whenever its phrase plays on that track, whatever the repeat
+  (rows 5, 0, 1 and 2 of chain 42 while its view mark was on 3). Play there starts the phrase from its
+  top (the cursor was on step 5). Option+Left/Right shows the other track's phrase at that track's
+  own chain position.
 - Names are padded with dashes to 12 characters (`NAME--------`).
 - Option+Down in a phrase goes to the chain's next phrase.
 - Option+Up/Down steps 16 on the Instrument and Table views, but not the same way round: Option+Down
@@ -504,16 +531,11 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
 
 - SCA/SCG in tables, HOP and live mode are not followed by the scale quantizing.
 
-- A phrase played more than once in its chain: whether the Phrase view's play marker shows for
-  every repeat or only at its chain position (the `<`); and which chain position Option+Left/Right
-  lands on. The explorer takes the `<` only while a track's position is vague.
+- Play on a Phrase view: what a HOP does in a phrase played alone (taken as going to row Y of the
+  same phrase).
 
-- Play on a Phrase view: that it starts the phrase from its top (the explorer assumes a loop only
-  when the first marker is on rows 0-3), and what a HOP does in a phrase played alone (taken as
-  going to row Y of the same phrase).
-
-- HOP in a phrase: that the HOP step plays in full before the jump, and where a HOP in a chain's
-  last phrase goes when the next song row is empty (taken as the start of the run, like a chain end).
+- HOP in a phrase: where a HOP in a chain's last phrase goes when the next song row is empty in a
+  longer run (taken as the start of the run, like a chain end; seen only with a chain alone on its row).
 
 - Tables: the TM8C rules above (`HOP` onto its own row, `REP` as a row count); whether the
   transpose / volume columns follow FX1's `TIC` (TM8C says so; the model keeps them at the

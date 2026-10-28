@@ -3,6 +3,7 @@
 // Chain view's cursor row, the '<' the Phrase view draws at its chain position).
 
 import type { DeviceFocus } from '../m8/screen/liveScreen'
+import { viewChainPosition } from '../m8/screen/screenReader'
 import { isPhraseColumn, isTableColumn } from '../model/columns'
 import { cellAt, instrumentPage } from '../model/instrumentPage'
 import { TITLE_ROW } from '../model/screens'
@@ -15,9 +16,16 @@ type ChainPlace = Extract<Selection, { kind: 'chain' | 'step' }>
 
 export class DeviceCursor {
   /** Song row and track the M8 is on: set on the Song view, then moved along with it on the Chain and Phrase views. */
-  songContext     : { songRow: number; track: number } | null = null
-  /** Chain row the M8 is on: the Chain view's cursor row, the Phrase view's '<'. */
-  private chainRow: number | null = null
+  songContext      : { songRow: number; track: number } | null = null
+  /** Chain row the M8 is on: the Chain view's cursor row, the Phrase view's chain position. */
+  private chainRow : number | null = null
+  /** The Phrase view's '<' marks last seen. */
+  private lastMarks: number[] = []
+
+  /** The chain row the M8 shows: the Chain view's cursor row, the Phrase view's chain position; null before any. */
+  get chainPosition(): number | null {
+    return this.chainRow
+  }
 
   /** Every place of the song the item under the M8 cursor appears. Remembers the song cell and chain row on the way. */
   placesOf(layout: SongLayout, focus: DeviceFocus): Selection[] {
@@ -48,7 +56,9 @@ export class DeviceCursor {
       case 'phrase': {
         if (id == null) return []
         // The '<' tells the repeats of a phrase in its chain apart; without it the last chain row stands.
-        if (focus.chainRow != null) this.chainRow = focus.chainRow
+        const position = viewChainPosition(focus.chainMarks, this.chainRow, this.lastMarks)
+        this.lastMarks = focus.chainMarks
+        if (position != null) this.chainRow = position
         const column = isPhraseColumn(focus.column) ? focus.column : 'note'
         return (layout.timeline.byPhrase.get(id) ?? []).map((instance) => ({
           kind: 'step',
@@ -114,7 +124,18 @@ export class DeviceCursor {
     const atRow    = inChains.filter((place) => place.instance.chainRow === this.chainRow)
     const choices  = atRow.length > 0 ? atRow : inChains
     const context  = this.songContext
-    if (!context || choices.length === 0) return choices[0] ?? places[0] ?? null
+    if (!context) {
+      // No Song view seen yet (a reload on a Chain or Phrase view): one song cell holding them all is the one.
+      const cell = choices[0]?.instance
+      if (cell && choices.every(({ instance }) => instance.songRow === cell.songRow && instance.track === cell.track)) {
+        this.songContext = {
+          songRow: cell.songRow,
+          track  : cell.track
+        }
+      }
+      return choices[0] ?? places[0] ?? null
+    }
+    if (choices.length === 0) return places[0] ?? null
     const distance           = ({ instance }: ChainPlace): number => {
       if (instance.songRow === context.songRow) return Math.abs(instance.track - context.track)
       return instance.track === context.track ? TRACKS + Math.abs(instance.songRow - context.songRow) : Number.POSITIVE_INFINITY

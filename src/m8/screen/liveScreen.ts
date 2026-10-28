@@ -6,7 +6,7 @@ import { type SongModel, TRACKS } from '../../model/song'
 import {
   isPage,
   readChain,
-  readChainPosition,
+  readChainMarks,
   readGroove,
   readInstrument,
   readInstrumentMods,
@@ -21,16 +21,16 @@ import {
 
 /** Where the M8 cursor is, in model terms. */
 export interface DeviceFocus {
-  view    : ScreenView['kind']
-  id      : number | null
+  view      : ScreenView['kind']
+  id        : number | null
   /** Row index under the cursor (song row, chain row, step, table row). */
-  row     : number | null
+  row       : number | null
   /** Field key under the cursor ('note', 'fx2val', 'track3', ...). */
-  column  : string | null
+  column    : string | null
   /** The cursor cell, screen x without the margin and screen row. */
-  cursor  : { x: number; y: number } | null
-  /** Phrase view: the chain row it shows the phrase of (its '<'); null elsewhere or unknown. */
-  chainRow: number | null
+  cursor    : { x: number; y: number } | null
+  /** Phrase view: its '<' marks (its chain position, and the chain row playing when another); empty elsewhere. */
+  chainMarks: number[]
 }
 
 export function deviceFocus(state: M8State, screen: M8Screen): DeviceFocus | null {
@@ -38,15 +38,15 @@ export function deviceFocus(state: M8State, screen: M8Screen): DeviceFocus | nul
   if (view.kind === 'other') return null
   const context = getSemanticContext(state, screen)
   return {
-    view    : view.kind,
-    id      : view.id,
-    row     : context?.row?.rowIndex ?? null,
-    column  : context?.activeField?.key ?? null,
-    cursor  : state.cursorPos ? {
+    view      : view.kind,
+    id        : view.id,
+    row       : context?.row?.rowIndex ?? null,
+    column    : context?.activeField?.key ?? null,
+    cursor    : state.cursorPos ? {
       x: state.cursorPos.x - SCREEN_MARGIN,
       y: state.cursorPos.y
     } : null,
-    chainRow: readChainPosition(view)
+    chainMarks: readChainMarks(view)
   }
 }
 
