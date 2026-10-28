@@ -213,6 +213,14 @@ export class PlaybackFeed {
         app     : this.appState(),
         session
       })
+    } else if (event.kind === 'phrase-loop') {
+      log.event('phrase-loop', {
+        track   : event.track + 1,
+        looping : event.looping,
+        why     : event.why,
+        songRow : event.songRow,
+        chainRow: event.chainRow
+      })
     } else {
       this.totals.reanchors += 1
       if (this.session) this.session.reanchors += 1

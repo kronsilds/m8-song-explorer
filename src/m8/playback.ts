@@ -15,6 +15,11 @@
 // A phrase can play more than once in a chain. The Phrase view marks its chain position (which
 // repeat it shows) with a '<' in the margin: a track first placed from a Phrase view goes to that
 // repeat, and so does the M8's own track while its window is too wide to tell the repeats apart.
+//
+// Play on a Phrase view plays that phrase alone, over and over, and sends no MIDI transport; the
+// song moves the '<' on with it. A track loops its phrase when playing starts on a Phrase view
+// (on the phrase's first beat, without a MIDI Start), or when the marker starts the phrase over
+// while the '<' stays; the '<' moving on, or a reading elsewhere, ends the loop.
 
 import { type M8Screen, readPlayPositions } from '@yam8d/m8-sdk'
 import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey, summarizeTicks, type TicksSummary } from '../model/music/groove'
@@ -42,6 +47,8 @@ const MAX_RUNS_AHEAD     = 32
 const HOP_STOP           = 0xff
 /** A window wider than this many phrases cannot tell a phrase's repeats in its chain apart. */
 const REPEATS_WINDOW     = 1.5
+/** Play on a Phrase view starts the phrase from its top: the first marker seen is on one of these rows. */
+const LOOP_START_ROWS    = 4
 
 /** The step a track was last placed on, and the window its start lies in. */
 interface Anchor {
@@ -112,6 +119,15 @@ export type PlaybackEvent =
       from    : { songRow: number; step: number }
       to      : { songRow: number; step: number }
     }
+  /** A track began or stopped looping one phrase (Play on a Phrase view plays that phrase alone). */
+  | {
+      kind    : 'phrase-loop'
+      track   : number
+      looping : boolean
+      why     : 'started-on-phrase' | 'started-over' | 'moved-on' | 'placed-elsewhere'
+      songRow : number
+      chainRow: number
+    }
 
 /** Where one track was placed, and how its steps differ from the plain sixteenth. */
 export interface TrackPlacement {
@@ -142,14 +158,27 @@ interface Place {
 }
 
 /**
- * How a run of steps ends, from some step of a chain on: at the first HOP at or after it (`hop`
- * is its step), else at the chain's end. `end` is where in the chain's ticks it ends, `next` the
- * step played after it, null when a HOP FF stops the track.
+ * How a run of steps ends, from some step of a chain on: at the first HOP at or after it, else at
+ * the chain's end (a looped phrase: at its own end). `last` is the run's last step, `end` where in
+ * the chain's ticks it ends, `next` the step played after it, null when a HOP FF stops the track.
  */
 interface RunEnd {
   end : number
-  hop : number | null
+  last: number
   next: Place | null
+}
+
+/** A track playing one phrase over and over: the one at `chainRow` of its chain on `songRow`. */
+interface PhraseLoop {
+  songRow : number
+  chainRow: number
+}
+
+/** The last marked Phrase view read: its phrase, marked row and chain position. */
+interface PhraseMark {
+  id           : number
+  row          : number
+  chainPosition: number | null
 }
 
 export class PlaybackTracker {
@@ -176,6 +205,10 @@ export class PlaybackTracker {
   private readonly ticksByOccurrence = new Map<string, ChainTicks>()
   /** The HOPs of each chain: [chain step, value], by step. */
   private readonly hopsByChain       = new Map<number, [step: number, value: number][]>()
+  /** The phrase each track loops, if it does. */
+  private loops                      = perTrack<PhraseLoop>()
+  /** The last Phrase view read, while each read shows it with a marker. */
+  private lastPhraseMark             : PhraseMark | null = null
 
   constructor(
     private model: SongModel,
@@ -289,11 +322,29 @@ export class PlaybackTracker {
 
   /** How the run of steps from `step` of a track's chain on song row `songRow` ends (see RunEnd). */
   private runEnd(songRow: number, track: number, step: number, chain: ChainTicks): RunEnd {
+    const loop  = this.loops[track]
+    const first = loop?.songRow === songRow ? loop.chainRow * ROWS_PER_PHRASE : null
+    if (loop && first != null && step >= first && step < first + ROWS_PER_PHRASE) return this.loopEnd(songRow, track, step, chain, loop)
+    const run = this.chainRunEnd(songRow, track, step, chain)
+    // A run that reaches the looped phrase goes into it.
+    if (first != null && step < first && run.last >= first) return {
+      end : startOf(chain, first),
+      last: first - 1,
+      next: {
+        songRow,
+        step: first
+      }
+    }
+    return run
+  }
+
+  /** How the run of steps from `step` ends along the chain and its HOPs, loops aside. */
+  private chainRunEnd(songRow: number, track: number, step: number, chain: ChainTicks): RunEnd {
     const chainId = this.model.song[songRow]?.[track]
     const hop     = chainId == null ? undefined : this.chainHops(chainId).find(([at]) => at >= step && at < chain.steps.length)
     if (!hop) return {
       end : totalOf(chain),
-      hop : null,
+      last: chain.steps.length - 1,
       next: {
         songRow: this.nextRow(songRow, track),
         step   : 0
@@ -305,7 +356,7 @@ export class PlaybackTracker {
     const inChain     = (chainRow + 1) * ROWS_PER_PHRASE < chain.steps.length
     return {
       end : startOf(chain, at + 1),
-      hop : at,
+      last: at,
       next: value === HOP_STOP ? null : inChain ? {
         songRow,
         step: (chainRow + 1) * ROWS_PER_PHRASE + row
@@ -314,6 +365,62 @@ export class PlaybackTracker {
         step   : row
       }
     }
+  }
+
+  /**
+   * How a run ends in a looped phrase: at its last step, back to its first; a HOP Y in it is taken
+   * as going to its own row Y (not checked on the device), HOP FF as stopping the track.
+   */
+  private loopEnd(songRow: number, track: number, step: number, chain: ChainTicks, loop: PhraseLoop): RunEnd {
+    const first   = loop.chainRow * ROWS_PER_PHRASE
+    const after   = Math.min(first + ROWS_PER_PHRASE, chain.steps.length)
+    const chainId = this.model.song[songRow]?.[track]
+    const hop     = chainId == null ? undefined : this.chainHops(chainId).find(([at]) => at >= step && at < after)
+    if (!hop) return {
+      end : startOf(chain, after),
+      last: after - 1,
+      next: {
+        songRow,
+        step: first
+      }
+    }
+    const [at, value] = hop
+    return {
+      end : startOf(chain, at + 1),
+      last: at,
+      next: value === HOP_STOP ? null : {
+        songRow,
+        step: first + (value & 0x0f)
+      }
+    }
+  }
+
+  /** The phrase at `chainRow` of a track's chain on `songRow`, null when there is none. */
+  private phraseAt(songRow: number, track: number, chainRow: number): number | null {
+    const chainId = this.model.song[songRow]?.[track]
+    return chainId == null ? null : (this.model.chains[chainId]?.rows[chainRow]?.phrase ?? null)
+  }
+
+  /** Starts or ends a track's phrase loop. */
+  private setLoop(track: number, loop: PhraseLoop | null, why: Extract<PlaybackEvent, { kind: 'phrase-loop' }>['why']): void {
+    const was         = this.loops[track]
+    this.loops[track] = loop
+    const told        = loop ?? was
+    if (told) this.onEvent({
+      kind    : 'phrase-loop',
+      track,
+      looping : loop != null,
+      why,
+      songRow : told.songRow,
+      chainRow: told.chainRow
+    })
+  }
+
+  /** Places a track; a place outside the phrase it loops ends the loop. */
+  private place(track: number, anchor: Anchor): void {
+    const loop = this.loops[track]
+    if (loop && (anchor.songRow !== loop.songRow || Math.floor(anchor.step / ROWS_PER_PHRASE) !== loop.chainRow)) this.setLoop(track, null, 'placed-elsewhere')
+    this.anchors[track] = anchor
   }
 
   // ---------------------------------------------------------------------------
@@ -395,6 +502,8 @@ export class PlaybackTracker {
     this.transportRunning    = false
     this.unmarkedSince       = null
     this.anchors             = perTrack()
+    this.loops               = perTrack()
+    this.lastPhraseMark      = null
     this.lastSongViewReading = perTrack()
     this.lastStepReading     = perTrack()
     if (wasPlaying) this.onEvent({
@@ -438,9 +547,14 @@ export class PlaybackTracker {
       if (left < room) break
       if (!end.next) return {
         songRow,
-        step   : end.hop ?? from,
+        step   : end.last,
         phase  : 0.999,
         stopped: true
+      }
+      if (end.next.songRow === songRow && end.next.step === from && room > 0) {
+        // The run plays itself again (a looped phrase, a chain looping on itself): only the last time round counts.
+        left %= room
+        break
       }
       const next = this.chainTicks(end.next.songRow, track)
       // A run of skipped steps takes no time: stay rather than go round for ever.
@@ -475,9 +589,8 @@ export class PlaybackTracker {
     for (let runs = 0; runs < MAX_RUNS_AHEAD; runs += 1) {
       const chain = this.chainTicks(place.songRow, track)
       if (!chain) return null
-      const end  = this.runEnd(place.songRow, track, place.step, chain)
-      const last = end.hop ?? chain.steps.length - 1
-      if (place.songRow === toRow && toStep >= place.step && toStep <= last) return total + startOf(chain, toStep) - startOf(chain, place.step)
+      const end   = this.runEnd(place.songRow, track, place.step, chain)
+      if (place.songRow === toRow && toStep >= place.step && toStep <= end.last) return total + startOf(chain, toStep) - startOf(chain, place.step)
       total += end.end - startOf(chain, place.step)
       if (!end.next) return null
       place = end.next
@@ -524,6 +637,13 @@ export class PlaybackTracker {
         if (narrowedEarliest < narrowedLatest) {
           anchor.earliest = narrowedEarliest
           anchor.latest   = narrowedLatest
+          // A looped phrase comes round again and again: keep the anchor on the latest reading.
+          if (this.loops[track]) this.anchors[track] = {
+            songRow,
+            step,
+            earliest: narrowedEarliest + shift,
+            latest  : narrowedLatest + shift
+          }
           return
         }
         // The two windows do not meet: the gap between them is how far off the prediction was.
@@ -546,7 +666,7 @@ export class PlaybackTracker {
         }
       })
     }
-    this.anchors[track] = { songRow, step, earliest, latest }
+    this.place(track, { songRow, step, earliest, latest })
   }
 
   // ---------------------------------------------------------------------------
@@ -559,17 +679,20 @@ export class PlaybackTracker {
     const tempo = /T.(\d{2,3}(?:\.\d+)?)/.exec(screen.lines[5]?.slice(30) ?? '')
     if (tempo && !this.clock) this.bpm = Math.max(MIN_BPM, Number.parseFloat(tempo[1]))
     if (view.kind !== 'song' && view.kind !== 'chain' && view.kind !== 'phrase') {
-      this.unmarkedSince = null
+      this.unmarkedSince  = null
+      this.lastPhraseMark = null
       return false
     }
     const positions = readPlayPositions(view.kind, screen)
     const now       = this.now(ms) - this.latency()
+    const starting  = !this.playing
     let markerSeen  = false
+    if (view.kind !== 'phrase' || positions?.row == null) this.lastPhraseMark = null
     if (view.kind === 'song' && positions?.tracks) {
       markerSeen = this.observeSongView(positions.tracks, now)
     } else if (positions?.row != null && view.id != null) {
       markerSeen = true
-      this.observeChainOrPhraseView(view.kind as 'chain' | 'phrase', view.id, positions.row, now, readChainPosition(view))
+      this.observeChainOrPhraseView(view.kind as 'chain' | 'phrase', view.id, positions.row, now, readChainPosition(view), starting)
     }
     this.updatePlaying(markerSeen, view.kind, view.id, ms, now)
     return markerSeen
@@ -593,14 +716,14 @@ export class PlaybackTracker {
         this.constrain(track, songRow, this.entryStep(track, before.songRow, songRow), before.at, now)
       } else if (!placed || placed.stopped || placed.songRow !== songRow) {
         // First sight (or a jump): somewhere in the chain, shown from its start until known.
-        const chain         = this.chainTicks(songRow, track)
-        const chainUnits    = (chain ? totalOf(chain) : 0) * this.unitsPerTick()
-        this.anchors[track] = {
+        const chain      = this.chainTicks(songRow, track)
+        const chainUnits = (chain ? totalOf(chain) : 0) * this.unitsPerTick()
+        this.place(track, {
           songRow,
           step    : 0,
           earliest: now - chainUnits,
           latest  : now
-        }
+        })
       }
     })
     return markerSeen
@@ -608,9 +731,18 @@ export class PlaybackTracker {
 
   /**
    * A Chain or Phrase view marks the row playing, for the tracks that play what it shows;
-   * `chainPosition` is the chain row a Phrase view shows its phrase at (its '<').
+   * `chainPosition` is the chain row a Phrase view shows its phrase at (its '<'), `starting`
+   * says no song was playing before this reading.
    */
-  private observeChainOrPhraseView(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number, chainPosition: number | null): void {
+  private observeChainOrPhraseView(
+    kind: 'chain' | 'phrase',
+    id: number,
+    markedRow: number,
+    now: number,
+    chainPosition: number | null,
+    starting: boolean,
+  ): void {
+    if (kind === 'phrase') this.notePhraseLoop(id, markedRow, chainPosition, now)
     let matched = false
     for (let track = 0; track < TRACKS; track += 1) {
       const anchor = this.anchors[track]
@@ -642,7 +774,55 @@ export class PlaybackTracker {
         matched                     = true
       }
     }
-    if (!matched) this.placeFromScreen(kind, id, markedRow, now, chainPosition)
+    if (!matched) {
+      const placed = this.placeFromScreen(kind, id, markedRow, now, chainPosition)
+      const anchor = placed == null ? null : this.anchors[placed]
+      // Playing that starts on a Phrase view, on its first beat and without a MIDI Start, is Play on
+      // that view: that phrase alone (a song already playing would rarely be caught on its first beat).
+      if (placed != null && anchor && kind === 'phrase' && starting && markedRow < LOOP_START_ROWS && !this.transportRunning) {
+        this.setLoop(placed, {
+          songRow : anchor.songRow,
+          chainRow: Math.floor(anchor.step / ROWS_PER_PHRASE)
+        }, 'started-on-phrase')
+      }
+    }
+  }
+
+  /**
+   * A Phrase view whose marker starts the phrase over while its '<' stays: the M8 plays that
+   * phrase alone, where the track's walk had it go on, so the track loops it. With the '<'
+   * moved on (the song plays on), a loop ends and the reading places the track afresh.
+   */
+  private notePhraseLoop(id: number, markedRow: number, chainPosition: number | null, now: number): void {
+    const last          = this.lastPhraseMark
+    this.lastPhraseMark = {
+      id,
+      row: markedRow,
+      chainPosition
+    }
+    if (chainPosition == null) return
+    const startedOver = last != null && last.id === id && last.chainPosition === chainPosition && markedRow < last.row
+    for (let track = 0; track < TRACKS; track += 1) {
+      const loop = this.loops[track]
+      if (loop) {
+        if (loop.chainRow !== chainPosition) {
+          this.setLoop(track, null, 'moved-on')
+          this.anchors[track] = null
+        }
+        continue
+      }
+      const anchor = this.anchors[track]
+      const before = this.lastStepReading[track]
+      if (!startedOver || !anchor || !before || Math.floor(before.step / ROWS_PER_PHRASE) !== chainPosition) continue
+      if (this.phraseAt(before.songRow, track, chainPosition) !== id) continue
+      // The song going on to the same phrase at the same chain position (the chain on the next song row) looks the same.
+      const { songRow, step, stopped } = this.walk(anchor, track, now)
+      if (!stopped && Math.floor(step / ROWS_PER_PHRASE) === chainPosition && this.phraseAt(songRow, track, chainPosition) === id) continue
+      this.setLoop(track, {
+        songRow : before.songRow,
+        chainRow: chainPosition
+      }, 'started-over')
+    }
   }
 
   /**
@@ -665,7 +845,7 @@ export class PlaybackTracker {
   }
 
   /** No track known to be there yet: the place of the song that plays what is on screen (on a Phrase view, the repeat at its '<'). */
-  private placeFromScreen(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number, chainPosition: number | null): void {
+  private placeFromScreen(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number, chainPosition: number | null): number | null {
     const shown   = this.timeline.instances.filter((i) => (kind === 'chain' ? i.chain === id && i.chainRow === markedRow : i.phrase === id))
     const atMark  = shown.filter((i) => i.chainRow === chainPosition)
     const places  = atMark.length > 0 ? atMark : shown
@@ -674,16 +854,17 @@ export class PlaybackTracker {
       places.find((i) => context && i.track === context.track && i.songRow === context.songRow) ??
       places.find((i) => context && i.track === context.track) ??
       places[0]
-    if (!place) return
-    const onPhrase            = kind === 'phrase'
-    const step                = onPhrase ? place.chainRow * ROWS_PER_PHRASE + markedRow : markedRow * ROWS_PER_PHRASE
-    const window              = onPhrase ? this.stepUnits(place.songRow, place.track, step) : this.phraseUnits(place.songRow, place.track, markedRow)
-    this.anchors[place.track] = {
+    if (!place) return null
+    const onPhrase = kind === 'phrase'
+    const step     = onPhrase ? place.chainRow * ROWS_PER_PHRASE + markedRow : markedRow * ROWS_PER_PHRASE
+    const window   = onPhrase ? this.stepUnits(place.songRow, place.track, step) : this.phraseUnits(place.songRow, place.track, markedRow)
+    this.place(place.track, {
       songRow : place.songRow,
       step,
       earliest: now - window,
       latest  : now
-    }
+    })
+    return place.track
   }
 
   /** Whether the song still plays after a reading with or without a marker. */
