@@ -55,7 +55,7 @@ import {
 } from './layout'
 import { CellMarker, type CellRect } from './markers/cellMarker'
 import { cellRects } from './markers/cellRects'
-import { PlayheadView } from './markers/playheadView'
+import { PlayheadView, type ViewEdges } from './markers/playheadView'
 import { TablePlayheadView } from './markers/tablePlayheadView'
 import type { Palette } from './palette'
 import { easeFactor, linkCurve, smoothstep } from './shapes'
@@ -98,6 +98,8 @@ const LAND_TOP_ROWS       = 2
 const LOOKAHEAD_ROWS      = 4
 /** Pixels between the HUD and the headers' top edge. */
 const HEADER_GAP_PX       = 8
+/** Pixels above the bottom of the view where the halo of a playhead below it sits: just over the footer line. */
+const HALO_BOTTOM_PX      = 26
 /** Ease rate per second of the headers' glide to their height (the pose eases at 9). */
 const HEADER_GLIDE_RATE   = 15.5
 /** A turn by hand brings the open track to the middle of the view over this much turn. */
@@ -1274,10 +1276,28 @@ export class World implements PointerTarget {
     this.invalidate()
   }
 
-  /** Places the playheads and, when following playback, scrolls with the focused track's; returns true while anything plays. */
+  /**
+   * Places the playheads, with a halo at the top or bottom of a track whose playhead is out of
+   * sight, and, when following playback, scrolls with the one furthest down the song (a track
+   * looping a chain of its own stays behind, under its halo); returns true while anything plays.
+   */
   private updatePlayheads(dt: number): boolean {
     const heads   = this.playheadSource?.() ?? []
-    const playing = this.playheads.update(heads, this.layout, this.trackViews, this.palette, dt)
+    const pose    = this.rig.current
+    const height  = this.container.clientHeight
+    const bottom  = height > 0 ? -1 + (2 * HALO_BOTTOM_PX) / height : -0.97
+    let aimed     = false
+    const edges   = (track: number): ViewEdges | null => {
+      const view = this.trackViews[track]
+      if (!view) return null
+      if (!aimed) this.aimProbe(pose)
+      aimed      = true
+      return {
+        top   : view.headerBottom,
+        bottom: this.probedHeight(pose, this.frontX(track) + FRONT_W / 2, bottom)
+      }
+    }
+    const playing = this.playheads.update(heads, this.layout, this.trackViews, this.palette, dt, edges)
     this.tablePlayheads.update(
       this.tablePlayback,
       this.layout,
@@ -1285,16 +1305,24 @@ export class World implements PointerTarget {
       this.palette,
       Array.from({ length: TRACKS }, (_, track) => this.playheads.shownPosition(track)),
     )
-    if (!playing || !this.followPlayback || !this.layout) return playing
-    const focus    = this.focusTrack()
-    const track    = heads[focus]?.row != null ? focus : heads.findIndex((head) => head?.row != null)
-    const position = this.playheads.shownPosition(track)
-    if (position != null) {
-      // Keep the playhead a third of the way down the view, gliding with it.
-      const row              = Math.floor(position)
-      this.rig.goal.target.y = PlayheadView.rowY(this.layout, row, position - row) - this.visibleHalfHeight(this.rig.goal.distance) * 0.35
-    }
+    if (playing && this.followPlayback) this.aimAtPlayhead()
     return playing
+  }
+
+  /** Moves the view to the playhead furthest down the song, a third of the way down the view; false when nothing plays. */
+  private aimAtPlayhead(): boolean {
+    const position = this.playheads.leadPosition()
+    if (position == null || !this.layout) return false
+    const row              = Math.floor(position)
+    this.rig.goal.target.y = PlayheadView.rowY(this.layout, row, position - row) - this.visibleHalfHeight(this.rig.goal.distance) * 0.35
+    return true
+  }
+
+  /** Scrolls once to where the song plays (the playhead furthest down); false when it does not play. */
+  jumpToPlayhead(): boolean {
+    const jumped = this.aimAtPlayhead()
+    if (jumped) this.invalidate()
+    return jumped
   }
 
   /** How far the walls open for a yaw (0 facing the front, 1 turned). */
@@ -1342,27 +1370,34 @@ export class World implements PointerTarget {
   private headerTopEdge(pose: RigPose, settled: boolean): number {
     const height = this.container.clientHeight
     const ndcTop = height > 0 ? 1 - (2 * (this.topInset + HEADER_GAP_PX)) / height : 0.82
-    const probe  = this.probeCamera
-    placeCamera(pose, probe)
-    probe.projectionMatrix.copy(this.camera.projectionMatrix)
-    probe.updateMatrixWorld()
+    this.aimProbe(pose)
     const turn   = this.wallTurn(pose.yaw)
     const tracks = this.guideTracks(pose)
     let sum      = 0
-    for (const track of tracks) {
-      const x    = (settled ? this.frontX(track, true, turn) : this.frontX(track)) + FRONT_W / 2
-      const miss = (y: number) => this.probePoint.set(x, y, 0).project(probe).y - ndcTop
-      // Perspective bends the height a little with depth: a few secant steps from the flat estimate.
-      let y      = pose.target.y + this.visibleHalfHeight(pose.distance) * ndcTop
-      for (let step = 0; step < 3; step += 1) {
-        const here  = miss(y)
-        const slope = (miss(y + 0.5) - here) / 0.5
-        if (Math.abs(slope) < 1e-6) break
-        y -= here / slope
-      }
-      sum += y
-    }
+    for (const track of tracks) sum += this.probedHeight(pose, (settled ? this.frontX(track, true, turn) : this.frontX(track)) + FRONT_W / 2, ndcTop)
     return sum / tracks.length
+  }
+
+  /** Puts the probe camera at `pose`, for probedHeight. */
+  private aimProbe(pose: RigPose): void {
+    const probe = this.probeCamera
+    placeCamera(pose, probe)
+    probe.projectionMatrix.copy(this.camera.projectionMatrix)
+    probe.updateMatrixWorld()
+  }
+
+  /** The height at `x` on the tracks' plane that the probe camera (aimed at `pose`) shows at screen height `ndcY`, -1 bottom to 1 top. */
+  private probedHeight(pose: RigPose, x: number, ndcY: number): number {
+    const miss = (y: number) => this.probePoint.set(x, y, 0).project(this.probeCamera).y - ndcY
+    // Perspective bends the height a little with depth: a few secant steps from the flat estimate.
+    let y      = pose.target.y + this.visibleHalfHeight(pose.distance) * ndcY
+    for (let step = 0; step < 3; step += 1) {
+      const here  = miss(y)
+      const slope = (miss(y + 0.5) - here) / 0.5
+      if (Math.abs(slope) < 1e-6) break
+      y -= here / slope
+    }
+    return y
   }
 
   /**

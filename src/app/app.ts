@@ -203,6 +203,9 @@ export class ExplorerApp {
       a                 : command.autoselect,
       f                 : () => world.focusSelection(),
       i                 : () => world.toggleSelectedFace(),
+      p                 : () => {
+        if (!world.jumpToPlayhead()) this.hud.notify('The song is not playing: no playhead to jump to', 'info', 2500, false)
+      },
       Enter             : command.show,
       Escape            : () => world.select(null),
       '+'               : () => world.zoom(0.8),

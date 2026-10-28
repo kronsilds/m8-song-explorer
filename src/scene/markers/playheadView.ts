@@ -1,15 +1,22 @@
 // The playheads: a marker per track across its front column and across its wall's step row,
 // flashing on each beat. Each one runs at the tracker's speed and absorbs the tracker's small
 // corrections (each screen read or clock message nudges it) over a few frames, so it glides
-// without lagging.
+// without lagging. A playhead out of sight lights a halo at the edge of the view it is past.
 
 import type { TrackPlayhead } from '../../m8/playback'
 import { TRACKS } from '../../model/song'
-import { ROW_H, type SongLayout } from '../layout'
+import { FRONT_W, ROW_H, type SongLayout } from '../layout'
 import type { Palette } from '../palette'
 import { easeFactor, smoothstep } from '../shapes'
 import { FRONT_NOTES_W, FRONT_NOTES_X, type TrackView, WALL_STEPS_U, WALL_STEPS_W } from '../track/trackView'
 import { CellMarker, type CellRect } from './cellMarker'
+import { PlayheadHalo } from './playheadHalo'
+
+/** Heights in a track's front column between which its rows are in sight: under the header, above the bottom of the view. */
+export interface ViewEdges {
+  top   : number
+  bottom: number
+}
 
 /** Where a playhead is drawn, in timeline rows (row + phase), and how fast it moves. */
 interface ShownPlayhead {
@@ -24,11 +31,14 @@ const JUMP_ROWS          = 1.5
 const RATE_EASE_RATE     = 3
 const POSITION_EASE_RATE = 7
 const STEPS_PER_BEAT     = 4
+/** How far a halo reaches into the view, in rows. */
+const HALO_ROWS          = 2.5
 
 export class PlayheadView {
   private readonly markers = Array.from({ length: TRACKS }, () => ({
     front: new CellMarker(),
-    wall : new CellMarker()
+    wall : new CellMarker(),
+    halo : new PlayheadHalo()
   }))
   private readonly shown   : (ShownPlayhead | null)[] = Array(TRACKS).fill(null)
 
@@ -43,15 +53,36 @@ export class PlayheadView {
     return this.shown[track]?.position ?? null
   }
 
-  /** Places the playheads; returns true while anything plays. */
-  update(heads: (TrackPlayhead | null)[], layout: SongLayout | null, views: TrackView[], palette: Palette, dt: number): boolean {
+  /**
+   * The playhead furthest down the song, in timeline rows: where the song has got to. A track
+   * looping a chain of its own (an empty cell under it) stays behind and does not hold it back.
+   */
+  leadPosition(): number | null {
+    let lead: number | null = null
+    for (const shown of this.shown) if (shown && (lead == null || shown.position > lead)) lead = shown.position
+    return lead
+  }
+
+  /**
+   * Places the playheads, and a halo at the edge of the view for each one out of sight
+   * (`edges` gives a track's edges, null for none); returns true while anything plays.
+   */
+  update(
+    heads: (TrackPlayhead | null)[],
+    layout: SongLayout | null,
+    views: TrackView[],
+    palette: Palette,
+    dt: number,
+    edges: (track: number) => ViewEdges | null = () => null,
+  ): boolean {
     let anyPlaying = false
-    this.markers.forEach(({ front, wall }, track) => {
+    this.markers.forEach(({ front, wall, halo }, track) => {
       const head = heads[track]
       const view = views[track]
       if (!head || head.row == null || !layout || !view) {
         front.hide()
         wall.hide()
+        halo.hide()
         this.shown[track] = null
         return
       }
@@ -83,6 +114,12 @@ export class PlayheadView {
       front.show(frontRow, palette.device, fill, outline)
       if (view.wallAlpha > 0.05) wall.show(wallRow, palette.device, fill, outline)
       else wall.hide()
+      // Out of sight (the middle of its row past an edge): a halo on that edge, beating with it.
+      const edge   = edges(track)
+      const middle = y - ROW_H / 2
+      const reach  = middle > (edge?.top ?? Number.POSITIVE_INFINITY) ? HALO_ROWS * ROW_H : middle < (edge?.bottom ?? Number.NEGATIVE_INFINITY) ? -HALO_ROWS * ROW_H : 0
+      if (edge && reach) halo.show(view.front, 0, reach > 0 ? edge.top : edge.bottom, FRONT_W, reach, palette.device, (0.3 + flash * 0.45) * view.frontAlpha)
+      else halo.hide()
     })
     return anyPlaying
   }

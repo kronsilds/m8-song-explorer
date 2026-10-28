@@ -581,6 +581,11 @@ export class TrackView {
     return this.header.moveTo(y)
   }
 
+  /** Height of the header's bottom edge (front coordinates). */
+  get headerBottom(): number {
+    return this.header.bottom
+  }
+
   setTrackModes(muted: boolean, soloed: boolean): void {
     this.header.setTrackModes(muted, soloed)
   }

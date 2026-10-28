@@ -3,7 +3,7 @@ import type { M8Screen } from '@yam8d/m8-sdk'
 import { type PlaybackEvent, PlaybackTracker } from '../src/m8/playback'
 import { demoSong } from '../src/model/demo'
 import { FIRST_CONTENT_ROW, phraseScreen, songScreen } from '../src/model/screens'
-import { chainLength, ROWS_PER_PHRASE } from '../src/model/song'
+import { chainLength, emptyModel, emptyStep, ROWS_PER_PHRASE } from '../src/model/song'
 import { buildTimeline } from '../src/model/timeline'
 
 const model    = demoSong()
@@ -431,5 +431,112 @@ describe('a MIDI clock that stops', () => {
       tracker.observe(songWithMarkers([]), tick * 20)
     }
     expect(events).toEqual([])
+  })
+})
+
+describe('HOP in a phrase', () => {
+  // Track 1: chain 00 plays phrases 00 (HOP 04 on step 7) and 01, then chain 01 on row 1:
+  // phrase 03, the chain's only one, with HOP 02 on step 3. Track 2: phrase 02, HOP FF on step 9.
+  const song    = emptyModel('demo')
+  const phrase  = (id: number, hop: [step: number, value: number] | null) => {
+    const steps = Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
+    steps[0]    = {
+      ...steps[0],
+      note: 'C-4',
+      inst: 0
+    }
+    if (hop) steps[hop[0]].fx[0] = {
+      cmd: 'HOP',
+      val: hop[1]
+    }
+    return {
+      id,
+      steps
+    }
+  }
+  const chain   = (id: number, phrases: number[]) => ({
+    id,
+    rows: Array.from({ length: 16 }, (_, row) => ({
+      phrase   : phrases[row] ?? null,
+      transpose: 0
+    }))
+  })
+  song.phrases  = {
+    0: phrase(0, [7, 0x04]),
+    1: phrase(1, null),
+    2: phrase(2, [9, 0xff]),
+    3: phrase(3, [3, 0x02])
+  }
+  song.chains   = {
+    0: chain(0, [0, 1]),
+    1: chain(1, [3]),
+    2: chain(2, [2])
+  }
+  const empty   = Array(7).fill(null) as (number | null)[]
+  song.song     = [[0, 2, ...empty.slice(1)], [1, ...empty]]
+  const hopLine = buildTimeline(song)
+  const rowOf   = (songRow: number) => hopLine.bands.find((b) => b.songRow === songRow)?.row as number
+  const ms      = (tick: number) => tick * 20
+  // Step 0 starts on tick 601 (the first clock after Continue), six ticks a step.
+  const started = () => {
+    const tracker   = new PlaybackTracker(song, hopLine)
+    tracker.context = {
+      songRow: 0,
+      track  : 0
+    }
+    tracker.clockTick(600, ms(600), 20)
+    tracker.transportStart(0, ms(600))
+    return tracker
+  }
+  const at      = (tracker: PlaybackTracker, tick: number) => {
+    tracker.clockTick(tick, ms(tick), 20)
+    return tracker.playheads(ms(tick) + 1)
+  }
+
+  test('the step with the HOP plays, then the track goes on at row Y of the next phrase', () => {
+    const tracker = started()
+    expect(at(tracker, 601 + 47)[0]).toMatchObject({
+      songRow: 0,
+      step   : 7
+    })
+    expect(at(tracker, 601 + 50)[0]).toMatchObject({
+      songRow: 0,
+      step   : 20,
+      row    : rowOf(0) + 20
+    })
+  })
+
+  test("a HOP in the chain's last phrase goes to row Y of the next chain (here the start of the run)", () => {
+    const tracker = started()
+    // 8 steps of phrase 00, 12 of phrase 01 (rows 4-F): row 1 at tick 601 + 120.
+    expect(at(tracker, 601 + 121)[0]).toMatchObject({
+      songRow: 1,
+      step   : 0
+    })
+    // Phrase 03 plays steps 0-3, then HOP 02: row 0 is the start of the run, step 2.
+    expect(at(tracker, 601 + 146)[0]).toMatchObject({
+      songRow: 0,
+      step   : 2
+    })
+  })
+
+  test('HOP FF stops the track after its step', () => {
+    const tracker = started()
+    expect(at(tracker, 601 + 59)[1]?.step).toBe(9)
+    expect(at(tracker, 601 + 61)[1]).toBeNull()
+  })
+
+  test('a phrase view after a HOP fits the prediction: no restart', () => {
+    const tracker   = started()
+    const events    : PlaybackEvent[] = []
+    tracker.onEvent = (event) => events.push(event)
+    tracker.clockTick(651, ms(651), 20)
+    tracker.observe({
+      width : 40,
+      height: 24,
+      lines : markStep(phraseScreen(song.phrases[1]), 4)
+    }, ms(651))
+    expect(events.filter((event) => event.kind === 'reanchor')).toEqual([])
+    expect(at(tracker, 653)[0]?.step).toBe(20)
   })
 })
