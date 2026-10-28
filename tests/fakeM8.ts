@@ -109,7 +109,7 @@ export class FakeM8 implements M8Port {
         )
         break
       case 'phrase':
-        lines = phraseScreen(this.model.phrases[this.phrase])
+        lines = phraseScreen(this.model.phrases[this.phrase], this.chainRow)
         break
       case 'inst':
         lines = instrumentScreen(this.model.instruments[this.inst] ?? {

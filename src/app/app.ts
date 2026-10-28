@@ -489,8 +489,10 @@ export class ExplorerApp {
       this.world.setDeviceInstrument(focus && (focus.view === 'inst' || focus.view === 'instmods') ? focus.id : null)
       const places = focus && layout ? this.cursor.placesOf(layout, focus) : []
       this.world.setDevicePlaces(places)
+      // Choosing the place can move the context to the track or song row the M8 went to.
+      const followed                = this.cursor.preferred(places)
       this.playback.tracker.context = this.cursor.songContext
-      this.followCursor(this.cursor.preferred(places))
+      this.followCursor(followed)
     } catch (error) {
       // The next event tries again.
       debugLog.problem('sync', messageOf(error))

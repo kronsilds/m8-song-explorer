@@ -1,18 +1,22 @@
 // Where the M8 cursor is, as places of the song: every place the item under the cursor
-// appears, and the one the device most likely came from (the song cell and chain row last
-// visited).
+// appears, and the one the device is on: the song cell it came from, and the chain row (the
+// Chain view's cursor row, the '<' the Phrase view draws at its chain position).
 
 import type { DeviceFocus } from '../m8/screen/liveScreen'
 import { isPhraseColumn, isTableColumn } from '../model/columns'
 import { cellAt, instrumentPage } from '../model/instrumentPage'
 import { TITLE_ROW } from '../model/screens'
 import type { Selection } from '../model/selection'
+import { TRACKS } from '../model/song'
 import type { SongLayout } from '../scene/layout'
 
+/** A place in a chain: a song cell or a phrase step. */
+type ChainPlace = Extract<Selection, { kind: 'chain' | 'step' }>
+
 export class DeviceCursor {
-  /** Song row and track the M8 was last on (Song view). */
+  /** Song row and track the M8 is on: set on the Song view, then moved along with it on the Chain and Phrase views. */
   songContext     : { songRow: number; track: number } | null = null
-  /** Chain row the M8 was last on (Chain view). */
+  /** Chain row the M8 is on: the Chain view's cursor row, the Phrase view's '<'. */
   private chainRow: number | null = null
 
   /** Every place of the song the item under the M8 cursor appears. Remembers the song cell and chain row on the way. */
@@ -43,6 +47,8 @@ export class DeviceCursor {
         }))
       case 'phrase': {
         if (id == null) return []
+        // The '<' tells the repeats of a phrase in its chain apart; without it the last chain row stands.
+        if (focus.chainRow != null) this.chainRow = focus.chainRow
         const column = isPhraseColumn(focus.column) ? focus.column : 'note'
         return (layout.timeline.byPhrase.get(id) ?? []).map((instance) => ({
           kind: 'step',
@@ -97,17 +103,25 @@ export class DeviceCursor {
     }
   }
 
-  /** The place to follow: the one in the song cell and chain row the M8 came from, else the first. */
+  /**
+   * The place to follow, at the chain row the M8 is on: in the song cell it came from; else in
+   * the same song row on the nearest track (Option+Left/Right on the Chain and Phrase views);
+   * else on its track at the nearest song row (Option+Up/Down on the Chain view); else the
+   * first. The context follows the first two moves.
+   */
   preferred(places: Selection[]): Selection | null {
-    const context     = this.songContext
-    const fromContext = places.find(
-      (place) =>
-        (place.kind === 'step' || place.kind === 'chain') &&
-        context &&
-        place.instance.songRow === context.songRow &&
-        place.instance.track === context.track &&
-        (this.chainRow == null || place.instance.chainRow === this.chainRow),
-    )
-    return fromContext ?? places[0] ?? null
+    const inChains = places.filter((place): place is ChainPlace => place.kind === 'chain' || place.kind === 'step')
+    const atRow    = inChains.filter((place) => place.instance.chainRow === this.chainRow)
+    const choices  = atRow.length > 0 ? atRow : inChains
+    const context  = this.songContext
+    if (!context || choices.length === 0) return choices[0] ?? places[0] ?? null
+    const distance           = ({ instance }: ChainPlace): number => {
+      if (instance.songRow === context.songRow) return Math.abs(instance.track - context.track)
+      return instance.track === context.track ? TRACKS + Math.abs(instance.songRow - context.songRow) : Number.POSITIVE_INFINITY
+    }
+    const best               = choices.reduce((chosen, place) => (distance(place) < distance(chosen) ? place : chosen))
+    const { songRow, track } = best.instance
+    if (Number.isFinite(distance(best)) && (songRow !== context.songRow || track !== context.track)) this.songContext = { songRow, track }
+    return best
   }
 }

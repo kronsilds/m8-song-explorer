@@ -97,7 +97,10 @@ instruments → tables) and shows it as a 3D tracker:
   playheads pause until you explore it (or go back to the explored song).
 - **Follow M8** highlights (and follows) every place of the song the M8 cursor is on, and edits made
   on the device are folded back into the view (the song, chains, phrases, tables, instruments and modulators, grooves, scales and the Project view's TRANSPOSE, GROOVE and SCALE). **Show on M8** (`Enter`) walks the device to the
-  selected cell.
+  selected cell. The place followed is in the song cell the M8 came from: on a Phrase view, the
+  repeat its `<` marks when the phrase plays more than once in the chain (Option+Up/Down moves
+  along). It moves along with Option+Left/Right on a Chain or Phrase view (the same song row on
+  the other track) and Option+Up/Down on a Chain view (the track's next chain in the song).
 - **Auto select** (`A`) makes the selection follow the M8 cursor, so the Selection panel explains
   what the cursor is on. Reaching the velocity / instrument / FX columns of a phrase, a table or an instrument
   turns the view to the wall; back on a note, chain or song cell it turns back (also while the
@@ -207,8 +210,7 @@ THEME (System Settings row 7), each time only after checking the cursor row says
 
 With **Follow M8** on, each track gets a playhead while the song plays. Positions come from
 the screen: on the Song view the M8 draws a `>` just left of each track's playing chain, on a
-Chain or Phrase view after the row number of the playing row (the `<` in the margin is the
-cursor row). Between readings each track moves on step by step, each step lasting the ticks its
+Chain or Phrase view after the row number of the playing row. Between readings each track moves on step by step, each step lasting the ticks its
 groove gives it: six (a sixteenth) with the default groove, `08 04` for a swing, `00` for a
 skipped step, scaled to 24 per quarter note when the groove counts 48, 96 or 192 PPQ. The ticks
 are MIDI clock ticks when the clock runs, else ticks at the tempo shown (`T>096`). The groove in
@@ -216,6 +218,13 @@ force follows the song: the project GROOVE, then each `GRV` (its track) or `GGR`
 from the timeline row it is on. A Groove view or Project GROOVE edited on the M8 is folded in.
 A playhead is drawn dim while its step inside the chain is guessed (first seen mid-chain) and
 solid once a chain change or a Phrase view pins it.
+
+A phrase can play more than once in its chain, and its Phrase view looks the same for every
+repeat. The M8 marks the chain position, the chain row it shows the phrase of, with a `<` in the
+margin of the step row with that number. A track first placed from a Phrase view goes to the repeat
+the `<` marks, and so does the track the M8 is on while its position is too vague to tell the
+repeats apart (first seen on the Song view, somewhere in the chain). Once a reading has pinned
+it, the track's own steps decide.
 
 A `HOP Y` in a phrase plays its step, then the track goes on at row Y of the next phrase: the
 chain's next one, or after the chain's last phrase the first one of the next chain (the row
@@ -403,6 +412,8 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
   colour at once (Edit+Right: titles, markers and meters shifted a few units; Edit+Left undid it).
 - Content rows start on screen row 6; row 5 holds column headers.
 - Phrase titles can end with `^` as well as `*` (`PHRASE 27^`).
+- The Phrase view draws a `<` in the margin (screen column 0) of the step row whose number is its
+  chain position: row 3 when it shows the phrase of chain row 3 (reported by the user, 2026-10-28).
 - Names are padded with dashes to 12 characters (`NAME--------`).
 - Option+Down in a phrase goes to the chain's next phrase.
 - Option+Up/Down steps 16 on the Instrument and Table views, but not the same way round: Option+Down
@@ -482,6 +493,10 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
   playing random FX, so it is a weak check.
 
 - SCA/SCG in tables, HOP and live mode are not followed by the scale quantizing.
+
+- A phrase played more than once in its chain: whether the Phrase view's play marker shows for
+  every repeat or only at its chain position (the `<`); and which chain position Option+Left/Right
+  lands on. The explorer takes the `<` only while a track's position is vague.
 
 - HOP in a phrase: that the HOP step plays in full before the jump, and where a HOP in a chain's
   last phrase goes when the next song row is empty (taken as the start of the run, like a chain end).

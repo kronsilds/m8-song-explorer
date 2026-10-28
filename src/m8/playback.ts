@@ -11,12 +11,16 @@
 // A HOP Y in a phrase plays its step, then the track goes on at row Y of the next phrase: the
 // chain's next one, or the first of the next chain (the row after, or the start of the run).
 // HOP FF stops the track. Not checked on the device: that the HOP step plays in full first.
+//
+// A phrase can play more than once in a chain. The Phrase view marks its chain position (which
+// repeat it shows) with a '<' in the margin: a track first placed from a Phrase view goes to that
+// repeat, and so does the M8's own track while its window is too wide to tell the repeats apart.
 
 import { type M8Screen, readPlayPositions } from '@yam8d/m8-sdk'
 import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey, summarizeTicks, type TicksSummary } from '../model/music/groove'
 import { chainLength, fxValues, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
 import type { Timeline } from '../model/timeline'
-import { viewOf } from './screen/screenReader'
+import { readChainPosition, viewOf } from './screen/screenReader'
 
 /** How late the screen shows a step (M8 redraw, serial, host, messages), roughly. */
 const SCREEN_LATENCY_MS  = 20
@@ -36,6 +40,8 @@ const MAX_CHAIN_WALK     = 512
 const MAX_RUNS_AHEAD     = 32
 /** HOP FF stops the track. */
 const HOP_STOP           = 0xff
+/** A window wider than this many phrases cannot tell a phrase's repeats in its chain apart. */
+const REPEATS_WINDOW     = 1.5
 
 /** The step a track was last placed on, and the window its start lies in. */
 interface Anchor {
@@ -563,7 +569,7 @@ export class PlaybackTracker {
       markerSeen = this.observeSongView(positions.tracks, now)
     } else if (positions?.row != null && view.id != null) {
       markerSeen = true
-      this.observeChainOrPhraseView(view.kind as 'chain' | 'phrase', view.id, positions.row, now)
+      this.observeChainOrPhraseView(view.kind as 'chain' | 'phrase', view.id, positions.row, now, readChainPosition(view))
     }
     this.updatePlaying(markerSeen, view.kind, view.id, ms, now)
     return markerSeen
@@ -600,8 +606,11 @@ export class PlaybackTracker {
     return markerSeen
   }
 
-  /** A Chain or Phrase view marks the row playing, for the tracks that play what it shows. */
-  private observeChainOrPhraseView(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number): void {
+  /**
+   * A Chain or Phrase view marks the row playing, for the tracks that play what it shows;
+   * `chainPosition` is the chain row a Phrase view shows its phrase at (its '<').
+   */
+  private observeChainOrPhraseView(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number, chainPosition: number | null): void {
     let matched = false
     for (let track = 0; track < TRACKS; track += 1) {
       const anchor = this.anchors[track]
@@ -609,13 +618,14 @@ export class PlaybackTracker {
       const { songRow, step, stopped } = this.walk(anchor, track, now)
       const chainId                    = this.model.song[songRow]?.[track]
       if (chainId == null || stopped) continue
-      const chainRow = Math.floor(step / ROWS_PER_PHRASE)
+      const walkedRow = Math.floor(step / ROWS_PER_PHRASE)
       if (kind === 'chain' && chainId === id) {
         // That phrase started within the last phrase length.
         this.constrain(track, songRow, markedRow * ROWS_PER_PHRASE, now - this.phraseUnits(songRow, track, markedRow), now)
         matched = true
       }
-      if (kind === 'phrase' && this.model.chains[chainId]?.rows[chainRow]?.phrase === id) {
+      const chainRow = kind === 'phrase' ? this.phraseRepeat(track, songRow, walkedRow, id, chainPosition) : null
+      if (chainRow != null) {
         const actual = chainRow * ROWS_PER_PHRASE + markedRow
         if (actual !== step) this.onCorrection(track, step, actual, this.clock != null, songRow)
         // Showing now: it started within the last step. Just after the step before it was
@@ -632,12 +642,33 @@ export class PlaybackTracker {
         matched                     = true
       }
     }
-    if (!matched) this.placeFromScreen(kind, id, markedRow, now)
+    if (!matched) this.placeFromScreen(kind, id, markedRow, now, chainPosition)
   }
 
-  /** No track known to be there yet: the place of the song that plays what is on screen. */
-  private placeFromScreen(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number): void {
-    const places  = this.timeline.instances.filter((i) => (kind === 'chain' ? i.chain === id && i.chainRow === markedRow : i.phrase === id))
+  /**
+   * The chain row phrase `id` on screen plays at on a track whose walk is on `walkedRow`: that
+   * row, unless the track is the one the M8 shows, its window is too wide to tell the phrase's
+   * repeats apart and the '<' names a repeat. Null when neither row plays that phrase.
+   */
+  private phraseRepeat(track: number, songRow: number, walkedRow: number, id: number, chainPosition: number | null): number | null {
+    const chainId = this.model.song[songRow]?.[track]
+    const rows    = chainId == null ? undefined : this.model.chains[chainId]?.rows
+    const anchor  = this.anchors[track]
+    const context = this.context
+    const shown   =
+      chainPosition != null &&
+      context?.track === track &&
+      this.model.song[context.songRow]?.[track] === chainId &&
+      rows?.[chainPosition]?.phrase === id
+    if (shown && anchor && anchor.latest - anchor.earliest > REPEATS_WINDOW * this.phraseUnits(songRow, track, walkedRow)) return chainPosition
+    return rows?.[walkedRow]?.phrase === id ? walkedRow : null
+  }
+
+  /** No track known to be there yet: the place of the song that plays what is on screen (on a Phrase view, the repeat at its '<'). */
+  private placeFromScreen(kind: 'chain' | 'phrase', id: number, markedRow: number, now: number, chainPosition: number | null): void {
+    const shown   = this.timeline.instances.filter((i) => (kind === 'chain' ? i.chain === id && i.chainRow === markedRow : i.phrase === id))
+    const atMark  = shown.filter((i) => i.chainRow === chainPosition)
+    const places  = atMark.length > 0 ? atMark : shown
     const context = this.context
     const place   =
       places.find((i) => context && i.track === context.track && i.songRow === context.songRow) ??
