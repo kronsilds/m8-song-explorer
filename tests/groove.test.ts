@@ -50,6 +50,43 @@ describe('grooves', () => {
     expect(ticks.get(occurrenceKey(1, other.songRow))?.slice(0, 4)).toEqual([8, 4, 8, 4])
   })
 
+  test('a CHA on the step decides a GRV: X for the FX left of it, Y right of it (device: CHA F0 kept GRV 01 out, CHA FF let it in)', () => {
+    const lengths = (cha: number, chaLane: number) => {
+      const model      = demoSong()
+      model.grooves    = {
+        1: SWING
+      }
+      const timeline   = buildTimeline(model)
+      const first      = timeline.byTrack[0][0]
+      const step       = model.phrases[first.phrase].steps[0]
+      step.fx          = [{
+        cmd: null,
+        val: null
+      }, {
+        cmd: null,
+        val: null
+      }, {
+        cmd: null,
+        val: null
+      }]
+      step.fx[chaLane] = {
+        cmd: 'CHA',
+        val: cha
+      }
+      step.fx[1]       = {
+        cmd: 'GRV',
+        val: 1
+      }
+      const ticks      = chainStepTicks(model, timeline).get(occurrenceKey(0, first.songRow)) as number[]
+      return ticks.slice(first.chainRow * 16, first.chainRow * 16 + 2)
+    }
+    expect(lengths(0xf0, 0)).toEqual([6, 6])
+    expect(lengths(0xff, 0)).toEqual([8, 4])
+    // GRV left of the CHA: X decides.
+    expect(lengths(0x0f, 2)).toEqual([6, 6])
+    expect(lengths(0xf0, 2)).toEqual([8, 4])
+  })
+
   test('reads a Groove view, with a play marker on row 0', () => {
     const lines              = grooveScreen(TRIPLETS).map((l) => l.toLowerCase())
     lines[FIRST_CONTENT_ROW] = `${lines[FIRST_CONTENT_ROW].slice(0, 2)}>${lines[FIRST_CONTENT_ROW].slice(3)}`

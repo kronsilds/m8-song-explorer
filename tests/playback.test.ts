@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { M8Screen } from '@yam8d/m8-sdk'
 import { type PlaybackEvent, PlaybackTracker } from '../src/m8/playback'
 import { demoSong } from '../src/model/demo'
-import { FIRST_CONTENT_ROW, phraseScreen, songScreen } from '../src/model/screens'
+import { chainScreen, FIRST_CONTENT_ROW, phraseScreen, songScreen } from '../src/model/screens'
 import { chainLength, emptyModel, emptyStep, ROWS_PER_PHRASE } from '../src/model/song'
 import { buildTimeline } from '../src/model/timeline'
 
@@ -506,7 +506,7 @@ describe('HOP in a phrase', () => {
     })
   })
 
-  test("a HOP in the chain's last phrase goes to row Y of the next chain (here the start of the run)", () => {
+  test("a HOP 0Y in the chain's last phrase goes to row Y of the next chain (here the start of the run)", () => {
     const tracker = started()
     // 7 steps of phrase 00, 12 of phrase 01 (rows 4-F): row 1 at tick 601 + 114.
     expect(at(tracker, 601 + 115)[0]).toMatchObject({
@@ -538,6 +538,200 @@ describe('HOP in a phrase', () => {
     }, ms(645))
     expect(events.filter((event) => event.kind === 'reanchor')).toEqual([])
     expect(at(tracker, 647)[0]?.step).toBe(20)
+  })
+})
+
+describe('counted HOPs (device, GEN_INTERMIS)', () => {
+  // Track 1: phrase 00 alone in chain 00, its next song row empty: HOP 60 on step 1, HOP 32 on 3,
+  // HOP 34 on 5, HOP 02 on 6. Track 2: phrase 01 alone in chain 01, HOP 24 on step 5; chain 02
+  // (empty phrase 02) on the next song row. Track 3: phrase 03, HOP 01 on step 2 (loops step 1).
+  const song   = emptyModel('demo')
+  const phrase = (id: number, hops: [step: number, value: number][]) => {
+    const steps = Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
+    steps[1]    = {
+      ...steps[1],
+      note: 'G#3',
+      inst: 0
+    }
+    for (const [step, value] of hops) steps[step].fx[0] = {
+      cmd: 'HOP',
+      val: value
+    }
+    return {
+      id,
+      steps
+    }
+  }
+  const chain  = (id: number, phraseId: number) => ({
+    id,
+    rows: Array.from({ length: 16 }, (_, row) => ({
+      phrase   : row === 0 ? phraseId : null,
+      transpose: 0
+    }))
+  })
+  song.phrases = {
+    0: phrase(0, [[1, 0x60], [3, 0x32], [5, 0x34], [6, 0x02]]),
+    1: phrase(1, [[5, 0x24]]),
+    2: phrase(2, []),
+    3: phrase(3, [[2, 0x01]])
+  }
+  song.chains  = {
+    0: chain(0, 0),
+    1: chain(1, 1),
+    2: chain(2, 2),
+    3: chain(3, 3)
+  }
+  song.song    = [[0, 1, 3, null, null, null, null, null], [null, 2, null, null, null, null, null, null]]
+  const line   = buildTimeline(song)
+  const ms     = (tick: number) => tick * 20
+  // Step 0 starts on tick 601 (the first clock after Continue), six ticks a step.
+  const start  = () => {
+    const tracker   = new PlaybackTracker(song, line)
+    tracker.context = {
+      songRow: 0,
+      track  : 0
+    }
+    tracker.clockTick(600, ms(600), 20)
+    tracker.transportStart(0, ms(600))
+    return tracker
+  }
+  const at     = (tracker: PlaybackTracker, tick: number) => {
+    tracker.clockTick(tick, ms(tick), 20)
+    return tracker.playheads(ms(tick) + 1)
+  }
+  const stepAt = (tracker: PlaybackTracker, track: number, tick: number) => at(tracker, 601 + tick)[track]?.step
+
+  test('HOP XY hops X times, then its own step plays and the phrase runs on', () => {
+    const tracker = start()
+    // Step 0 seven times (HOP 60 hops six), then step 1, the HOP's own.
+    expect([0, 6, 41, 42, 47].map((tick) => stepAt(tracker, 0, tick))).toEqual([0, 0, 0, 1, 1])
+    // Step 2 four times (HOP 32), step 3, step 4 four times (HOP 34), step 5, then HOP 02 (X = 0) back to step 2.
+    expect([48, 71, 72, 78, 101, 102, 108].map((tick) => stepAt(tracker, 0, tick))).toEqual([2, 2, 3, 4, 4, 5, 2])
+  })
+
+  test('the count starts over each time round, and a long walk goes round whole turns', () => {
+    const tracker = start()
+    // From tick 108 the track goes round 2 x4, 3, 4 x4, 5: 60 ticks a turn.
+    expect([132, 138, 161, 162, 168].map((tick) => stepAt(tracker, 0, tick))).toEqual([3, 4, 4, 5, 2])
+    expect(stepAt(tracker, 0, 108 + 60 * 5000 + 25)).toBe(3)
+  })
+
+  test("a HOP in a chain's only phrase stays in it, though another chain follows on the next song row", () => {
+    const tracker = start()
+    // Steps 0-4, HOP 24 twice back to step 4, then step 5 plays, 6-F, then chain 02 on row 1.
+    expect([29, 30, 36, 42, 48].map((tick) => stepAt(tracker, 1, tick))).toEqual([4, 4, 4, 5, 6])
+    expect(at(tracker, 601 + 108)[1]).toMatchObject({
+      songRow: 1,
+      step   : 0
+    })
+    // Back on row 0 after chain 02's 16 steps, and the HOP counts from the start again.
+    expect(at(tracker, 601 + 204)[1]).toMatchObject({
+      songRow: 0,
+      step   : 0
+    })
+    expect([204 + 30, 204 + 36, 204 + 42].map((tick) => stepAt(tracker, 1, tick))).toEqual([4, 4, 5])
+  })
+
+  test('a step played again counts as a new step', () => {
+    const tracker = start()
+    const serials = [3, 9, 15, 21].map((tick) => at(tracker, 601 + tick)[2]?.serial)
+    // Track 3: step 0, then step 1 over and over.
+    expect([3, 9, 15, 21].map((tick) => stepAt(tracker, 2, tick))).toEqual([0, 1, 1, 1])
+    expect(serials).toEqual([0, 1, 2, 3])
+  })
+
+  /** A view with its row `row` marked, and the tempo. */
+  const marked = (lines: string[], row: number): M8Screen => {
+    const out = markStep(lines, row)
+    out[5]    = `${out[5].padEnd(33)}T>120`
+    return {
+      width : 40,
+      height: 24,
+      lines : out
+    }
+  }
+
+  test('readings of a step the track comes back to fit the time round they are about: no restart', () => {
+    const tracker   = start()
+    const events    : PlaybackEvent[] = []
+    tracker.onEvent = (event) => events.push(event)
+    tracker.context = {
+      songRow: 0,
+      track  : 2
+    }
+    // Track 3's Phrase view, read every 5 ticks while it loops step 1 (a new time round every 6 ticks).
+    for (let tick = 8; tick < 200; tick += 5) {
+      tracker.clockTick(601 + tick, ms(601 + tick), 20)
+      tracker.observe(marked(phraseScreen(song.phrases[3]), 1), ms(601 + tick))
+    }
+    // The Chain view of track 1's chain, which loops on itself: row 0 plays, as the walk says.
+    tracker.context = {
+      songRow: 0,
+      track  : 0
+    }
+    tracker.clockTick(601 + 300, ms(601 + 300), 20)
+    tracker.observe(marked(chainScreen(song.chains[0]), 0), ms(601 + 300))
+    expect(events.filter((event) => event.kind === 'reanchor')).toEqual([])
+    expect(stepAt(tracker, 0, 300)).toBe(stepAt(start(), 0, 300))
+  })
+})
+
+describe('HOPs on a test song (device, 2026-10-29)', () => {
+  // Track 1: chain 00 = phrases 00 and 01 on song row 0, chain 01 (phrase 02) on row 1. Phrase 00
+  // has HOP 14 on step C, phrase 01 HOP 04 on step 8. The M8's Chain 00 view showed row 0 for 3 s,
+  // row 1 for 1 s, then no marker for 1.5 s (chain 01 from row 4), then row 0 again.
+  const song    = emptyModel('test')
+  const withHop = (id: number, step: number, value: number) => {
+    const steps = Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
+    if (step >= 0) steps[step].fx[0] = {
+      cmd: 'HOP',
+      val: value
+    }
+    return {
+      id,
+      steps
+    }
+  }
+  song.phrases  = {
+    0: withHop(0, 12, 0x14),
+    1: withHop(1, 8, 0x04),
+    2: withHop(2, -1, 0)
+  }
+  const chainOf = (id: number, phrases: number[]) => ({
+    id,
+    rows: Array.from({ length: 16 }, (_, row) => ({
+      phrase   : phrases[row] ?? null,
+      transpose: 0
+    }))
+  })
+  song.chains   = {
+    0: chainOf(0, [0, 1]),
+    1: chainOf(1, [2])
+  }
+  song.song     = [[0, ...Array(7).fill(null)], [1, ...Array(7).fill(null)]]
+  const line    = buildTimeline(song)
+  const ms      = (tick: number) => tick * 20
+  const placeAt = (tick: number) => {
+    const tracker   = new PlaybackTracker(song, line)
+    tracker.context = {
+      songRow: 0,
+      track  : 0
+    }
+    tracker.clockTick(600, ms(600), 20)
+    tracker.transportStart(0, ms(600))
+    tracker.clockTick(601 + tick, ms(601 + tick), 20)
+    const head      = tracker.playheads(ms(601 + tick) + 1)[0]
+    return head ? `${head.songRow}:${head.step}` : null
+  }
+
+  test('HOP 14 hops back in its own phrase once, though the chain has a next phrase', () => {
+    // Steps 0-B (72 ticks), back to 4-B (48), then C-F play (24): phrase 01 at tick 144.
+    expect([71, 72, 119, 120, 143, 144].map(placeAt)).toEqual(['0:11', '0:4', '0:11', '0:12', '0:15', '0:16'])
+  })
+
+  test('HOP 04 in the chain\'s last phrase goes to row 4 of the next song row\'s chain, then the chain starts over', () => {
+    // Phrase 01 steps 0-7 (48 ticks), chain 01 from row 4 (12 steps, 72 ticks), then row 0 from its first step.
+    expect([191, 192, 263, 264].map(placeAt)).toEqual(['0:23', '1:4', '1:15', '0:0'])
   })
 })
 

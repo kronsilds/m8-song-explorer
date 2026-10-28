@@ -1,10 +1,12 @@
 // The playheads: a marker per track across its front column and across its wall's step row,
 // flashing on each beat. Each one runs at the tracker's speed and absorbs the tracker's small
 // corrections (each screen read or clock message nudges it) over a few frames, so it glides
-// without lagging. A playhead out of sight lights a halo at the edge of the view it is past.
+// without lagging; a step a HOP or a loop plays again is jumped to at once. Each step that starts
+// lights the header of the instrument its note plays; a note left to chance (CHA) only once the
+// M8's track panel shows it played. A playhead out of sight lights a halo at the edge of the view.
 
 import type { TrackPlayhead } from '../../m8/playback'
-import { TRACKS } from '../../model/song'
+import { fxValues, TRACKS } from '../../model/song'
 import { FRONT_W, ROW_H, type SongLayout } from '../layout'
 import type { Palette } from '../palette'
 import { easeFactor, smoothstep } from '../shapes'
@@ -28,6 +30,13 @@ interface ShownPlayhead {
 
 /** A jump larger than this (a new chain, a seek) is taken at once. */
 const JUMP_ROWS          = 1.5
+/** A step that starts this far back (a HOP back, a loop) is taken at once too. */
+const BACK_ROWS          = 0.25
+/** How long after a step starts its note may show on the M8's track panel (see TablePlayback). */
+const NOTE_SHOWS_MS      = 160
+const NOTE_EARLY_MS      = 40
+/** CHA XY: X out of 15 is the note's chance. */
+const ALWAYS             = 0x0f
 const RATE_EASE_RATE     = 3
 const POSITION_EASE_RATE = 7
 const STEPS_PER_BEAT     = 4
@@ -44,6 +53,10 @@ export class PlayheadView {
     halo : new PlayheadHalo()
   }))
   private readonly shown   : (ShownPlayhead | null)[] = Array(TRACKS).fill(null)
+  /** Each track's step serial last frame (see TrackPlayhead). */
+  private readonly serials : (number | null)[] = Array(TRACKS).fill(null)
+  /** A note left to chance, flashed once the M8's track panel shows it played. */
+  private readonly waiting : ({ row: number; startedAt: number } | null)[] = Array(TRACKS).fill(null)
 
   /** Top y of the playhead `phase` of the way from a row to the next (across a song row gap too). */
   static rowY(layout: SongLayout, row: number, phase: number): number {
@@ -86,14 +99,19 @@ export class PlayheadView {
         front.hide()
         wall.hide()
         halo.hide()
-        this.shown[track] = null
+        this.shown[track]   = null
+        this.serials[track] = null
+        this.waiting[track] = null
         return
       }
       anyPlaying                 = true
       const before               = this.shown[track]?.position ?? null
-      const { row, phase, step } = this.smooth(track, head.row + head.phase, head.row, head.step, dt)
+      const started              = this.serials[track] != null && this.serials[track] !== head.serial
+      this.serials[track]        = head.serial
+      const { row, phase, step } = this.smooth(track, head.row + head.phase, head.row, head.step, dt, started)
       const after                = this.shown[track]?.position ?? null
-      if (before != null && after != null) this.flashPassedNotes(layout, track, before, after)
+      if (started && before != null && after != null) this.flashStartedNotes(layout, track, head, before, after)
+      this.flashWaitingNote(layout, track, head)
       const y            = PlayheadView.rowY(layout, row, phase)
       // A flash on each beat: full at the beat, gone by the middle of it.
       const beatProgress = ((((step % STEPS_PER_BEAT) + STEPS_PER_BEAT) % STEPS_PER_BEAT) + phase) / STEPS_PER_BEAT
@@ -127,23 +145,59 @@ export class PlayheadView {
     return anyPlaying
   }
 
-  /** Lights the header of the instrument each note passed between two playhead positions plays (a jump passes none). */
-  private flashPassedNotes(layout: SongLayout, track: number, before: number, after: number): void {
-    if (after <= before || after - before > JUMP_ROWS) return
-    for (let row = Math.floor(before) + 1; row <= Math.floor(after); row += 1) {
-      const instance = layout.instanceAt(track, row)
-      const step     = instance ? layout.model.phrases[instance.phrase]?.steps[row - instance.row] : undefined
-      if (!instance || !step?.note || step.note === 'OFF') continue
-      const instrument = layout.effective.get(instance.key)?.[row - instance.row]
-      const panel      = instrument == null ? undefined : layout.tracks[track].panels.find((p) => p.table === instrument)
-      if (panel) panel.flash = 1
+  /**
+   * Steps started since the last frame: the rows passed when the playhead moved on, else (a HOP, a
+   * loop, a jump) the row it is on. Each one's note lights the header of the instrument it plays;
+   * a note left to chance (a CHA) waits until the M8's track panel shows it played.
+   */
+  private flashStartedNotes(layout: SongLayout, track: number, head: TrackPlayhead, before: number, after: number): void {
+    const rows: number[] = []
+    if (after > before && after - before <= JUMP_ROWS && Math.floor(after) > Math.floor(before)) {
+      for (let row = Math.floor(before) + 1; row <= Math.floor(after); row += 1) rows.push(row)
+    } else rows.push(Math.floor(after))
+    for (const row of rows) {
+      const step = this.noteStep(layout, track, row)
+      if (!step) continue
+      const [cha] = fxValues(step.fx, 'CHA')
+      if (cha != null && cha >> 4 < ALWAYS) this.waiting[track] = {
+        row,
+        startedAt: head.startedAt
+      }
+      else this.flashNote(layout, track, row)
     }
   }
 
+  /** The note left to chance on a track: lit once the track panel shows a new note since its step started, forgotten after. */
+  private flashWaitingNote(layout: SongLayout, track: number, head: TrackPlayhead): void {
+    const waiting = this.waiting[track]
+    if (!waiting) return
+    if (head.note && head.note.changedAt >= waiting.startedAt - NOTE_EARLY_MS) {
+      this.flashNote(layout, track, waiting.row)
+      this.waiting[track] = null
+    } else if (performance.now() > waiting.startedAt + NOTE_SHOWS_MS) this.waiting[track] = null
+  }
+
+  /** The step on timeline row `row` of a track when it plays a note. */
+  private noteStep(layout: SongLayout, track: number, row: number) {
+    const instance = layout.instanceAt(track, row)
+    const step     = instance ? layout.model.phrases[instance.phrase]?.steps[row - instance.row] : undefined
+    return step?.note && step.note !== 'OFF' ? step : null
+  }
+
+  /** Lights the header of the instrument the note on timeline row `row` plays. */
+  private flashNote(layout: SongLayout, track: number, row: number): void {
+    const instance   = layout.instanceAt(track, row)
+    const instrument = instance ? layout.effective.get(instance.key)?.[row - instance.row] : undefined
+    const panel      = instrument == null ? undefined : layout.tracks[track].panels.find((p) => p.table === instrument)
+    if (panel) panel.flash = 1
+  }
+
   /** Moves a track's drawn playhead toward the tracker's `target` (row + phase). */
-  private smooth(track: number, target: number, headRow: number, headStep: number, dt: number): { row: number; phase: number; step: number } {
-    let shown = this.shown[track]
-    if (!shown || Math.abs(target - shown.position) > JUMP_ROWS || target < shown.target - JUMP_ROWS) {
+  private smooth(track: number, target: number, headRow: number, headStep: number, dt: number, started: boolean): { row: number; phase: number; step: number } {
+    let shown  = this.shown[track]
+    // A step that starts behind the last one (a HOP back, a loop playing it again) is taken at once, as a jump is.
+    const back = started && shown != null && target < shown.target - BACK_ROWS
+    if (!shown || back || Math.abs(target - shown.position) > JUMP_ROWS || target < shown.target - JUMP_ROWS) {
       shown             = {
         position     : target,
         rowsPerSecond: shown?.rowsPerSecond ?? 0,

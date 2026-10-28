@@ -214,6 +214,52 @@ export function viewChainPosition(marks: number[], last: number | null, previous
   return stayed.length === 1 ? stayed[0] : null
 }
 
+/** Screen row of track 1 on the track panel right of most views (device, fw 6.5); tracks 2-8 follow below. */
+const TRACK_PANEL_ROW = 7
+/** Screen column of a track's number on that panel; its note follows after a space ('1 G#3'). */
+const TRACK_PANEL_X   = 34
+
+/**
+ * The note each track's panel shows: what the track plays now, its table's transpose included
+ * (device, fw 6.5); null for '---'. Empty when the screen has no track panel.
+ */
+export function readTrackNotes(screen: M8Screen): (string | null)[] {
+  const notes: (string | null)[] = []
+  for (let track = 0; track < TRACKS; track += 1) {
+    const match = /^(\d) (\S{3})\s*$/.exec(screen.lines[TRACK_PANEL_ROW + track]?.slice(TRACK_PANEL_X) ?? '')
+    if (!match || Number(match[1]) !== track + 1) return []
+    notes.push(match[2] === '---' ? null : match[2])
+  }
+  return notes
+}
+
+/** Screen columns of the Table view's play markers: before the transpose, FX1, FX2 and FX3 (device, fw 6.5). */
+const TABLE_MARK_X = [2, 8, 14, 20]
+
+/** Where a playing table is, by the Table view's markers: one per column (transpose / volume, then each FX lane). */
+export interface TableMarks {
+  table: number
+  main : number | null
+  lanes: (number | null)[]
+}
+
+/**
+ * The Table view marks the row each column of the playing table is on with a '>' before it: a
+ * column moves on its own (its TIC, its HOP), so they can differ. Null without any marker.
+ */
+export function readTableMarks(view: ScreenView): TableMarks | null {
+  if (view.kind !== 'table' || view.id == null) return null
+  const rows   = parseGridScreen('table', view.screen).filter((row) => row.rowIndex != null)
+  const marked = TABLE_MARK_X.map((x) => rows.find((row) => view.screen.lines[row.screenRow]?.[x] === '>')?.rowIndex ?? null)
+  if (marked.every((row) => row == null)) return null
+  const [main, ...lanes] = marked
+  return {
+    table: view.id,
+    main,
+    lanes
+  }
+}
+
 export function readTable(view: ScreenView): Table | null {
   if (view.kind !== 'table' || view.id == null) return null
   const rows = parseGridScreen('table', view.screen)

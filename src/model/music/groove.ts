@@ -3,11 +3,13 @@
 // until GRV (this track) or GGR (all tracks) changes it. Durations are given in MIDI clock
 // ticks (24 per quarter note), so a groove at 48/96/192 PPQ is scaled down to them.
 //
-// Not yet checked on the device: that the groove restarts at each phrase (step s of a phrase
-// uses groove row s modulo the loop), and that GRV / GGR apply from the step they are on.
+// Device (fw 6.5, GEN_INTERMIS): a GRV sets the length of its own step already, and a step a
+// phrase HOP skips plays no GRV. Not yet checked on the device: that the groove restarts at each
+// phrase (step s of a phrase uses groove row s modulo the loop), and how a GGR times in.
 
-import { chainLength, fxValues, type Groove, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../song'
+import { chainLength, type FxCell, fxValues, type Groove, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../song'
 import type { PhraseInstance, Timeline } from '../timeline'
+import { type HopCounts, hopsKey, NO_HOPS, type Place, PlayPath, type Run } from './playPath'
 
 /** MIDI clock ticks per quarter note (the M8's default groove resolution too). */
 export const CLOCK_PPQ     = 24
@@ -128,11 +130,130 @@ function grooveChanges(model: SongModel, timeline: Timeline): GrooveChange[] {
 }
 
 /**
- * Clock ticks of every step of every chain occurrence, keyed by occurrenceKey (one entry
- * per chain step, chainLength x 16). The groove in force follows the song down the timeline:
- * a GRV changes its own track, a GGR every track, from the timeline row it is on.
+ * Clock ticks of every step of every chain occurrence, keyed by occurrenceKey (one entry per
+ * chain step, chainLength x 16). The groove in force follows the song as it plays: from the
+ * first row of each block, the tracks walk their steps side by side in time, along their phrase
+ * HOPs and chain ends (PlayPath), so a GRV changes its own track and a GGR every track from the
+ * step it is on (device: the GRV's own step already plays with it), and a step a HOP skips
+ * changes nothing. A step keeps the groove it first plays with; a step the walk never reaches
+ * keeps the one in force down the timeline.
  */
 export function chainStepTicks(model: SongModel, timeline: Timeline): Map<string, number[]> {
+  const ticksByOccurrence = timelineStepTicks(model, timeline)
+  const reached           = new Set<string>()
+  const path              = new PlayPath(model)
+  for (const band of timeline.bands) {
+    if (band.blank || band.row !== band.block) continue
+    walkGrooves(model, path, band.songRow, ticksByOccurrence, reached)
+  }
+  return ticksByOccurrence
+}
+
+/**
+ * True when the FX in lane `lane` of a step is more likely to play than not: a CHA XY on the step
+ * plays the FX left of it X times in 15 and the FX right of it Y times (device: GRV 01 right of
+ * CHA F0 never played, right of CHA FF always). A chance of 8 in 15 or more counts as playing.
+ */
+function playsLikely(fx: FxCell[], lane: number): boolean {
+  const cha = fx.findIndex((cell) => cell.cmd === 'CHA' && cell.val != null)
+  if (cha < 0 || cha === lane) return true
+  const chance = lane < cha ? (fx[cha].val as number) >> 4 : (fx[cha].val as number) & 0x0f
+  return chance >= LIKELY_CHANCE
+}
+
+/** Fifteenths from which a CHA counts as playing its FX (see playsLikely). */
+const LIKELY_CHANCE = 8
+
+/** Steps walked from one block's start, all tracks together, before giving up on seeing each loop round. */
+const MAX_WALKED_STEPS = 50000
+/** Steps of no time in a row (a groove of 00s) before a track counts as stuck. */
+const MAX_SKIPPED_RUN  = 64
+
+interface GrooveWalker {
+  track  : number
+  place  : Place
+  hops   : HopCounts
+  run    : Run
+  /** Clock tick the current step starts at. */
+  at     : number
+  groove : number
+  skipped: number
+  /** State at the start of each run seen so far: the same again is the track going round its loop. */
+  seen   : Set<string>
+  done   : boolean
+}
+
+/** Walks the tracks from song row `startRow` on, writing the step lengths of the steps first reached (see chainStepTicks). */
+function walkGrooves(model: SongModel, path: PlayPath, startRow: number, ticksByOccurrence: Map<string, number[]>, reached: Set<string>): void {
+  const grooves = model.grooves ?? {}
+  const walkers : GrooveWalker[] = []
+  for (let track = 0; track < TRACKS; track += 1) {
+    if (model.song[startRow]?.[track] == null) continue
+    const place = {
+      songRow: startRow,
+      step   : 0
+    }
+    walkers.push({
+      track,
+      place,
+      hops   : NO_HOPS,
+      run    : path.run(track, place, NO_HOPS, false),
+      at     : 0,
+      groove : model.projectGroove ?? 0,
+      skipped: 0,
+      seen   : new Set(),
+      done   : false
+    })
+  }
+  for (let walked = 0; walked < MAX_WALKED_STEPS; walked += 1) {
+    let walker: GrooveWalker | null = null
+    for (const w of walkers) if (!w.done && (!walker || w.at < walker.at)) walker = w
+    if (!walker) return
+    const { track, place } = walker
+    const chainId          = model.song[place.songRow]?.[track]
+    const chainRow         = Math.floor(place.step / ROWS_PER_PHRASE)
+    const s                = place.step % ROWS_PER_PHRASE
+    const step             = chainId == null ? undefined : model.phrases[model.chains[chainId]?.rows[chainRow]?.phrase ?? -1]?.steps[s]
+    // The step's own GRV / GGR already set its length, unless a CHA on the step leaves it out.
+    step?.fx.forEach((fx, lane) => {
+      if (fx.val == null || !playsLikely(step.fx, lane)) return
+      if (fx.cmd === 'GRV') walker.groove = fx.val
+      if (fx.cmd === 'GGR') for (const w of walkers) w.groove = fx.val
+    })
+    const length = stepClockTicks(grooves[walker.groove], s)
+    const key    = `${track}:${place.songRow}:${place.step}`
+    const ticks  = ticksByOccurrence.get(occurrenceKey(track, place.songRow))
+    if (!reached.has(key) && ticks && place.step < ticks.length) {
+      ticks[place.step] = length
+      reached.add(key)
+    }
+    walker.at      += length
+    walker.skipped = length > 0 ? 0 : walker.skipped + 1
+    if (walker.skipped > MAX_SKIPPED_RUN) walker.done = true
+    // On to the next step: the next of the run, or where its end sends the track.
+    if (place.step < walker.run.last) {
+      walker.place = {
+        songRow: place.songRow,
+        step   : place.step + 1
+      }
+      continue
+    }
+    const next   = walker.run.next
+    if (!next) {
+      walker.done = true
+      continue
+    }
+    const state  = `${next.songRow}:${next.step}|${hopsKey(walker.run.hops)}|${walker.groove}`
+    if (walker.seen.has(state)) walker.done = true
+    walker.seen.add(state)
+    walker.place = next
+    walker.hops  = walker.run.hops
+    walker.run   = path.run(track, next, walker.hops, false)
+  }
+}
+
+/** The step lengths with the groove in force down the timeline: a GRV changes its own track, a GGR every track, from the timeline row it is on. */
+function timelineStepTicks(model: SongModel, timeline: Timeline): Map<string, number[]> {
   const grooves           = model.grooves ?? {}
   const changes           = grooveChanges(model, timeline)
   const ticksByOccurrence = new Map<string, number[]>()
