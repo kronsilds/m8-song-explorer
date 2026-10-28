@@ -118,6 +118,7 @@ instruments → tables) and shows it as a 3D tracker:
 | | Trim tables | Tables show only rows with content (Options panel) |
 | `A` | Auto select | Selection follows the M8 cursor |
 | `M` | | MIDI sync check |
+| `P` | | Jump to where the song plays (the playhead furthest down) |
 | Arrows | | Move the selection; the view scrolls about 4/5 of a page when the cursor leaves it |
 | Shift + Up / Down | | Move a whole phrase (same step in the previous / next phrase of the track) |
 | Shift + Left / Right | | Same cell (row and column) in the previous / next track |
@@ -215,6 +216,18 @@ force follows the song: the project GROOVE, then each `GRV` (its track) or `GGR`
 from the timeline row it is on. A Groove view or Project GROOVE edited on the M8 is folded in.
 A playhead is drawn dim while its step inside the chain is guessed (first seen mid-chain) and
 solid once a chain change or a Phrase view pins it.
+
+A `HOP Y` in a phrase plays its step, then the track goes on at row Y of the next phrase: the
+chain's next one, or after the chain's last phrase the first one of the next chain (the row
+below, or the start of the run). `HOP FF` stops the track: its playhead goes away. Readings
+measure along the same path, so a Phrase view after a HOP narrows the position instead of
+restarting it.
+
+The view follows the playhead furthest down the song, a third of the way down the view. A track
+that loops a chain of its own (an empty cell under it) while the others go on stays behind, and
+does not hold the view back. A track whose playhead is out of sight glows in its column, beating
+with it: under its header when it plays above the view, at the bottom when it plays below. The
+glow shows with Follow M8 off too, and **P** jumps the view to the furthest playhead.
 
 MIDI needs SYNC OUT set in the M8's MIDI Settings, a setting stored in each song (check it in
 the song you load). yam8d forwards it to the app, or the standalone page opens the M8's MIDI
@@ -469,6 +482,9 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
   playing random FX, so it is a weak check.
 
 - SCA/SCG in tables, HOP and live mode are not followed by the scale quantizing.
+
+- HOP in a phrase: that the HOP step plays in full before the jump, and where a HOP in a chain's
+  last phrase goes when the next song row is empty (taken as the start of the run, like a chain end).
 
 - Tables: the TM8C rules above (`HOP` onto its own row, `REP` as a row count); whether the
   transpose / volume columns follow FX1's `TIC` (TM8C says so; the model keeps them at the

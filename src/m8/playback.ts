@@ -7,10 +7,14 @@
 // A reading says a step is showing *now*, so it started some time within the last step:
 // each track keeps the window its anchor step started in, and every reading narrows it.
 // Anchoring at the reading time instead runs a poll interval (or more) behind the M8.
+//
+// A HOP Y in a phrase plays its step, then the track goes on at row Y of the next phrase: the
+// chain's next one, or the first of the next chain (the row after, or the start of the run).
+// HOP FF stops the track. Not checked on the device: that the HOP step plays in full first.
 
 import { type M8Screen, readPlayPositions } from '@yam8d/m8-sdk'
 import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey, summarizeTicks, type TicksSummary } from '../model/music/groove'
-import { chainLength, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
+import { chainLength, fxValues, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
 import type { Timeline } from '../model/timeline'
 import { viewOf } from './screen/screenReader'
 
@@ -27,9 +31,11 @@ const MIN_BPM            = 20
  * the tempo the screen shows; extrapolating a stale clock runs the playheads at the old tempo.
  */
 const CLOCK_STALE_MS     = 2000
-/** Walks through at most this many chains when moving a track on or measuring between steps. */
+/** Walks through at most this many runs of steps (a chain, or up to a HOP) when moving a track on or measuring between steps. */
 const MAX_CHAIN_WALK     = 512
-const MAX_CHAINS_AHEAD   = 16
+const MAX_RUNS_AHEAD     = 32
+/** HOP FF stops the track. */
+const HOP_STOP           = 0xff
 
 /** The step a track was last placed on, and the window its start lies in. */
 interface Anchor {
@@ -123,6 +129,23 @@ function withStarts(steps: number[]): ChainTicks {
 const startOf = (chain: ChainTicks, step: number): number => chain.starts[Math.min(step, chain.steps.length)]
 const totalOf = (chain: ChainTicks): number => chain.starts[chain.steps.length]
 
+/** A step of a track's chain on a song row. */
+interface Place {
+  songRow: number
+  step   : number
+}
+
+/**
+ * How a run of steps ends, from some step of a chain on: at the first HOP at or after it (`hop`
+ * is its step), else at the chain's end. `end` is where in the chain's ticks it ends, `next` the
+ * step played after it, null when a HOP FF stops the track.
+ */
+interface RunEnd {
+  end : number
+  hop : number | null
+  next: Place | null
+}
+
 export class PlaybackTracker {
   playing      = false
   bpm          = 120
@@ -145,6 +168,8 @@ export class PlaybackTracker {
   private clock                      : MidiClock | null = null
   /** Step lengths of every chain occurrence, from the grooves (see chainStepTicks). */
   private readonly ticksByOccurrence = new Map<string, ChainTicks>()
+  /** The HOPs of each chain: [chain step, value], by step. */
+  private readonly hopsByChain       = new Map<number, [step: number, value: number][]>()
 
   constructor(
     private model: SongModel,
@@ -161,6 +186,7 @@ export class PlaybackTracker {
 
   private buildTicks(): void {
     this.ticksByOccurrence.clear()
+    this.hopsByChain.clear()
     for (const [key, steps] of chainStepTicks(this.model, this.timeline)) this.ticksByOccurrence.set(key, withStarts(steps))
   }
 
@@ -237,6 +263,51 @@ export class PlaybackTracker {
     let blockStart = row
     while (blockStart > 0 && chainAt(blockStart - 1) != null) blockStart -= 1
     return blockStart
+  }
+
+  /** The HOPs in the phrases a chain plays, by chain step (the first HOP of a step counts). */
+  private chainHops(chainId: number): [step: number, value: number][] {
+    const known = this.hopsByChain.get(chainId)
+    if (known) return known
+    const chain = this.model.chains[chainId]
+    const hops  : [number, number][] = []
+    for (let chainRow = 0; chain && chainRow < chainLength(chain); chainRow += 1) {
+      this.model.phrases[chain.rows[chainRow]?.phrase ?? -1]?.steps.forEach((step, s) => {
+        const [value] = fxValues(step.fx, 'HOP')
+        if (value != null) hops.push([chainRow * ROWS_PER_PHRASE + s, value])
+      })
+    }
+    this.hopsByChain.set(chainId, hops)
+    return hops
+  }
+
+  /** How the run of steps from `step` of a track's chain on song row `songRow` ends (see RunEnd). */
+  private runEnd(songRow: number, track: number, step: number, chain: ChainTicks): RunEnd {
+    const chainId = this.model.song[songRow]?.[track]
+    const hop     = chainId == null ? undefined : this.chainHops(chainId).find(([at]) => at >= step && at < chain.steps.length)
+    if (!hop) return {
+      end : totalOf(chain),
+      hop : null,
+      next: {
+        songRow: this.nextRow(songRow, track),
+        step   : 0
+      }
+    }
+    const [at, value] = hop
+    const chainRow    = Math.floor(at / ROWS_PER_PHRASE)
+    const row         = value & 0x0f
+    const inChain     = (chainRow + 1) * ROWS_PER_PHRASE < chain.steps.length
+    return {
+      end : startOf(chain, at + 1),
+      hop : at,
+      next: value === HOP_STOP ? null : inChain ? {
+        songRow,
+        step: (chainRow + 1) * ROWS_PER_PHRASE + row
+      } : {
+        songRow: this.nextRow(songRow, track),
+        step   : row
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -339,48 +410,89 @@ export class PlaybackTracker {
     return anchor.latest - anchor.earliest <= this.stepUnits(anchor.songRow, track, anchor.step) * EXACT_WINDOW_SHARE
   }
 
-  /** Song row and step a track is at, walking its steps' ticks from its anchor past chain ends. */
-  private walk(anchor: Anchor, track: number, now: number): { songRow: number; step: number; phase: number } {
+  /**
+   * Song row and step a track is at, walking its steps' ticks from its anchor past HOPs and
+   * chain ends; `stopped` once a HOP FF ended the track.
+   */
+  private walk(anchor: Anchor, track: number, now: number): { songRow: number; step: number; phase: number; stopped: boolean } {
     let songRow = anchor.songRow
+    let from    = anchor.step
     let chain   = this.chainTicks(songRow, track)
     if (!chain) return {
       songRow,
-      step : anchor.step,
-      phase: 0
+      step   : from,
+      phase  : 0,
+      stopped: false
     }
-    let position = startOf(chain, anchor.step) + Math.max(0, (now - this.anchorStart(anchor, track)) / this.unitsPerTick())
+    // Ticks to go from the start of step `from`.
+    let left = Math.max(0, (now - this.anchorStart(anchor, track)) / this.unitsPerTick())
+    let end  = this.runEnd(songRow, track, from, chain)
     for (let walked = 0; walked < MAX_CHAIN_WALK; walked += 1) {
-      const total = totalOf(chain)
-      if (total === 0 || position < total) break
-      const row  = this.nextRow(songRow, track)
-      const next = this.chainTicks(row, track)
-      if (!next) break
-      position -= total
-      songRow  = row
-      chain    = next
+      const room = end.end - startOf(chain, from)
+      if (left < room) break
+      if (!end.next) return {
+        songRow,
+        step   : end.hop ?? from,
+        phase  : 0.999,
+        stopped: true
+      }
+      const next = this.chainTicks(end.next.songRow, track)
+      // A run of skipped steps takes no time: stay rather than go round for ever.
+      if (!next || room <= 0) break
+      left    -= room
+      songRow = end.next.songRow
+      from    = end.next.step
+      chain   = next
+      end     = this.runEnd(songRow, track, from, chain)
     }
-    // The step whose span holds the position (a skipped step has none).
-    let step = 0
+    // The step whose span holds the position (a skipped step has none), within the run.
+    const position = Math.min(startOf(chain, from) + left, end.end - 1e-6)
+    let step       = Math.min(from, chain.steps.length - 1)
     while (step < chain.steps.length - 1 && chain.starts[step + 1] <= position) step += 1
     const length = chain.steps[step]
     const phase  = length > 0 ? Math.min(0.999, Math.max(0, (position - chain.starts[step]) / length)) : 0
-    return { songRow, step, phase }
+    return {
+      songRow,
+      step,
+      phase,
+      stopped: false
+    }
   }
 
-  /** Clock ticks from the start of (fromRow, fromStep) to the start of (toRow, toStep) on a track; null when not ahead within a few chains. */
+  /** Clock ticks from the start of (fromRow, fromStep) to the start of (toRow, toStep) on a track, along its HOPs; null when not ahead within a few runs. */
   private ticksBetween(track: number, fromRow: number, fromStep: number, toRow: number, toStep: number): number | null {
-    const first = this.chainTicks(fromRow, track)
-    if (!first) return null
-    let total = -startOf(first, fromStep)
-    let row   = fromRow
-    for (let chainsAhead = 0; chainsAhead < MAX_CHAINS_AHEAD; chainsAhead += 1) {
-      const chain = this.chainTicks(row, track)
+    let total = 0
+    let place = {
+      songRow: fromRow,
+      step   : fromStep
+    }
+    for (let runs = 0; runs < MAX_RUNS_AHEAD; runs += 1) {
+      const chain = this.chainTicks(place.songRow, track)
       if (!chain) return null
-      if (row === toRow && (chainsAhead > 0 || toStep >= fromStep)) return total + startOf(chain, toStep)
-      total += totalOf(chain)
-      row   = this.nextRow(row, track)
+      const end  = this.runEnd(place.songRow, track, place.step, chain)
+      const last = end.hop ?? chain.steps.length - 1
+      if (place.songRow === toRow && toStep >= place.step && toStep <= last) return total + startOf(chain, toStep) - startOf(chain, place.step)
+      total += end.end - startOf(chain, place.step)
+      if (!end.next) return null
+      place = end.next
     }
     return null
+  }
+
+  /** The step a track starts song row `songRow` on when it comes from `fromRow`: 0, or the row a HOP sends it to. */
+  private entryStep(track: number, fromRow: number, songRow: number): number {
+    let place = {
+      songRow: fromRow,
+      step   : 0
+    }
+    for (let runs = 0; runs < MAX_RUNS_AHEAD; runs += 1) {
+      const chain = this.chainTicks(place.songRow, track)
+      const next  = chain ? this.runEnd(place.songRow, track, place.step, chain).next : null
+      if (!next) return 0
+      if (next.songRow !== fromRow) return next.songRow === songRow ? next.step : 0
+      place = next
+    }
+    return 0
   }
 
   /** True when (toRow, toStep) is the step a track plays right after (fromRow, fromStep), skipped steps aside. */
@@ -469,10 +581,11 @@ export class PlaybackTracker {
         at: now
       }
       const anchor                    = this.anchors[track]
+      const placed                    = anchor ? this.walk(anchor, track, now) : null
       if (before && before.songRow !== songRow && this.nextRow(before.songRow, track) === songRow) {
-        // Entered the row between the two readings.
-        this.constrain(track, songRow, 0, before.at, now)
-      } else if (!anchor || this.walk(anchor, track, now).songRow !== songRow) {
+        // Entered the row between the two readings (on step 0, or where a HOP sent it).
+        this.constrain(track, songRow, this.entryStep(track, before.songRow, songRow), before.at, now)
+      } else if (!placed || placed.stopped || placed.songRow !== songRow) {
         // First sight (or a jump): somewhere in the chain, shown from its start until known.
         const chain         = this.chainTicks(songRow, track)
         const chainUnits    = (chain ? totalOf(chain) : 0) * this.unitsPerTick()
@@ -493,9 +606,9 @@ export class PlaybackTracker {
     for (let track = 0; track < TRACKS; track += 1) {
       const anchor = this.anchors[track]
       if (!anchor) continue
-      const { songRow, step } = this.walk(anchor, track, now)
-      const chainId           = this.model.song[songRow]?.[track]
-      if (chainId == null) continue
+      const { songRow, step, stopped } = this.walk(anchor, track, now)
+      const chainId                    = this.model.song[songRow]?.[track]
+      if (chainId == null || stopped) continue
       const chainRow = Math.floor(step / ROWS_PER_PHRASE)
       if (kind === 'chain' && chainId === id) {
         // That phrase started within the last phrase length.
@@ -584,9 +697,9 @@ export class PlaybackTracker {
     for (let track = 0; track < TRACKS; track += 1) {
       const anchor = this.anchors[track]
       if (!anchor) continue
-      const { songRow, step } = this.walk(anchor, track, now)
-      const chainId           = this.model.song[songRow]?.[track]
-      if (chainId == null) continue
+      const { songRow, step, stopped } = this.walk(anchor, track, now)
+      const chainId                    = this.model.song[songRow]?.[track]
+      if (chainId == null || stopped) continue
       const playing = kind === 'chain' ? chainId : this.model.chains[chainId]?.rows[Math.floor(step / ROWS_PER_PHRASE)]?.phrase
       if (playing === id) return true
     }
@@ -623,10 +736,11 @@ export class PlaybackTracker {
     const now = this.now(ms)
     return this.anchors.map((anchor, track) => {
       if (!anchor) return null
-      const { songRow, step, phase } = this.walk(anchor, track, now)
-      const band                     = this.timeline.bands.find((b) => b.songRow === songRow)
-      const length                   = this.chainSteps(songRow, track)
-      const row                      = band && length ? band.row + Math.min(step, length - 1) : null
+      const { songRow, step, phase, stopped } = this.walk(anchor, track, now)
+      if (stopped) return null
+      const band   = this.timeline.bands.find((b) => b.songRow === songRow)
+      const length = this.chainSteps(songRow, track)
+      const row    = band && length ? band.row + Math.min(step, length - 1) : null
       return {
         row,
         songRow,

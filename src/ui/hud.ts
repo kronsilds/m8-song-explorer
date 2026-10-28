@@ -54,6 +54,7 @@ const HELP_HTML         = `
     <dt>A</dt><dd>auto select: the selection follows the M8 cursor</dd>
     <dt>Enter</dt><dd>show the selection on the M8</dd>
     <dt>Space · Shift Space</dt><dd>play / stop the M8 · continue from the cursor</dd>
+    <dt>P</dt><dd>jump to where the song plays (the playhead furthest down). A track playing out of sight glows under its header (above the view) or at the bottom (below it)</dd>
     <dt>M</dt><dd>check the song's MIDI sync (offers to set it)</dd>
     <dt>Esc</dt><dd>clear selection</dd>
   </dl>`

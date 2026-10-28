@@ -147,6 +147,11 @@ export class TrackHeader {
     return this.front.position.y
   }
 
+  /** Height of its bottom edge (the rule under the column names): rows above it are under the header. */
+  get bottom(): number {
+    return this.y - HEADER_BOTTOM
+  }
+
   /**
    * Moves the header (front and wall together) to `y`, never above where the song starts.
    * Below its own place it covers the rows scrolling under it. Returns true when it moved.
