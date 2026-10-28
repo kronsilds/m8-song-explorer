@@ -32,7 +32,10 @@ const RATE_EASE_RATE     = 3
 const POSITION_EASE_RATE = 7
 const STEPS_PER_BEAT     = 4
 /** How far a halo reaches into the view, in rows. */
-const HALO_ROWS          = 2.5
+const HALO_ROWS          = 1.2
+/** A halo's opacity at its edge between beats, and what each beat adds to it. */
+const HALO_OPACITY       = 0.14
+const HALO_FLASH         = 0.22
 
 export class PlayheadView {
   private readonly markers = Array.from({ length: TRACKS }, () => ({
@@ -118,7 +121,7 @@ export class PlayheadView {
       const edge   = edges(track)
       const middle = y - ROW_H / 2
       const reach  = middle > (edge?.top ?? Number.POSITIVE_INFINITY) ? HALO_ROWS * ROW_H : middle < (edge?.bottom ?? Number.NEGATIVE_INFINITY) ? -HALO_ROWS * ROW_H : 0
-      if (edge && reach) halo.show(view.front, 0, reach > 0 ? edge.top : edge.bottom, FRONT_W, reach, palette.device, (0.3 + flash * 0.45) * view.frontAlpha)
+      if (edge && reach) halo.show(view.front, 0, reach > 0 ? edge.top : edge.bottom, FRONT_W, reach, palette.device, (HALO_OPACITY + flash * HALO_FLASH) * view.frontAlpha)
       else halo.hide()
     })
     return anyPlaying
