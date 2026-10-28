@@ -6,7 +6,7 @@
       "name": "m8-song-explorer",
       "dependencies": {
         "@fontsource/jetbrains-mono": "5.3.0",
-        "@yam8d/m8-sdk": "^0.5.1",
+        "@yam8d/m8-sdk": "^0.5.2",
         "post-me": "^0.4.5",
         "three": "0.186.1",
         "troika-three-text": "0.52.5",
@@ -84,7 +84,7 @@
 
     "@types/webxr": ["@types/webxr@0.5.24", "", {}, "sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg=="],
 
-    "@yam8d/m8-sdk": ["@yam8d/m8-sdk@0.5.1", "", { "dependencies": { "post-me": "^0.4.5" } }, "sha512-k9BMdcxiFmgUXiKOOPD++rG64el1AGb68rASEJb9HMwcUygCtT8FUJ+O7umucqTMH+Ko8lMUTwT2JOEIAqAqlA=="],
+    "@yam8d/m8-sdk": ["@yam8d/m8-sdk@0.5.2", "", { "dependencies": { "post-me": "^0.4.5" } }, "sha512-WH9LZR5mTV3vGjpjwVEt3uZGTu3blRCWSl4F9e3KKrTpR1NaaKFD04bisdP2nY9eJAgcIr5DgC9ouwF/rRjGrQ=="],
 
     "bidi-js": ["bidi-js@1.1.0", "", { "dependencies": { "require-from-string": "^2.0.2" } }, "sha512-fX1Onk0tdVPC7obPWB5EbJ1z7NVhLq4m2xZLq2YXBkxzMXIGRpNMU88n0EPgWseKl12J7zXs7qrDxPK4sRs2fg=="],
 
