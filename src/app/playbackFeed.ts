@@ -4,7 +4,7 @@
 
 import type { M8Client } from '@yam8d/m8-sdk'
 import { type PlaybackEvent, PlaybackTracker } from '../m8/playback'
-import { readChainMarks, viewOf } from '../m8/screen/screenReader'
+import { readChainMarks, readTableMarks, viewOf } from '../m8/screen/screenReader'
 import { type DebugLog, debugLog, type EventData } from '../model/debugLog'
 import { CLOCK_PPQ } from '../model/music/groove'
 import type { SongModel } from '../model/song'
@@ -93,7 +93,7 @@ export class PlaybackFeed {
    * @param paused true while another song is loaded: transport messages are ignored
    */
   constructor(
-    world: World,
+    private readonly world: World,
     private readonly currentModel: () => SongModel,
     private readonly readableClient: () => M8Client | null,
     private readonly paused: () => boolean,
@@ -366,6 +366,9 @@ export class PlaybackFeed {
           }
         }
         this.tracker.observe(screen, performance.now())
+        // The Table view marks where each column of the table it shows is.
+        const tableMarks = this.tracker.playing ? readTableMarks(view) : null
+        if (tableMarks) this.world.observeTableView(tableMarks.table, tableMarks.main, tableMarks.lanes, this.tracker.context?.track ?? null)
         this.checkClockWhilePlaying()
       } catch (error) {
         this.log.problem('screen-read', messageOf(error))

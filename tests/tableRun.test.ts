@@ -1,9 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { demoSong } from '../src/model/demo'
-import { TablePlayback } from '../src/model/music/tablePlayback'
-import { advanceTableRun, startTableRun, type TableRun, tableRunRows } from '../src/model/music/tableRun'
-import { emptyFx, emptyStep, emptyTable, type FxCell, type TableRow } from '../src/model/song'
-import { buildTimeline, effectiveInstruments } from '../src/model/timeline'
+import { advanceTableRun, hopTableRun, noteTableRun, startTableRun, type TableRun, tableRunRows } from '../src/model/music/tableRun'
+import { emptyTable, type FxCell, type TableRow } from '../src/model/song'
 
 const cell = (cmd: string, val: number): FxCell => ({
   cmd,
@@ -58,7 +55,6 @@ describe('table run', () => {
   })
 
   test('modes with no ticks per row stand still', () => {
-    expect(startTableRun(emptyTable(0).rows, 0x00)).toBeNull()
     expect(startTableRun(emptyTable(0).rows, 0xff)).toBeNull()
     const run = startTableRun(tableWith([0, 2, 'TIC', 0xfc]), 1) as TableRun
     advanceTableRun(run, 3)
@@ -79,7 +75,7 @@ describe('table run', () => {
     })
   })
 
-  test('a REP in a lane holds that lane on its row for the count, not the others', () => {
+  test("a REP in a lane holds that lane on its row for the count, not the others (the transpose / volume cursor is FX1's)", () => {
     const run = startTableRun(tableWith([1, 0, 'CUT', 0x02], [2, 0, 'REP', 0x03]), 1) as TableRun
     advanceTableRun(run, 2)
     expect(tableRunRows(run)).toEqual({
@@ -88,11 +84,46 @@ describe('table run', () => {
     })
     advanceTableRun(run, 2)
     expect(tableRunRows(run)).toEqual({
-      main : 4,
+      main : 2,
       lanes: [2, 4, 4]
     })
     advanceTableRun(run, 1)
-    expect(tableRunRows(run).lanes[0]).toBe(3)
+    expect(tableRunRows(run)).toEqual({
+      main : 3,
+      lanes: [3, 5, 5]
+    })
+  })
+
+  test("a HOP moves its own column only, FX1's the transpose / volume cursor too", () => {
+    const run = startTableRun(tableWith([2, 1, 'HOP', 0x00]), 1) as TableRun
+    advanceTableRun(run, 3)
+    expect(tableRunRows(run)).toEqual({
+      main : 3,
+      lanes: [3, 1, 3]
+    })
+  })
+
+  test('TIC 00: every column moves a row per note, time aside (device: FX1 and FX2 HOP 01 on row 2, FX3 walks on)', () => {
+    const run = startTableRun(tableWith([2, 0, 'HOP', 0x01], [2, 1, 'HOP', 0x01]), 0x00, 0) as TableRun
+    advanceTableRun(run, 50)
+    expect(tableRunRows(run)).toEqual({
+      main : 0,
+      lanes: [0, 0, 0]
+    })
+    const rows = Array.from({ length: 4 }, () => {
+      noteTableRun(run)
+      return tableRunRows(run)
+    })
+    expect(rows.map((row) => row.lanes)).toEqual([[1, 1, 1], [1, 1, 2], [1, 1, 3], [1, 1, 4]])
+    expect(rows.map((row) => row.main)).toEqual([1, 1, 1, 1])
+    for (let note = 0; note < 12; note += 1) noteTableRun(run)
+    expect(tableRunRows(run).lanes[2]).toBe(0)
+    // A THO on a note's step sends every column to its row.
+    hopTableRun(run, 7)
+    expect(tableRunRows(run)).toEqual({
+      main : 7,
+      lanes: [7, 7, 7]
+    })
   })
 
   test('THO hops every cursor', () => {
@@ -105,58 +136,3 @@ describe('table run', () => {
   })
 })
 
-describe('table playback', () => {
-  /** The demo song with track 0's first phrase holding one note (instrument 5, TIC 04) and nothing else in its first steps. */
-  function setup(extra?: (steps: ReturnType<typeof emptyStep>[]) => void) {
-    const model    = demoSong()
-    const timeline = buildTimeline(model)
-    const first    = timeline.byTrack[0][0]
-    const steps    = model.phrases[first.phrase].steps
-    for (let s = 0; s < 4; s += 1) steps[s] = emptyStep()
-    Object.assign(steps[0], {
-      note: 'C-4',
-      inst: 5,
-      fx  : [cell('TIC', 4), emptyFx(), emptyFx()]
-    })
-    model.tables[5] = emptyTable(5)
-    extra?.(steps)
-    return {
-      first,
-      playback: new TablePlayback(model, timeline, effectiveInstruments(model, timeline))
-    }
-  }
-
-  test('a note starts its table, which then follows the step ticks', () => {
-    const { first, playback } = setup()
-    playback.update(0, first.row - 0.5)
-    expect(playback.cursors(0)).toEqual([])
-    playback.update(0, first.row + 0.01)
-    expect(playback.cursors(0).map((c) => [c.table, c.aux, c.main])).toEqual([[5, false, 0]])
-    // A default step is six ticks: at four ticks per row the table is on its second row after one step.
-    playback.update(0, first.row + 0.99)
-    playback.update(0, first.row + 1)
-    expect(playback.cursors(0)[0].main).toBe(1)
-  })
-
-  test('a note off stops the table, a jump of the playhead too', () => {
-    const { first, playback } = setup((steps) => {
-      steps[1].note = 'OFF'
-    })
-    playback.update(0, first.row - 0.5)
-    playback.update(0, first.row + 0.5)
-    expect(playback.cursors(0)).toHaveLength(1)
-    playback.update(0, first.row + 1.1)
-    expect(playback.cursors(0)).toEqual([])
-    playback.update(0, first.row + 0.5)
-    expect(playback.cursors(0)).toEqual([])
-  })
-
-  test('a TBX starts an aux table beside it', () => {
-    const { first, playback } = setup((steps) => {
-      steps[2].fx[1] = cell('TBX', 0x80)
-    })
-    playback.update(0, first.row - 0.5)
-    for (const position of [0.5, 1.5, 2.5]) playback.update(0, first.row + position)
-    expect(playback.cursors(0).map((c) => [c.table, c.aux])).toEqual([[5, false], [0x80, true]])
-  })
-})

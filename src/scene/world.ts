@@ -1270,6 +1270,11 @@ export class World implements PointerTarget {
     this.invalidate()
   }
 
+  /** The M8's Table view shows table `table` on these rows (see TablePlayback.observeTableView). */
+  observeTableView(table: number, main: number | null, lanes: (number | null)[], track: number | null): void {
+    this.tablePlayback?.observeTableView(table, main, lanes, track)
+  }
+
   /** Where the song plays, read each frame (null stops it). */
   setPlayheadSource(source: (() => (TrackPlayhead | null)[]) | null): void {
     this.playheadSource = source
@@ -1298,13 +1303,7 @@ export class World implements PointerTarget {
       }
     }
     const playing = this.playheads.update(heads, this.layout, this.trackViews, this.palette, dt, edges)
-    this.tablePlayheads.update(
-      this.tablePlayback,
-      this.layout,
-      this.trackViews,
-      this.palette,
-      Array.from({ length: TRACKS }, (_, track) => this.playheads.shownPosition(track)),
-    )
+    this.tablePlayheads.update(this.tablePlayback, this.layout, this.trackViews, this.palette, heads, performance.now())
     if (playing && this.followPlayback) this.aimAtPlayhead()
     return playing
   }

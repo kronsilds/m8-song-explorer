@@ -214,8 +214,12 @@ Chain or Phrase view after the row number of the playing row. Between readings e
 groove gives it: six (a sixteenth) with the default groove, `08 04` for a swing, `00` for a
 skipped step, scaled to 24 per quarter note when the groove counts 48, 96 or 192 PPQ. The ticks
 are MIDI clock ticks when the clock runs, else ticks at the tempo shown (`T>096`). The groove in
-force follows the song: the project GROOVE, then each `GRV` (its track) or `GGR` (all tracks)
-from the timeline row it is on. A Groove view or Project GROOVE edited on the M8 is folded in.
+force follows the song as it plays: the project GROOVE, then each `GRV` (its track) or `GGR` (all
+tracks) from the step it is on, whose own length it already sets (unless a `CHA` on the step
+leaves it out: X for the FX left of the `CHA`, Y right of it), along the path the tracks take
+through their HOPs, so a `GRV` on a step a HOP skips changes nothing (`src/model/music/groove.ts`
+walks the tracks side by side from each block's first row; a step keeps the groove it first plays
+with). A Groove view or Project GROOVE edited on the M8 is folded in.
 A playhead is drawn dim while its step inside the chain is guessed (first seen mid-chain) and
 solid once a chain change or a Phrase view pins it.
 
@@ -245,12 +249,19 @@ nearer to it): a key press on the M8 or a change of the marks between two screen
 explorer read the screen again, since moving between two repeats of a phrase changes nothing else. Before any Song view has been seen (after a reload), a Chain or Phrase view
 whose item is in one song cell only gives the song row and track.
 
-A `HOP Y` in a phrase sends the track on as it reaches the HOP's step, which does not play, to row
-Y of the next phrase: the chain's next one, or after the chain's last phrase the first one of the
-next chain (the row below, or the start of the run). `HOP FF` stops the track there: its playhead
-goes away. Readings
-measure along the same path, so a Phrase view after a HOP narrows the position instead of
-restarting it.
+A HOP in a phrase acts as the track reaches its step (`src/model/music/playPath.ts`). `HOP 0Y`
+sends the track to row Y of the next phrase, the way the song would go on: the chain's next
+phrase, or after the chain's last phrase the next song row's chain (back to the start of the run
+at an empty cell); its own step never plays. `HOP XY` with X above 0 sends it back to row Y of
+its own phrase, X times; then its own step plays like any other and the phrase runs on, and the
+next time the track gets there it hops X times again (`HOP 32` on step 3 plays step 2 four times,
+every time round). `HOP FF` stops the track there: its playhead goes away. Readings measure along
+the same path, from where the track was as the reading's window opens, so a Phrase view after a
+HOP narrows the position instead of restarting it, and a step the track comes back to (a chain
+looping on itself, a HOP back) is matched with its latest time round. A Chain view whose marked
+row is the phrase the track already walks changes nothing (HOPs can keep a track in a phrase
+without its first step coming round again). A step played again is jumped to at once, not glided
+back to, and counts as a new step: its note lights its instrument again and starts its table.
 
 The view follows the playhead furthest down the song, a third of the way down the view. A track
 that loops a chain of its own (an empty cell under it) while the others go on stays behind, and
@@ -291,28 +302,40 @@ the last step; right after the step before it, it started between the two readin
 playhead is not a poll behind. Measured on the device with the clock: about 6 one-step
 corrections in 50 steps, at step boundaries.
 
-When a track's playhead passes a note, the header of the panel of the instrument it plays
-glows for a moment. It also marks where that instrument's table is: a row marker on the table
+When a step with a note starts, the header of the panel of the instrument it plays glows for a
+moment. It also marks where that instrument's table is: a row marker on the table
 (`src/model/music/tableRun.ts`, `tablePlayback.ts`), and a cell marker over an FX lane that runs
 elsewhere (its own `TIC`, or a `HOP` that only it takes). A `TBX` shows its aux table the same
-way. These positions are a model, not read from the M8, so they are only as accurate as the
-playhead (a table at `TIC 01` moves a row per tick, so it can be a few rows off), and tables
-with no plain ticks-per-row (`TIC 00`, `FC`-`FF`) get no marker.
+way. The tables follow the tracker's steps, not the drawn playhead, so a HOP or a loop that plays
+a step again starts its note's table again. At `TIC 00` a table moves one row per note the
+instrument plays, and a `THO` on the note's step sends it to its row. Tables in a map mode
+(`FC`-`FF`) get no marker.
 
-Table playback (taken from the manual's wording). Watched live with Follow M8 on: the table markers
-hop correctly with `HOP` / `THO`, also with different `TIC` values on the tables. The row-level
-accuracy against the M8's own table playhead and the rules below were not measured:
+Some steps are left to chance: `CHA XY` plays the note, and the FX left of it, X times in 15 (the
+FX right of it Y times), and an `RND` under a `THO` (the command last used in its lane) sends the
+table to a random row (`RNL`: the command left of it). The M8's track panel, right of most views,
+shows the note each track plays: the explorer reads it, and a note that changes says the chance
+step played (its instrument glows, its table moves). The note does not say the row (the scale
+quantizes it, a `TSP` on another track moves it), so a table sent to a random row loses its row
+marker until the M8's Table view shows that table: its markers, one per column, place it
+exactly. A table a chance note may or may not have moved (no note change could tell) is drawn
+fainter.
 
-- a note starts its table at row 0 and a note off stops it; `TBL` and `TIC` on the note's own
-  step pick the table and its speed (else the instrument's `TBL.TIC`); a `TIC` on a `TBX` step
-  is the aux table's, which defaults to the instrument's `TBL.TIC`;
+Table playback, from the manual, the TM8C guide ("Working with tables") and the device:
+
+- a note starts its table at row 0 (or the row a `THO` on its step names) and a note off stops it;
+  `TBL` and `TIC` on the note's own step pick the table and its speed (else the instrument's
+  `TBL.TIC`); a `TIC` on a `TBX` step is the aux table's, which defaults to the instrument's
+  `TBL.TIC`;
 - a table tick is one MIDI clock tick (24 per quarter note, the groove's unit);
-- `HOP XY` hops its own FX lane and the transpose / volume columns, X times (0 for ever), then
-  runs on; `THO` hops every column; `TIC` in a lane sets that lane's speed from its row on.
-- From the TM8C guide ("Working with tables", the manual says nothing about these): a `HOP` row
-  takes no time; `HOP X0` onto its own row stops that column there (a table that plays once);
-  `REP XX` in a lane plays the command above it XX more times, so the lane stays XX rows of time
-  on the `REP` row (the transpose / volume columns do not wait for it).
+- `TIC 00`: every column moves a row per note, and the note does not restart the table (device);
+- `HOP XY` hops its own FX lane, X times (0 for ever), then runs on; the transpose / volume
+  columns are FX1's (they move at FX1's speed, with FX1's HOPs: TM8C, and on the device a table
+  with `HOP 01` in FX1 and FX2 kept its N column on row 1); `THO` hops every column; `TIC` in a
+  lane sets that lane's speed from its row on;
+- from the TM8C guide: a `HOP` row takes no time; `HOP X0` onto its own row stops that column
+  there (a table that plays once); `REP XX` in a lane plays the command above it XX more times, so
+  the lane stays XX rows of time on the `REP` row.
 
 ## Debug log
 
@@ -447,6 +470,36 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
   transport and plays the phrase alone, over and over.
 - HOP 00 on step 8 of phrase 10 (its chain alone on song row 0C): the play marker cycles steps 0-7
   and never shows step 8, so the HOP's own step does not play.
+- Counted HOPs (GEN_INTERMIS, 2026-10-28, 120 BPM, `GRV 01` = 192 ticks a step, 4 s): phrase 06
+  alone in its chain played step 0 seven times (HOP 60 on step 1: 28 s), then step 1 itself, step
+  2 four times (HOP 32 on step 3), step 3, step 4 four times (HOP 34), step 5, and HOP 02 on step 6
+  sent it to step 2: a 40 s loop where HOP 32 and HOP 34 hop three times on every pass.
+- A counted HOP stays in its phrase: phrase 07, alone in chain 07 on song row 00 with chain FE on
+  row 01, did HOP 24 twice back to its own step 4 (the Song view kept the track on row 00), then
+  steps 5, 6 x16 (HOP F6), 7, 8, 9 x5 (HOP 49), A, B, then `GRV 00` on step C made steps C-F 6 ticks
+  each, and chain FE's 144 steps took 18 s before row 00 came round again.
+- On a test song (2026-10-29, 120 BPM, track 1: chain 00 = phrases 00 and 01, chain 01 on the next
+  song row): `HOP 14` on step C of phrase 00 (the chain's first phrase) sent the track back to step
+  4 of phrase 00, once (the Chain view marked row 0 for 3 s); `HOP 04` on step 8 of phrase 01 (the
+  chain's last) sent it to chain 01 on the next song row (no Chain 00 marker for 1.5 s: 12 steps
+  from row 4), then chain 00 started over from its first step.
+- A `CHA` gates a `GRV` like any FX: `GRV 01` right of `CHA F0` never played (steps stayed 123 ms),
+  right of `CHA FF` it always did (246 ms steps with groove 01 = 12 ticks).
+- `TIC 00` with `THO 05` on a note's step: the table went to row 5 (the note added no row), and the
+  next note moved it to 6: 5, 6, 5, 6 with `HOP 00` looping the two steps.
+- A `GRV` sets its own step's length: step 0 with `GRV 01` lasted 4 s from the start.
+- `TIC 00`: the Table view's markers moved one row per note the instrument played (every 125 ms),
+  each column on its own: N, FX1 and FX2 stayed on row 1 (row 2 has `HOP 01` in FX1 and FX2), FX3
+  went 2, 3 ... F, 0, 1. The explorer's model of that table matched 109 of 121 Table view reads,
+  the others one row ahead for one read (the screen shows a step a little after it starts). A random `THO` (`RND 0F` under `THO 00`, with `CHA 64`) moved all
+  columns together to a new row at irregular times.
+- The Table view marks each column's row with a `>` before it (screen columns 2, 8, 14, 20 for N,
+  FX1, FX2, FX3). Play on a Table view plays that phrase alone and sends no transport.
+- The track panel (screen rows 7-14, `1 G#3` from column 34) shows the note each track plays, with
+  its table's transpose, quantized by the scale (rows 6 and 9 of a table transposing 0-F showed +5
+  and +8) and moved by `TSP` on another track (track 2 showed F-3 in the song, G#3 with its phrase
+  played alone). It changed within about 70 ms of each chance note that played (12 of 12 checked
+  against the Table view).
 - A Phrase view shows the play marker whenever its phrase plays on that track, whatever the repeat
   (rows 5, 0, 1 and 2 of chain 42 while its view mark was on 3). Play there starts the phrase from its
   top (the cursor was on step 5). Option+Left/Right shows the other track's phrase at that track's
@@ -523,23 +576,21 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
   calls it bipolar). DEST and OSC names beyond the ones seen.
 
 - Grooves: that a groove restarts at each phrase (step s plays groove row s modulo the loop:
-  only checked with a 4-row groove, where it makes no difference); how a PPQ above 24 maps onto
-  the MIDI clock. `GRV` in tables and `DEL` are not followed. `GRV` from the step it is on: a
-  phrase with `GRV01` on step 0 (groove 01 = one row of 96 ticks) was watched on its Phrase view
-  for about 30 s with Follow M8 on and no correction was logged, but the song was also
-  playing random FX, so it is a weak check.
+  only checked with 1- and 4-row grooves, where it makes no difference); how a PPQ above 24 maps
+  onto the MIDI clock. `GRV` in tables and `DEL` are not followed.
 
 - SCA/SCG in tables, HOP and live mode are not followed by the scale quantizing.
 
 - Play on a Phrase view: what a HOP does in a phrase played alone (taken as going to row Y of the
   same phrase).
 
-- HOP in a phrase: where a HOP in a chain's last phrase goes when the next song row is empty in a
-  longer run (taken as the start of the run, like a chain end; seen only with a chain alone on its row).
+- HOP in a phrase: how the hop counts keep when a track leaves a phrase by another way (another
+  HOP, a chain end) and comes back; whether a `CHA` gates a HOP as it gates a `GRV` (taken as not).
+- `CHA` with a chance between 0 and F on a step's `GRV` / `GGR`: the groove change is taken as
+  happening when the chance is 8 in 15 or more.
 
-- Tables: the TM8C rules above (`HOP` onto its own row, `REP` as a row count); whether the
-  transpose / volume columns follow FX1's `TIC` (TM8C says so; the model keeps them at the
-  table's own speed); whether a `TBX` table starts at `TIC 06` (TM8C) or at the instrument's
+- Tables: the TM8C rules above (`HOP` onto its own row, `REP` as a row count); whether a `TBX`
+  table starts at `TIC 06` (TM8C) or at the instrument's
   `TBL.TIC` (the model); whether the N column counts scale steps on a scale other than
   chromatic (TM8C). `DEL` in a table is not followed.
 
