@@ -226,6 +226,13 @@ the `<` marks, and so does the track the M8 is on while its position is too vagu
 repeats apart (first seen on the Song view, somewhere in the chain). Once a reading has pinned
 it, the track's own steps decide.
 
+Play on a Phrase view plays that phrase alone, over and over, while the song moves the `<` on with
+it. So a track loops its phrase, at the chain position the `<` marks, when playing starts on a
+Phrase view on the phrase's first beat without a MIDI Start (that Play sends none), or when the
+marker starts the phrase over while the `<` stays where it was (the song coming to the same
+phrase at the same position on the next song row looks the same and is not taken for a loop).
+The `<` moving on with the marker, or a reading of the track elsewhere, ends the loop.
+
 A `HOP Y` in a phrase plays its step, then the track goes on at row Y of the next phrase: the
 chain's next one, or after the chain's last phrase the first one of the next chain (the row
 below, or the start of the run). `HOP FF` stops the track: its playhead goes away. Readings
@@ -319,7 +326,8 @@ bug report. It has three parts with three lifetimes (`src/model/debugLog.ts`):
   per track the chain, whether its position is exact and how its step lengths differ from 6 ticks),
   `transport` messages, `clock-gap`, `tempo`, `no-clock-while-playing`, `drift` (a phrase view
   showed another step than predicted: track, song row, predicted and shown step, difference, step
-  length, time since the start), `reanchor` (a track's position restarted), `play-stop` (why, how
+  length, time since the start), `reanchor` (a track's position restarted), `phrase-loop` (a track
+  began or stopped looping one phrase, and why), `play-stop` (why, how
   long, the corrections of that stretch), `long-task` (main thread stalls while playing),
   `visibility` (a background tab slows the page), Follow M8 / Auto select, `device-view` (the view
   the M8 moved to, not every cursor move), `device-edit` (an edit made on the M8 folded in),
@@ -413,7 +421,9 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
 - Content rows start on screen row 6; row 5 holds column headers.
 - Phrase titles can end with `^` as well as `*` (`PHRASE 27^`).
 - The Phrase view draws a `<` in the margin (screen column 0) of the step row whose number is its
-  chain position: row 3 when it shows the phrase of chain row 3 (reported by the user, 2026-10-28).
+  chain position: row 3 when it shows the phrase of chain row 3. It moves on as the song plays,
+  and stays put while Play on the Phrase view plays that phrase alone (reported by the user,
+  2026-10-28).
 - Names are padded with dashes to 12 characters (`NAME--------`).
 - Option+Down in a phrase goes to the chain's next phrase.
 - Option+Up/Down steps 16 on the Instrument and Table views, but not the same way round: Option+Down
@@ -497,6 +507,10 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
 - A phrase played more than once in its chain: whether the Phrase view's play marker shows for
   every repeat or only at its chain position (the `<`); and which chain position Option+Left/Right
   lands on. The explorer takes the `<` only while a track's position is vague.
+
+- Play on a Phrase view: that it starts the phrase from its top (the explorer assumes a loop only
+  when the first marker is on rows 0-3), and what a HOP does in a phrase played alone (taken as
+  going to row Y of the same phrase).
 
 - HOP in a phrase: that the HOP step plays in full before the jump, and where a HOP in a chain's
   last phrase goes when the next song row is empty (taken as the start of the run, like a chain end).

@@ -593,19 +593,98 @@ describe('a phrase played more than once in its chain', () => {
     expect(unmarked.playheads(1001)[0]?.step).toBe(4)
   })
 
-  test("a window too wide to tell the repeats apart takes the '<'; once narrow, the walk wins", () => {
+  /** The Song view with track 1's marker on song row 0: first seen there, somewhere in the chain. */
+  const songView  = () => {
+    const lines = songScreen(song, 0)
+    lines[6]    = `${lines[6].slice(0, 3)}>${lines[6].slice(4)}`
+    return withTempo(lines)
+  }
+
+  test("a window too wide to tell the repeats apart takes the '<'", () => {
     const placed = tracker()
-    // First seen on the Song view: somewhere in the chain.
-    const lines  = songScreen(song, 0)
-    lines[6]     = `${lines[6].slice(0, 3)}>${lines[6].slice(4)}`
-    placed.observe(withTempo(lines), 1000)
+    placed.observe(songView(), 1000)
     placed.observe(phraseAt(3, 4), 1050)
     expect(placed.playheads(1051)[0]?.step).toBe(3 * ROWS_PER_PHRASE + 4)
-    // 16 steps on, the chain has started over; the '<' still shows row 3, but the walk knows better.
-    placed.observe(phraseAt(3, 4), 1050 + 16 * STEP_MS)
+    // 16 steps on, the chain has started over and the '<' with it.
+    placed.observe(phraseAt(0, 4), 1050 + 16 * STEP_MS)
     expect(placed.playheads(1051 + 16 * STEP_MS)[0]).toMatchObject({
       songRow: 0,
       step   : 4
+    })
+  })
+
+  describe('Play on a Phrase view plays that phrase alone', () => {
+    test('playing that starts on a Phrase view loops the phrase at its chain position', () => {
+      const looping   = tracker()
+      const events    : PlaybackEvent[] = []
+      looping.onEvent = (event) => events.push(event)
+      looping.observe(phraseAt(1, 0), 1000)
+      expect(events.find((event) => event.kind === 'phrase-loop')).toMatchObject({
+        looping : true,
+        why     : 'started-on-phrase',
+        chainRow: 1
+      })
+      // 20 steps on: step 4 of the same phrase, not of the next repeat.
+      expect(looping.playheads(1001 + 20 * STEP_MS)[0]?.step).toBe(ROWS_PER_PHRASE + 4)
+      // Long after (no reading meanwhile), still in it.
+      expect(looping.playheads(1001 + (16 * 500 + 7) * STEP_MS)[0]?.step).toBe(ROWS_PER_PHRASE + 7)
+    })
+
+    test("the marker starting the phrase over while the '<' stays: the track loops it", () => {
+      const looping = tracker()
+      looping.observe(songView(), 1000)
+      // Song row 0, chain row 1, steps C to F, then step 0 again with the '<' still on row 1.
+      ;[12, 13, 14, 15, 0].forEach((row, i) => {
+        looping.observe(phraseAt(1, row), 1050 + i * STEP_MS)
+      })
+      const at = 1051 + 4 * STEP_MS
+      expect(looping.playheads(at)[0]?.step).toBe(ROWS_PER_PHRASE)
+      expect(looping.playheads(at + 20 * STEP_MS)[0]?.step).toBe(ROWS_PER_PHRASE + 4)
+    })
+
+    test("the '<' moving on with the marker: the song plays on, the loop ends", () => {
+      const playing   = tracker()
+      const events    : PlaybackEvent[] = []
+      playing.onEvent = (event) => events.push(event)
+      playing.observe(phraseAt(1, 0), 1000)
+      playing.observe(phraseAt(2, 0), 1000 + 16 * STEP_MS)
+      expect(events.filter((event) => event.kind === 'phrase-loop').map((event) => event.kind === 'phrase-loop' && event.why)).toEqual(['started-on-phrase', 'moved-on'])
+      expect(playing.playheads(1001 + 16 * STEP_MS)[0]?.step).toBe(2 * ROWS_PER_PHRASE)
+      expect(playing.playheads(1001 + 24 * STEP_MS)[0]?.step).toBe(2 * ROWS_PER_PHRASE + 8)
+    })
+
+    test('a song going on to the same phrase on the next song row is not a loop', () => {
+      // Chain 01 (phrase 00 alone) on song rows 0 and 1: the '<' stays on row 0 as the song goes on.
+      const twice     = structuredClone(song)
+      twice.chains[1] = {
+        id  : 1,
+        rows: Array.from({ length: 16 }, (_, row) => ({
+          phrase   : row === 0 ? 0 : null,
+          transpose: 0
+        }))
+      }
+      twice.song      = [
+        [1, ...Array(7).fill(null)],
+        [1, ...Array(7).fill(null)],
+      ]
+      const going     = new PlaybackTracker(twice, buildTimeline(twice))
+      const events    : PlaybackEvent[] = []
+      going.onEvent   = (event) => events.push(event)
+      going.context   = {
+        songRow: 0,
+        track  : 0
+      }
+      const lines     = songScreen(twice, 0)
+      lines[6]        = `${lines[6].slice(0, 3)}>${lines[6].slice(4)}`
+      going.observe(withTempo(lines), 1000)
+      ;[12, 13, 14, 15, 0].forEach((row, i) => {
+        going.observe(withTempo(markStep(phraseScreen(twice.phrases[0], 0), row)), 1050 + i * STEP_MS)
+      })
+      expect(events.filter((event) => event.kind === 'phrase-loop')).toEqual([])
+      expect(going.playheads(1051 + 4 * STEP_MS)[0]).toMatchObject({
+        songRow: 1,
+        step   : 0
+      })
     })
   })
 })
