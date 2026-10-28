@@ -4,15 +4,55 @@
 // beside it. See tableRun.ts for what is modelled and what is not checked on the device yet.
 
 import { tableTicOf } from '../instrumentPage'
-import { fxValues, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../song'
+import { fxValues, type PhraseStep, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../song'
 import { instanceAt, type Timeline } from '../timeline'
 import { chainStepTicks, occurrenceKey } from './groove'
 import { advanceTableRun, startTableRun, type TableRun, tableRunRows } from './tableRun'
 
 /** A move of the playhead longer than this many rows is a jump (a seek, a new chain): the tables stop. */
-const MAX_MOVE_ROWS = 1.5
+const MAX_MOVE_ROWS      = 1.5
 /** TIC of a table when neither the phrase nor the instrument tells (the device's default for TBL.TIC). */
-const DEFAULT_TIC   = 1
+export const DEFAULT_TIC = 1
+
+/** A table a step starts, and the TIC it runs at. */
+export interface TableStart {
+  table: number
+  tic  : number
+}
+
+/** What a step does to its track's tables. */
+export interface StepTables {
+  /** A TBX on the step: the aux table it starts, or null when it stops it (TBX 00). Undefined without a TBX. */
+  aux?   : TableStart | null
+  /** The note starts the table of its instrument (or the one a TBL names). */
+  primary: TableStart | null
+  /** A note off: the instrument's table stops. */
+  off    : boolean
+}
+
+/** The tables step `step` starts or stops, playing instrument `instrument` (the I column or the last one before it). */
+export function stepTables(model: SongModel, step: PhraseStep, instrument: number | null): StepTables {
+  const tic   = fxValues(step.fx, 'TIC')[0]
+  const own   = tableTicOf(instrument == null ? undefined : model.instruments[instrument]) ?? DEFAULT_TIC
+  const [aux] = fxValues(step.fx, 'TBX')
+  const out   : StepTables = {
+    primary: null,
+    off    : step.note === 'OFF'
+  }
+  // A TIC on the same step as a TBX is the aux table's.
+  if (aux != null) out.aux = aux === 0 ? null : {
+    table: aux,
+    tic  : tic ?? own
+  }
+  if (step.note && !out.off && instrument != null) {
+    const [table] = fxValues(step.fx, 'TBL')
+    out.primary   = {
+      table: table ?? instrument,
+      tic  : aux == null ? (tic ?? own) : own
+    }
+  }
+  return out
+}
 
 interface TrackTables {
   last   : number | null
@@ -95,23 +135,13 @@ export class TablePlayback {
     const index    = instance ? row - instance.row : 0
     const step     = instance ? this.model.phrases[instance.phrase]?.steps[index] : undefined
     if (!instance || !step) return
-    const instrument = this.effective.get(instance.key)?.[index] ?? null
-    const tic        = fxValues(step.fx, 'TIC')[0]
-    const own        = tableTicOf(instrument == null ? undefined : this.model.instruments[instrument]) ?? DEFAULT_TIC
-    const [aux]      = fxValues(step.fx, 'TBX')
-    if (aux != null) {
-      // A TIC on the same step as a TBX is the aux table's.
-      state.aux = aux === 0 ? null : this.start(aux, tic ?? own)
-    }
-    if (step.note === 'OFF') {
-      state.primary = null
-    } else if (step.note && instrument != null) {
-      const [table] = fxValues(step.fx, 'TBL')
-      state.primary = this.start(table ?? instrument, aux == null ? (tic ?? own) : own)
-    }
+    const tables = stepTables(this.model, step, this.effective.get(instance.key)?.[index] ?? null)
+    if (tables.aux !== undefined) state.aux = tables.aux && this.start(tables.aux)
+    if (tables.off) state.primary = null
+    else if (tables.primary) state.primary = this.start(tables.primary)
   }
 
-  private start(table: number, tic: number): PlayingTable | null {
+  private start({ table, tic }: TableStart): PlayingTable | null {
     const run = startTableRun(this.model.tables[table]?.rows, tic)
     return run ? { table, run } : null
   }

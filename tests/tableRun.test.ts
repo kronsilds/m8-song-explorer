@@ -65,6 +65,36 @@ describe('table run', () => {
     expect(tableRunRows(run).lanes).toEqual([3, 3, null])
   })
 
+  test('a HOP onto its own row stops the column there; a THO moves it again', () => {
+    const run = startTableRun(tableWith([2, 0, 'HOP', 0x02], [5, 1, 'THO', 0x00]), 1) as TableRun
+    advanceTableRun(run, 4)
+    expect(tableRunRows(run)).toEqual({
+      main : 2,
+      lanes: [2, 4, 4]
+    })
+    advanceTableRun(run, 1)
+    expect(tableRunRows(run)).toEqual({
+      main : 0,
+      lanes: [0, 0, 0]
+    })
+  })
+
+  test('a REP in a lane holds that lane on its row for the count, not the others', () => {
+    const run = startTableRun(tableWith([1, 0, 'CUT', 0x02], [2, 0, 'REP', 0x03]), 1) as TableRun
+    advanceTableRun(run, 2)
+    expect(tableRunRows(run)).toEqual({
+      main : 2,
+      lanes: [2, 2, 2]
+    })
+    advanceTableRun(run, 2)
+    expect(tableRunRows(run)).toEqual({
+      main : 4,
+      lanes: [2, 4, 4]
+    })
+    advanceTableRun(run, 1)
+    expect(tableRunRows(run).lanes[0]).toBe(3)
+  })
+
   test('THO hops every cursor', () => {
     const run = startTableRun(tableWith([2, 0, 'THO', 0x05]), 1) as TableRun
     advanceTableRun(run, 2)

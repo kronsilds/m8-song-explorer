@@ -5,7 +5,7 @@
 import { describeContextParts, getSemanticContext, type M8DescriptionPart, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X, fxLaneOf, phraseColumnX, tableColumnX } from '../model/columns'
 import { hex2, hexDigit } from '../model/hex'
-import { cellAt, type InstrumentCell, type InstrumentScreen, instrumentPage, type ModSlot, modulatorsOf } from '../model/instrumentPage'
+import { cellAt, type InstrumentCell, type InstrumentScreen, instrumentPage, type ModSlot, modulatorsOf, tableTicOf } from '../model/instrumentPage'
 import { modSummary } from '../model/modShapes'
 import {
   analyzePhrase,
@@ -22,10 +22,22 @@ import {
   transposeSemitones,
 } from '../model/music/harmony'
 import { noteNumber, PITCH_NAMES, pitchClass } from '../model/music/pitch'
+import { DEFAULT_TIC } from '../model/music/tablePlayback'
+import {
+  arpeggioText,
+  chordName,
+  describeWalk,
+  intervalsText,
+  playedRows,
+  type TableUse,
+  tableUses,
+  ticText,
+  walkTable
+} from '../model/music/tableWalk'
 import { chainScreen, FIRST_CONTENT_ROW, phraseScreen, SCREEN_HEIGHT, SCREEN_WIDTH, storedScreen, TITLE_ROW, tableScreen } from '../model/screens'
 import type { Selection } from '../model/selection'
-import { emptyTable, type FxCell, type SongModel } from '../model/song'
-import { buildTimeline, type PhraseInstance } from '../model/timeline'
+import { emptyTable, type FxCell, type SongModel, type Table } from '../model/song'
+import { buildTimeline, effectiveInstruments, type PhraseInstance, type Timeline } from '../model/timeline'
 
 export interface CellDescription {
   /** Breadcrumb from the song down to the cell. */
@@ -45,17 +57,35 @@ type TableSelection = Extract<Selection, { kind: 'table' }>
 type InstrumentSelection = Extract<Selection, { kind: 'instrument' }>
 type InstParamSelection = Extract<Selection, { kind: 'instParam' }>
 
+/** What the app already worked out about the song (the scene layout holds it). */
+export interface SongContext {
+  timeline : Timeline
+  /** Instrument each step plays, per instance key (see effectiveInstruments). */
+  effective: Map<string, (number | null)[]>
+  /** The track scales along the song. */
+  scales   : ScaleMap
+}
+
+function songContext(model: SongModel): SongContext {
+  const timeline = buildTimeline(model)
+  return {
+    timeline,
+    effective: effectiveInstruments(model, timeline),
+    scales   : new ScaleMap(model, timeline)
+  }
+}
+
 /**
  * @param effectiveInstrument the instrument the step plays (its I column or the last one before it)
- * @param scales the track scales along the song, built from the model when not given
+ * @param song timeline, instruments and scales of the song, built from the model when not given
  */
-export function describeSelection(model: SongModel, selection: Selection, effectiveInstrument?: number | null, scales?: ScaleMap): CellDescription {
+export function describeSelection(model: SongModel, selection: Selection, effectiveInstrument?: number | null, song?: SongContext): CellDescription {
   switch (selection.kind) {
     case 'step':
     case 'chain':
-      return new PhraseCellDescriber(model, selection, scales ?? new ScaleMap(model, buildTimeline(model))).describe(effectiveInstrument)
+      return new PhraseCellDescriber(model, selection, (song ?? songContext(model)).scales).describe(effectiveInstrument)
     case 'table':
-      return describeTableCell(model, selection)
+      return describeTableCell(model, selection, song ?? songContext(model))
     case 'instrument':
       return describeInstrumentPanel(model, selection)
     case 'instParam':
@@ -283,7 +313,7 @@ class PhraseCellDescriber {
 // ---------------------------------------------------------------------------
 // Table rows and panels
 
-function describeTableCell(model: SongModel, selection: TableSelection): CellDescription {
+function describeTableCell(model: SongModel, selection: TableSelection, song: SongContext): CellDescription {
   const table = model.tables[selection.table] ?? emptyTable(selection.table)
   const path  = [
     `Track ${selection.track + 1}`,
@@ -305,8 +335,61 @@ function describeTableCell(model: SongModel, selection: TableSelection): CellDes
     path,
     title,
     parts,
-    facts: []
+    facts: tableFacts(model, selection, table, song)
   }
+}
+
+/** The TIC the song starts a table at most often, else its instrument's TBL.TIC; and the other TICs it is started at. */
+function tableTic(model: SongModel, table: number, uses: TableUse[]): { tic: number; others: number[] } {
+  const counts = new Map<number, number>()
+  for (const use of uses) counts.set(use.tic, (counts.get(use.tic) ?? 0) + 1)
+  const sorted = [...counts].sort((a, b) => b[1] - a[1]).map(([tic]) => tic)
+  return {
+    tic   : sorted[0] ?? tableTicOf(model.instruments[table]) ?? DEFAULT_TIC,
+    others: sorted.slice(1)
+  }
+}
+
+/** True when the scale where the table starts lets every note through, so the N column counts semitones. */
+function chromaticAt(model: SongModel, song: SongContext, use: TableUse): boolean {
+  const choice = song.scales.at(use.track, use.row)
+  return !scalePitches(model.scales?.[choice.scale], choice.key)
+}
+
+/** How the table plays: how fast, where the column of the selected cell goes, and the chord of the N column. */
+function tableFacts(model: SongModel, selection: TableSelection, table: Table, song: SongContext): Fact[] {
+  const facts           = [] as Fact[]
+  const uses            = tableUses(model, song.timeline, song.effective, selection.table)
+  const { tic, others } = tableTic(model, selection.table, uses)
+  const tempo           = model.tempo ?? null
+  const also            = others.length ? ` (also started at TIC ${others.map((other) => hex2(other)).join(', ')})` : ''
+  facts.push(['Speed', `TIC ${hex2(tic)}: ${ticText(tic, tempo)}${also}`])
+  const notes    = uses.filter((use) => !use.aux).length
+  const auxSteps = uses.length - notes
+  const tracks   = [...new Set(uses.map((use) => use.track + 1))].sort()
+  facts.push(['Started by', uses.length
+    ? `${[notes && plural(notes, 'note'), auxSteps && plural(auxSteps, 'TBX step')].filter(Boolean).join(', ')} on track${tracks.length === 1 ? '' : 's'} ${tracks.join(', ')}`
+    : 'nothing in the song'])
+  const walk            = walkTable(table.rows, tic)
+  if (!walk) return facts
+  const lane   = fxLaneOf(selection.column)?.lane
+  const column = lane == null ? 'N and V' : `FX${lane + 1}`
+  const cursor = walk.cursors[lane == null ? 0 : lane + 1]
+  facts.push([column, describeWalk(cursor, walk.unit, tempo)])
+  if (cursor.kind !== 'still' && !playedRows(cursor).includes(selection.row)) {
+    facts.push(['Not played', `${column} never ${lane == null ? 'reach' : 'reaches'} row ${hexDigit(selection.row)}`])
+  }
+  // The transposes the N column plays, in order: a chord when it spells one.
+  const main      = walk.cursors[0]
+  const semitones = (main.loop.length ? main.loop : main.intro).map((row) => transposeSemitones(table.rows[row]?.transpose))
+  if (new Set(semitones).size > 1) {
+    const chord = chordName(semitones)
+    facts.push(['N column', `${intervalsText(semitones)} st${chord ? `: ${chord}` : ''}`])
+    const start    = uses.find((use) => noteNumber(use.note) != null && chromaticAt(model, song, use))
+    const arpeggio = start?.note ? arpeggioText(start.note, semitones) : null
+    if (start?.note && arpeggio) facts.push([`On ${start.note}`, arpeggio])
+  }
+  return facts
 }
 
 /** Tracks (1-8) whose chains play a phrase that uses the instrument. */
