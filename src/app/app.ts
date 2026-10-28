@@ -328,7 +328,7 @@ export class ExplorerApp {
 
   private describe(selection: Selection) {
     const instrument = selection.kind === 'step' ? (this.world.layout?.effective.get(selection.instance.key)?.[selection.step] ?? null) : null
-    return describeSelection(this.model, selection, instrument, this.world.layout?.scales)
+    return describeSelection(this.model, selection, instrument, this.world.layout ?? undefined)
   }
 
   private renderSelection(selection: Selection | null): void {

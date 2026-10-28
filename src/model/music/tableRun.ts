@@ -6,10 +6,14 @@
 // trigger), FC-FE (a row picked by octave, velocity or note) and FF (200 Hz) have no row to
 // follow over time, so a cursor in one of them stands still.
 //
-// Not yet checked on the device (all of this follows the manual's wording):
+// Not yet checked on the device (all of this follows the manual's wording, or the TM8C guide's
+// "Working with tables" where the manual says nothing):
 // - a note restarts its table at row 0 and a note off stops it;
 // - HOP XY in a lane hops that lane, and also the transpose / volume cursor (so a HOP shortens
 //   the whole table); X = 0 hops for ever, else X times, then the table runs on past it;
+//   a HOP row takes no time; HOP X0 onto its own row stops the cursor there (TM8C);
+// - REP XX in a lane plays the command above it XX more times, so the lane stays XX rows of
+//   time on the REP row (TM8C); the transpose / volume cursor does not wait for it;
 // - TIC in a lane sets that lane's rate from its row on;
 // - the table's tick is one MIDI clock tick (24 per quarter note), the groove's unit.
 
@@ -25,13 +29,17 @@ const MAX_HOP_DEPTH        = 8
 const MAX_MOVES            = 4096
 
 interface Cursor {
-  row : number
+  row    : number
   /** Ticks per row, 0 for a mode without one (the cursor stands still). */
-  rate: number
+  rate   : number
+  /** Rows of time the row lasts: 1, or the count of a REP on it. */
+  span   : number
   /** Ticks spent on the row so far. */
-  into: number
+  into   : number
+  /** A HOP onto its own row stopped it there (until a THO moves it). */
+  stopped: boolean
   /** Hops still to take at a HOP cell ('lane:row'). */
-  hops: Map<string, number>
+  hops   : Map<string, number>
 }
 
 export interface TableRun {
@@ -49,10 +57,12 @@ export function startTableRun(rows: TableRow[] | undefined, tic: number): TableR
   const run: TableRun = {
     rows,
     cursors: Array.from({ length: CURSORS }, () => ({
-      row : 0,
+      row    : 0,
       rate,
-      into: 0,
-      hops: new Map()
+      span   : 1,
+      into   : 0,
+      stopped: false,
+      hops   : new Map()
     }))
   }
   for (let index = 0; index < CURSORS; index += 1) enter(run, index, 0)
@@ -62,22 +72,30 @@ export function startTableRun(rows: TableRow[] | undefined, tic: number): TableR
 /** The lanes whose commands a cursor obeys: its own, or every lane for the transpose / volume cursor. */
 const lanesOf = (index: number): number[] => (index === 0 ? Array.from({ length: FX_LANES }, (_, lane) => lane) : [index - 1])
 
-/** Runs the commands of the row a cursor has just come to (TIC, HOP, THO). */
+/** A cursor that moves on by itself: it has a rate and no HOP stopped it. */
+const moving    = (cursor: Cursor): boolean => cursor.rate > 0 && !cursor.stopped
+/** Ticks until the cursor's row ends. */
+const ticksLeft = (cursor: Cursor): number => cursor.rate * cursor.span - cursor.into
+
+/** Runs the commands of the row a cursor has just come to (TIC, REP, HOP, THO). */
 function enter(run: TableRun, index: number, depth: number): void {
   const cursor = run.cursors[index]
   const row    = run.rows[cursor.row]
+  cursor.span  = 1
   if (!row) return
   for (const lane of lanesOf(index)) {
     const fx = row.fx[lane]
     if (!fx || fx.cmd == null || fx.val == null) continue
     const { cmd, val } = fx
     if (cmd === 'TIC' && index > 0) cursor.rate = plainRate(val)
+    if (cmd === 'REP' && index > 0 && val > 0) cursor.span = val
     if (depth >= MAX_HOP_DEPTH) continue
     if (cmd === 'THO') {
       const target = val & 0x0f
       for (const other of run.cursors) {
-        other.row  = target
-        other.into = 0
+        other.row     = target
+        other.into    = 0
+        other.stopped = false
       }
       for (let i = 0; i < CURSORS; i += 1) enter(run, i, depth + 1)
       return
@@ -93,6 +111,11 @@ function enter(run: TableRun, index: number, depth: number): void {
 function hop(cursor: Cursor, lane: number, value: number): boolean {
   const key   = `${lane}:${cursor.row}`
   const times = value >> 4
+  // Hopping for ever onto its own row: the cursor stays there.
+  if (times === 0 && (value & 0x0f) === cursor.row) {
+    cursor.stopped = true
+    return false
+  }
   const left  = cursor.hops.get(key) ?? (times === 0 ? Number.POSITIVE_INFINITY : times)
   if (left <= 0) {
     // Used up: the table runs on past it, and the next pass hops again.
@@ -105,23 +128,59 @@ function hop(cursor: Cursor, lane: number, value: number): boolean {
   return true
 }
 
-/** Moves the run on by `ticks`. The cursors move together, so a THO of one takes the others along at that moment. */
+/**
+ * Moves every moving cursor on by `ticks` (no further than the nearest end of a row), then the
+ * ones whose row ended to their next row. The cursors move together, so a THO of one takes the
+ * others along at that moment. Returns the cursors that came to a row.
+ */
+function moveBy(run: TableRun, ticks: number): number[] {
+  const active = run.cursors.filter(moving)
+  for (const cursor of active) cursor.into += ticks
+  const entered: number[] = []
+  run.cursors.forEach((cursor, index) => {
+    if (!active.includes(cursor) || ticksLeft(cursor) > 1e-9) return
+    cursor.row  = (cursor.row + 1) % ROWS_PER_TABLE
+    cursor.into = 0
+    enter(run, index, 0)
+    entered.push(index)
+  })
+  return entered
+}
+
+/** Moves the run on by `ticks`. */
 export function advanceTableRun(run: TableRun, ticks: number): void {
   let remaining = ticks
   for (let moves = 0; remaining > 1e-9 && moves < MAX_MOVES; moves += 1) {
-    const moving = run.cursors.filter((cursor) => cursor.rate > 0)
-    if (!moving.length) return
-    const next = Math.min(remaining, ...moving.map((cursor) => cursor.rate - cursor.into))
-    for (const cursor of moving) cursor.into += next
+    const active = run.cursors.filter(moving)
+    if (!active.length) return
+    const next = Math.min(remaining, ...active.map(ticksLeft))
+    moveBy(run, next)
     remaining -= next
-    run.cursors.forEach((cursor, index) => {
-      if (cursor.rate <= 0 || cursor.rate - cursor.into > 1e-9) return
-      cursor.row  = (cursor.row + 1) % ROWS_PER_TABLE
-      cursor.into = 0
-      enter(run, index, 0)
-    })
   }
 }
+
+/** Moves the run to the next time a cursor comes to a row: the ticks that took and the cursors that did; null when none moves any more. */
+export function stepTableRun(run: TableRun): { ticks: number; entered: number[] } | null {
+  const active = run.cursors.filter(moving)
+  if (!active.length) return null
+  const ticks = Math.min(...active.map(ticksLeft))
+  return {
+    ticks,
+    entered: moveBy(run, ticks)
+  }
+}
+
+/** Everything that decides where the run goes from now, as a key: two equal keys play on the same. */
+export const tableRunKey = (run: TableRun): string =>
+  run.cursors.map((cursor) => [cursor.row, cursor.rate, cursor.span, cursor.into, cursor.stopped ? 1 : 0, [...cursor.hops].sort().join(',')].join(':')).join('|')
+
+/** Each cursor (transpose / volume first, then the FX lanes): its row, its rate (0: a mode without one), and whether a HOP stopped it. */
+export const tableRunCursors = (run: TableRun): { row: number; rate: number; stopped: boolean }[] =>
+  run.cursors.map((cursor) => ({
+    row    : cursor.row,
+    rate   : cursor.rate,
+    stopped: cursor.stopped
+  }))
 
 /** Where the run is: the row of the transpose / volume columns, and of each FX lane (null while it stands still). */
 export function tableRunRows(run: TableRun): { main: number; lanes: (number | null)[] } {

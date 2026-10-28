@@ -28,6 +28,14 @@ instruments → tables) and shows it as a 3D tracker:
   hand. Every value is a cell: the Selection panel explains it as the SDK reads it on the device,
   with what modulates it, or the whole modulator for a modulator value. With Auto select the M8
   cursor's value is selected as it moves.
+- **Table cells** in the Selection panel also say how the table plays (`src/model/music/tableWalk.ts`):
+  its speed (the `TIC` the song starts it at most often, in rows per step and in ms at the
+  project tempo), what starts it (notes, `TBX` steps, which tracks), where the selected cell's
+  column goes after the note (`loops rows 0–3, 4 ticks, 83 ms per pass`, or `plays rows 0–F once
+  and stops on row F`), a `Not played` line when that column never reaches the row, and the
+  chord its N column spells (`0 +3 +7 +12 st: minor chord`) with the notes it makes from the
+  first note that starts it (only on a scale that lets every note through, since the N column
+  may count scale steps on other scales). It follows the table playback rules below.
 - **Many instruments at once**: panels that would overlap tile into extra columns deeper along the
   wall (up to four, the wall grows only for tracks that need them) and then stack downward. A
   panel's column says how far away it is used: on screen or close in the first column, further
@@ -259,6 +267,10 @@ accuracy against the M8's own table playhead and the rules below were not measur
 - a table tick is one MIDI clock tick (24 per quarter note, the groove's unit);
 - `HOP XY` hops its own FX lane and the transpose / volume columns, X times (0 for ever), then
   runs on; `THO` hops every column; `TIC` in a lane sets that lane's speed from its row on.
+- From the TM8C guide ("Working with tables", the manual says nothing about these): a `HOP` row
+  takes no time; `HOP X0` onto its own row stops that column there (a table that plays once);
+  `REP XX` in a lane plays the command above it XX more times, so the lane stays XX rows of time
+  on the `REP` row (the transpose / volume columns do not wait for it).
 
 ## Debug log
 
@@ -457,6 +469,12 @@ stays in the page; "Copy summary" gives a text version to paste into a bug repor
   playing random FX, so it is a weak check.
 
 - SCA/SCG in tables, HOP and live mode are not followed by the scale quantizing.
+
+- Tables: the TM8C rules above (`HOP` onto its own row, `REP` as a row count); whether the
+  transpose / volume columns follow FX1's `TIC` (TM8C says so; the model keeps them at the
+  table's own speed); whether a `TBX` table starts at `TIC 06` (TM8C) or at the instrument's
+  `TBL.TIC` (the model); whether the N column counts scale steps on a scale other than
+  chromatic (TM8C). `DEL` in a table is not followed.
 
 - Play on a cell with no chain: that the track then plays its last chain above (the SPP fits), and the SPP on a blank row below an isolated row (re-test with a check that the song is stopped before each press);
 - Start (`FA`) and SPP from a Chain view (the Phrase view sends none).
