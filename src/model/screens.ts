@@ -75,8 +75,11 @@ export function chainScreen(chain: Chain): string[] {
   return lines
 }
 
-/** The Phrase view; with `chainPosition`, the '<' the M8 draws in the margin of that row (the chain row it shows the phrase at). */
-export function phraseScreen(phrase: Phrase, chainPosition: number | null = null): string[] {
+/**
+ * The Phrase view; with `chainPosition`, the '<' the M8 draws in the margin of that row (the chain
+ * row it shows the phrase at), and with `playingRow` the one it adds on the chain row playing.
+ */
+export function phraseScreen(phrase: Phrase, chainPosition: number | null = null, playingRow: number | null = null): string[] {
   const lines = blankScreen(`PHRASE ${hex2(phrase.id)}`, [
     [2, 'N'],
     [6, 'V'],
@@ -92,7 +95,7 @@ export function phraseScreen(phrase: Phrase, chainPosition: number | null = null
       [COLUMN_X.phrase.vel, hex2(step.vel)],
       [COLUMN_X.phrase.inst, hex2(step.inst)],
       ...fxCells(step.fx, COLUMN_X.phrase.fxCmd, COLUMN_X.phrase.fxVal),
-    ], i === chainPosition ? '<' : ' ')
+    ], i === chainPosition || i === playingRow ? '<' : ' ')
   })
   return lines
 }

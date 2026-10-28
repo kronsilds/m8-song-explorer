@@ -493,13 +493,13 @@ describe('HOP in a phrase', () => {
     return tracker.playheads(ms(tick) + 1)
   }
 
-  test('the step with the HOP plays, then the track goes on at row Y of the next phrase', () => {
+  test("reaching the HOP's step, the track goes on at row Y of the next phrase: that step does not play", () => {
     const tracker = started()
-    expect(at(tracker, 601 + 47)[0]).toMatchObject({
+    expect(at(tracker, 601 + 41)[0]).toMatchObject({
       songRow: 0,
-      step   : 7
+      step   : 6
     })
-    expect(at(tracker, 601 + 50)[0]).toMatchObject({
+    expect(at(tracker, 601 + 44)[0]).toMatchObject({
       songRow: 0,
       step   : 20,
       row    : rowOf(0) + 20
@@ -508,36 +508,36 @@ describe('HOP in a phrase', () => {
 
   test("a HOP in the chain's last phrase goes to row Y of the next chain (here the start of the run)", () => {
     const tracker = started()
-    // 8 steps of phrase 00, 12 of phrase 01 (rows 4-F): row 1 at tick 601 + 120.
-    expect(at(tracker, 601 + 121)[0]).toMatchObject({
+    // 7 steps of phrase 00, 12 of phrase 01 (rows 4-F): row 1 at tick 601 + 114.
+    expect(at(tracker, 601 + 115)[0]).toMatchObject({
       songRow: 1,
       step   : 0
     })
-    // Phrase 03 plays steps 0-3, then HOP 02: row 0 is the start of the run, step 2.
-    expect(at(tracker, 601 + 146)[0]).toMatchObject({
+    // Phrase 03 plays steps 0-2, then HOP 02: row 0 is the start of the run, step 2.
+    expect(at(tracker, 601 + 133)[0]).toMatchObject({
       songRow: 0,
       step   : 2
     })
   })
 
-  test('HOP FF stops the track after its step', () => {
+  test('HOP FF stops the track as it reaches its step', () => {
     const tracker = started()
-    expect(at(tracker, 601 + 59)[1]?.step).toBe(9)
-    expect(at(tracker, 601 + 61)[1]).toBeNull()
+    expect(at(tracker, 601 + 53)[1]?.step).toBe(8)
+    expect(at(tracker, 601 + 55)[1]).toBeNull()
   })
 
   test('a phrase view after a HOP fits the prediction: no restart', () => {
     const tracker   = started()
     const events    : PlaybackEvent[] = []
     tracker.onEvent = (event) => events.push(event)
-    tracker.clockTick(651, ms(651), 20)
+    tracker.clockTick(645, ms(645), 20)
     tracker.observe({
       width : 40,
       height: 24,
       lines : markStep(phraseScreen(song.phrases[1]), 4)
-    }, ms(651))
+    }, ms(645))
     expect(events.filter((event) => event.kind === 'reanchor')).toEqual([])
-    expect(at(tracker, 653)[0]?.step).toBe(20)
+    expect(at(tracker, 647)[0]?.step).toBe(20)
   })
 })
 
@@ -600,13 +600,13 @@ describe('a phrase played more than once in its chain', () => {
     return withTempo(lines)
   }
 
-  test("a window too wide to tell the repeats apart takes the '<'", () => {
+  test("the M8's track plays the chain row its marks say: the only one, or the one that is not the view's", () => {
     const placed = tracker()
     placed.observe(songView(), 1000)
     placed.observe(phraseAt(3, 4), 1050)
     expect(placed.playheads(1051)[0]?.step).toBe(3 * ROWS_PER_PHRASE + 4)
-    // 16 steps on, the chain has started over and the '<' with it.
-    placed.observe(phraseAt(0, 4), 1050 + 16 * STEP_MS)
+    // 16 steps on, the chain has started over: the view stays on row 3, a second mark on row 0.
+    placed.observe(withTempo(markStep(phraseScreen(song.phrases[0], 3, 0), 4)), 1050 + 16 * STEP_MS)
     expect(placed.playheads(1051 + 16 * STEP_MS)[0]).toMatchObject({
       songRow: 0,
       step   : 4
@@ -647,7 +647,8 @@ describe('a phrase played more than once in its chain', () => {
       const events    : PlaybackEvent[] = []
       playing.onEvent = (event) => events.push(event)
       playing.observe(phraseAt(1, 0), 1000)
-      playing.observe(phraseAt(2, 0), 1000 + 16 * STEP_MS)
+      // Shift+Play, not Play: the song goes on to row 2, which gets a second mark.
+      playing.observe(withTempo(markStep(phraseScreen(song.phrases[0], 1, 2), 0)), 1000 + 16 * STEP_MS)
       expect(events.filter((event) => event.kind === 'phrase-loop').map((event) => event.kind === 'phrase-loop' && event.why)).toEqual(['started-on-phrase', 'moved-on'])
       expect(playing.playheads(1001 + 16 * STEP_MS)[0]?.step).toBe(2 * ROWS_PER_PHRASE)
       expect(playing.playheads(1001 + 24 * STEP_MS)[0]?.step).toBe(2 * ROWS_PER_PHRASE + 8)
@@ -686,5 +687,64 @@ describe('a phrase played more than once in its chain', () => {
         step   : 0
       })
     })
+
+    test('a start caught past its first beat is a loop when the read before showed the view without a marker', () => {
+      const late   = tracker()
+      const events : PlaybackEvent[] = []
+      late.onEvent = (event) => events.push(event)
+      late.observe(withTempo(phraseScreen(song.phrases[0], 1)), 1000)
+      late.observe(phraseAt(1, 6), 1000 + 7 * STEP_MS)
+      expect(events.find((event) => event.kind === 'phrase-loop')).toMatchObject({ why: 'started-on-phrase' })
+      // Caught on step 6 with no read before: maybe a song already playing, no loop.
+      const caught   = tracker()
+      const seen     : PlaybackEvent[] = []
+      caught.onEvent = (event) => seen.push(event)
+      caught.observe(phraseAt(1, 6), 1000)
+      expect(seen.filter((event) => event.kind === 'phrase-loop')).toEqual([])
+    })
+  })
+
+  test('a second mark on a row playing another phrase keeps the song going there', () => {
+    // Chain 00 plays phrase 00, then phrase 01, then 00 twice: Shift+Play from row 0 without MIDI.
+    const mixed                    = structuredClone(song)
+    mixed.phrases[1]               = {
+      id   : 1,
+      steps: Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
+    }
+    mixed.chains[0].rows[1].phrase = 1
+    const going                    = new PlaybackTracker(mixed, buildTimeline(mixed))
+    const events                   : PlaybackEvent[] = []
+    going.onEvent                  = (event) => events.push(event)
+    going.context                  = {
+      songRow: 0,
+      track  : 0
+    }
+    going.observe(withTempo(markStep(phraseScreen(mixed.phrases[0], 0), 0)), 1000)
+    // Row 1 (phrase 01) plays: no marker on phrase 00, a second mark on row 1, read after read.
+    for (let at = 1000 + 16 * STEP_MS; at < 1000 + 28 * STEP_MS; at += 60) going.observe(withTempo(phraseScreen(mixed.phrases[0], 0, 1)), at)
+    expect(going.playing).toBe(true)
+    expect(events.filter((event) => event.kind === 'phrase-loop').map((event) => event.kind === 'phrase-loop' && event.why)).toEqual(['started-on-phrase', 'moved-on'])
+    expect(going.playheads(1001 + 28 * STEP_MS)[0]?.step).toBe(ROWS_PER_PHRASE + 12)
+  })
+
+  test('Shift+Play on a Phrase view starts the tracks at its chain position: the Song Position counts it', () => {
+    const going = tracker()
+    going.observe(withTempo(phraseScreen(song.phrases[0], 3)), 1000)
+    expect(going.transportStart(3 * ROWS_PER_PHRASE, 2000)).toBe(true)
+    expect(Math.floor((going.playheads(2001 + 2 * STEP_MS)[0]?.step ?? -1) / ROWS_PER_PHRASE)).toBe(3)
+    // From the Song view the same position starts the chain from its top.
+    const fromSong = tracker()
+    fromSong.observe(withTempo(songScreen(song, 0)), 1000)
+    fromSong.transportStart(3 * ROWS_PER_PHRASE, 2000)
+    expect(Math.floor((fromSong.playheads(2001 + 2 * STEP_MS)[0]?.step ?? -1) / ROWS_PER_PHRASE)).toBe(0)
+  })
+
+  test('the markers a read still shows just after a MIDI Stop start nothing', () => {
+    const stopping = tracker()
+    stopping.transportStart(0, 1000)
+    stopping.transportReset('transport-stop')
+    expect(stopping.observe(phraseAt(1, 5), 1100)).toBe(false)
+    expect(stopping.playing).toBe(false)
+    expect(stopping.observe(phraseAt(1, 8), 1500)).toBe(true)
   })
 })

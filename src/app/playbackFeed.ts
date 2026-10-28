@@ -4,7 +4,7 @@
 
 import type { M8Client } from '@yam8d/m8-sdk'
 import { type PlaybackEvent, PlaybackTracker } from '../m8/playback'
-import { viewOf } from '../m8/screen/screenReader'
+import { readChainMarks, viewOf } from '../m8/screen/screenReader'
 import { type DebugLog, debugLog, type EventData } from '../model/debugLog'
 import { CLOCK_PPQ } from '../model/music/groove'
 import type { SongModel } from '../model/song'
@@ -61,6 +61,9 @@ export class PlaybackFeed {
   readonly tracker            : PlaybackTracker
   /** What the app is doing (Follow M8, a device task ...), written into the start and stop events. */
   appState                    : () => EventData = () => ({})
+  /** The Phrase view's '<' moved between two reads (a key, or the song playing on): nothing else may say so. */
+  onChainPosition             : () => void = () => {}
+  private lastChainMarks      = ''
   private trackedLayout       : SongLayout | null
   private session             : PlaySession | null = null
   private lastView            : { kind: string; id: number | null } | null = null
@@ -351,6 +354,11 @@ export class PlaybackFeed {
       try {
         const screen = await client.getScreen()
         const view   = viewOf(screen)
+        const marks  = readChainMarks(view).join(',')
+        if (marks !== this.lastChainMarks) {
+          this.lastChainMarks = marks
+          this.onChainPosition()
+        }
         if (view.kind !== this.lastView?.kind || view.id !== this.lastView?.id) {
           this.lastView = {
             kind: view.kind,

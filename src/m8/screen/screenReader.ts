@@ -178,18 +178,40 @@ export function readPhrase(view: ScreenView): Phrase | null {
   }
 }
 
-/** What the M8 draws in the margin of the Phrase view's row of the same number as its chain position. */
-const CHAIN_POSITION_MARK = '<'
+/** What the M8 draws in the Phrase view's margin, on the step rows numbered like the chain rows it marks. */
+const CHAIN_MARK = '<'
 
 /**
- * The chain row the Phrase view shows the phrase of (the chain position): the M8 draws a '<' in
- * the margin of the step row with that number (row 3 for chain row 3). It tells apart the
- * repeats of a phrase played more than once in its chain. Null when no row has it, or several.
+ * The chain rows a Phrase view marks with a '<' in the margin of the step row with the same
+ * number, top to bottom (device, fw 6.5): its chain position, the chain row it shows the phrase
+ * of; and while the song plays, the chain row playing when that is another one. Play on the Phrase
+ * view plays that phrase alone: one mark. Empty on other views.
  */
-export function readChainPosition(view: ScreenView): number | null {
-  if (view.kind !== 'phrase') return null
-  const marked = parseGridScreen('phrase', view.screen).filter((row) => view.screen.lines[row.screenRow]?.[0] === CHAIN_POSITION_MARK)
-  return marked.length === 1 ? marked[0].rowIndex : null
+export function readChainMarks(view: ScreenView): number[] {
+  if (view.kind !== 'phrase') return []
+  return parseGridScreen('phrase', view.screen)
+    .filter((row) => view.screen.lines[row.screenRow]?.[0] === CHAIN_MARK && row.rowIndex != null)
+    .map((row) => row.rowIndex as number)
+}
+
+/**
+ * The Phrase view's chain position among its marks: the only one; of two, the one that is the
+ * last known position, else the nearer to it (a key moves it by one; on a tie, the one that
+ * moved since the `previous` marks), else the one that stayed since them (the playing one moves).
+ */
+export function viewChainPosition(marks: number[], last: number | null, previous: number[] = []): number | null {
+  if (marks.length === 1) return marks[0]
+  if (marks.length !== 2) return null
+  const [a, b] = marks
+  if (last != null) {
+    if (marks.includes(last)) return last
+    const nearer = Math.abs(a - last) - Math.abs(b - last)
+    if (nearer !== 0) return nearer < 0 ? a : b
+    const moved = marks.filter((mark) => !previous.includes(mark))
+    return moved.length === 1 ? moved[0] : a
+  }
+  const stayed = marks.filter((mark) => previous.includes(mark))
+  return stayed.length === 1 ? stayed[0] : null
 }
 
 export function readTable(view: ScreenView): Table | null {

@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import type { M8Screen } from '@yam8d/m8-sdk'
 import { DeviceCursor } from '../src/app/deviceCursor'
 import { type DeviceFocus, deviceFocus } from '../src/m8/screen/liveScreen'
-import { readChainPosition, viewOf } from '../src/m8/screen/screenReader'
-import { FIRST_CONTENT_ROW, phraseScreen } from '../src/model/screens'
+import { readChainMarks, viewChainPosition, viewOf } from '../src/m8/screen/screenReader'
+import { phraseScreen } from '../src/model/screens'
 import { emptyModel, emptyStep, ROWS_PER_PHRASE } from '../src/model/song'
 import { SongLayout } from '../src/scene/layout'
 import { FakeM8 } from './fakeM8'
@@ -42,23 +42,32 @@ const screenOf = (lines: string[]): M8Screen => ({
   height: 24,
   lines
 })
-const focus    = (view: DeviceFocus['view'], id: number | null, row: number, column: string, chainRow: number | null = null): DeviceFocus => ({
+const focus    = (view: DeviceFocus['view'], id: number | null, row: number, column: string, chainMarks: number[] = []): DeviceFocus => ({
   view,
   id,
   row,
   column,
   cursor: null,
-  chainRow
+  chainMarks
 })
 
 describe('the chain position of a Phrase view', () => {
-  test("is the row with a '<' in the margin", () => {
-    expect(readChainPosition(viewOf(screenOf(phraseScreen(song.phrases[5], 2))))).toBe(2)
-    expect(readChainPosition(viewOf(screenOf(phraseScreen(song.phrases[5]))))).toBeNull()
-    // Two marks: no telling which.
-    const lines                  = phraseScreen(song.phrases[5], 2)
-    lines[FIRST_CONTENT_ROW + 7] = `<${lines[FIRST_CONTENT_ROW + 7].slice(1)}`
-    expect(readChainPosition(viewOf(screenOf(lines)))).toBeNull()
+  test("is a row with a '<' in the margin; a song playing adds one on the chain row playing", () => {
+    expect(readChainMarks(viewOf(screenOf(phraseScreen(song.phrases[5], 2))))).toEqual([2])
+    expect(readChainMarks(viewOf(screenOf(phraseScreen(song.phrases[5]))))).toEqual([])
+    expect(readChainMarks(viewOf(screenOf(phraseScreen(song.phrases[5], 2, 7))))).toEqual([2, 7])
+  })
+
+  test('of two marks, is the one known, the nearer to it after a key, or the one that stayed', () => {
+    expect(viewChainPosition([3], null)).toBe(3)
+    expect(viewChainPosition([3, 5], 3)).toBe(3)
+    // Option+Down from 3 while row 5 plays.
+    expect(viewChainPosition([4, 5], 3, [3, 5])).toBe(4)
+    // Option+Down from 3 while row 2 plays: as near as the playing one, but the one that moved.
+    expect(viewChainPosition([2, 4], 3, [2, 3])).toBe(4)
+    // Not known (a reload while the song plays): the one that stayed as the other moved on.
+    expect(viewChainPosition([3, 4], null, [])).toBeNull()
+    expect(viewChainPosition([3, 5], null, [3, 4])).toBe(3)
   })
 
   test('is read with the cursor on the M8, also on the marked row', async () => {
@@ -70,10 +79,10 @@ describe('the chain position of a Phrase view', () => {
     await fake.press(['shift', 'right'])
     const first = deviceFocus(await fake.getState(), await fake.getScreen())
     expect(first).toMatchObject({
-      view    : 'phrase',
-      id      : 5,
-      row     : 0,
-      chainRow: 2
+      view      : 'phrase',
+      id        : 5,
+      row       : 0,
+      chainMarks: [2]
     })
     await fake.press(['opt', 'down'])
     await fake.press(['down'])
@@ -81,11 +90,11 @@ describe('the chain position of a Phrase view', () => {
     await fake.press(['down'])
     const next = deviceFocus(await fake.getState(), await fake.getScreen())
     expect(next).toMatchObject({
-      view    : 'phrase',
-      id      : 5,
-      row     : 3,
-      column  : 'note',
-      chainRow: 3
+      view      : 'phrase',
+      id        : 5,
+      row       : 3,
+      column    : 'note',
+      chainMarks: [3]
     })
     expect(fake.forbidden).toEqual([])
   })
@@ -95,11 +104,24 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
   const layout = new SongLayout(song)
   const placed = (cursor: DeviceCursor, at: DeviceFocus) => cursor.preferred(cursor.placesOf(layout, at))
 
+  test('before any Song view, a chain in one song cell gives the song row and track', () => {
+    const cursor = new DeviceCursor()
+    placed(cursor, focus('chain', 1, 1, 'phrase'))
+    expect(cursor.songContext).toEqual({
+      songRow: 0,
+      track  : 1
+    })
+    // Chain 00 is on two song rows: no telling which.
+    const other = new DeviceCursor()
+    placed(other, focus('chain', 0, 0, 'phrase'))
+    expect(other.songContext).toBeNull()
+  })
+
   test("follows the repeat the '<' marks, in the song cell the M8 came from", () => {
     const cursor = new DeviceCursor()
     placed(cursor, focus('song', null, 1, 'track1'))
     for (const chainRow of [3, 2, 0]) {
-      expect(placed(cursor, focus('phrase', 5, 7, 'note', chainRow))).toMatchObject({
+      expect(placed(cursor, focus('phrase', 5, 7, 'note', [chainRow]))).toMatchObject({
         kind    : 'step',
         step    : 7,
         instance: {
@@ -115,7 +137,7 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
     const cursor = new DeviceCursor()
     placed(cursor, focus('song', null, 0, 'track1'))
     // Option+Right on the Phrase view: track 2's chain 01, phrase 05 at its row 1.
-    expect(placed(cursor, focus('phrase', 5, 4, 'note', 1))).toMatchObject({
+    expect(placed(cursor, focus('phrase', 5, 4, 'note', [1]))).toMatchObject({
       instance: {
         songRow : 0,
         track   : 1,
@@ -154,7 +176,7 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
       }
     })
     // Phrase 06 at chain row 0 is also track 2's on song row 0: the context says row 2.
-    expect(placed(cursor, focus('phrase', 6, 0, 'note', 0))).toMatchObject({
+    expect(placed(cursor, focus('phrase', 6, 0, 'note', [0]))).toMatchObject({
       instance: {
         songRow : 2,
         track   : 0,

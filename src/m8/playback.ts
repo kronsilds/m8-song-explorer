@@ -8,24 +8,26 @@
 // each track keeps the window its anchor step started in, and every reading narrows it.
 // Anchoring at the reading time instead runs a poll interval (or more) behind the M8.
 //
-// A HOP Y in a phrase plays its step, then the track goes on at row Y of the next phrase: the
-// chain's next one, or the first of the next chain (the row after, or the start of the run).
-// HOP FF stops the track. Not checked on the device: that the HOP step plays in full first.
+// A HOP Y in a phrase sends the track, as it reaches the HOP's step, to row Y of the next phrase:
+// the chain's next one, or the first of the next chain (the row after, or the start of the run).
+// The HOP's own step does not play (on the device, HOP 00 on step 8 cycles steps 0-7). HOP FF
+// stops the track there.
 //
 // A phrase can play more than once in a chain. The Phrase view marks its chain position (which
-// repeat it shows) with a '<' in the margin: a track first placed from a Phrase view goes to that
-// repeat, and so does the M8's own track while its window is too wide to tell the repeats apart.
+// repeat it shows) with a '<' in the margin, and while the song plays a second '<' on the chain
+// row playing when that is another: the M8's own track is placed on the row playing, whichever
+// repeat or phrase it is, MIDI or not.
 //
-// Play on a Phrase view plays that phrase alone, over and over, and sends no MIDI transport; the
-// song moves the '<' on with it. A track loops its phrase when playing starts on a Phrase view
-// (on the phrase's first beat, without a MIDI Start), or when the marker starts the phrase over
-// while the '<' stays; the '<' moving on, or a reading elsewhere, ends the loop.
+// Play on a Phrase view plays that phrase alone, over and over, and sends no MIDI transport: one
+// mark. A track loops its phrase when playing starts on a Phrase view (on the phrase's first beat,
+// without a MIDI Start), or when the marker starts the phrase over while one mark stays; a second
+// mark (the song plays on), the mark moving, or a reading elsewhere ends the loop.
 
 import { type M8Screen, readPlayPositions } from '@yam8d/m8-sdk'
 import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey, summarizeTicks, type TicksSummary } from '../model/music/groove'
 import { chainLength, fxValues, ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
 import type { Timeline } from '../model/timeline'
-import { readChainPosition, viewOf } from './screen/screenReader'
+import { readChainMarks, type ViewKind, viewChainPosition, viewOf } from './screen/screenReader'
 
 /** How late the screen shows a step (M8 redraw, serial, host, messages), roughly. */
 const SCREEN_LATENCY_MS  = 20
@@ -45,10 +47,10 @@ const MAX_CHAIN_WALK     = 512
 const MAX_RUNS_AHEAD     = 32
 /** HOP FF stops the track. */
 const HOP_STOP           = 0xff
-/** A window wider than this many phrases cannot tell a phrase's repeats in its chain apart. */
-const REPEATS_WINDOW     = 1.5
 /** Play on a Phrase view starts the phrase from its top: the first marker seen is on one of these rows. */
 const LOOP_START_ROWS    = 4
+/** How long after a MIDI Stop the screen's play markers are stale (seen on the device: a read right after still had one). */
+const STOP_SETTLE_MS     = 300
 
 /** The step a track was last placed on, and the window its start lies in. */
 interface Anchor {
@@ -158,9 +160,10 @@ interface Place {
 }
 
 /**
- * How a run of steps ends, from some step of a chain on: at the first HOP at or after it, else at
- * the chain's end (a looped phrase: at its own end). `last` is the run's last step, `end` where in
- * the chain's ticks it ends, `next` the step played after it, null when a HOP FF stops the track.
+ * How a run of steps ends, from some step of a chain on: at the first HOP at or after it (the step
+ * before it is the last one played), else at the chain's end (a looped phrase: at its own end).
+ * `last` is the run's last step, `end` where in the chain's ticks it ends, `next` the step played
+ * after it, null when a HOP FF stops the track.
  */
 interface RunEnd {
   end : number
@@ -186,6 +189,8 @@ export class PlaybackTracker {
   bpm          = 120
   /** Song row and track the M8 was last on (Song / Chain view), to tell which place a phrase on screen is. */
   context      : { songRow: number; track: number } | null = null
+  /** The Phrase view's chain position as the M8 cursor knows it, for when two marks cannot say which is which. */
+  viewChainRow : number | null = null
   /** Called when a phrase view shows another step than predicted (in steps). */
   onCorrection : (track: number, predicted: number, actual: number, clocked: boolean, songRow: number) => void = () => {}
   onEvent      : (event: PlaybackEvent) => void = () => {}
@@ -209,6 +214,17 @@ export class PlaybackTracker {
   private loops                      = perTrack<PhraseLoop>()
   /** The last Phrase view read, while each read shows it with a marker. */
   private lastPhraseMark             : PhraseMark | null = null
+  /** The kind of the last grid view read (song, chain, phrase), null before any. */
+  private lastViewKind               : ViewKind | null = null
+  /** A MIDI Stop came: the next read starts the time its markers are ignored. */
+  private stopPending                = false
+  /** Screen markers count again from this time (ms). */
+  private markersFrom                = 0
+  /** The Phrase view's chain position (which of its marks is the view's), and the marks of the read before. */
+  private viewMark                   : { id: number; row: number } | null = null
+  private lastMarks                  : number[] = []
+  /** The read before this one, when it was a Phrase view without a marker: its phrase and when. */
+  private lastUnmarkedPhrase         : { id: number; at: number } | null = null
 
   constructor(
     private model: SongModel,
@@ -355,8 +371,8 @@ export class PlaybackTracker {
     const row         = value & 0x0f
     const inChain     = (chainRow + 1) * ROWS_PER_PHRASE < chain.steps.length
     return {
-      end : startOf(chain, at + 1),
-      last: at,
+      end : startOf(chain, at),
+      last: at - 1,
       next: value === HOP_STOP ? null : inChain ? {
         songRow,
         step: (chainRow + 1) * ROWS_PER_PHRASE + row
@@ -386,8 +402,8 @@ export class PlaybackTracker {
     }
     const [at, value] = hop
     return {
-      end : startOf(chain, at + 1),
-      last: at,
+      end : startOf(chain, at),
+      last: at - 1,
       next: value === HOP_STOP ? null : {
         songRow,
         step: first + (value & 0x0f)
@@ -461,13 +477,15 @@ export class PlaybackTracker {
     if (startRow == null) return false
     const now  = this.now(ms)
     const tick = this.unitsPerTick()
+    const into = this.stepsIntoChain(startRow, spp)
     for (let track = 0; track < TRACKS; track += 1) {
       const songRow = this.lastChainRow(startRow, track)
-      if (songRow == null || this.chainSteps(songRow, track) === 0) continue
+      const steps   = songRow == null ? 0 : this.chainSteps(songRow, track)
+      if (songRow == null || steps === 0) continue
       // MIDI: after Start / Continue, the song moves on the first clock that follows.
       this.anchors[track] = {
         songRow,
-        step    : 0,
+        step    : songRow === startRow && into < steps ? into : 0,
         earliest: now + 0.5 * tick,
         latest  : now + 1.5 * tick
       }
@@ -481,6 +499,21 @@ export class PlaybackTracker {
       startRow
     })
     return true
+  }
+
+  /**
+   * Shift+Play on a Chain or Phrase view continues the song at its chain position, and the Song
+   * Position then counts the phrases before it in the chain too: 48 (3 x 16) from chain row 3 of
+   * song row 00 (seen on the device, 2026-10-28). The steps into the chain the song starts at:
+   * the whole phrases past the song row's own position, 0 elsewhere (Song view, or no fit).
+   */
+  private stepsIntoChain(songRow: number, spp: number): number {
+    if (this.lastViewKind !== 'chain' && this.lastViewKind !== 'phrase') return 0
+    const band  = this.timeline.bands.find((b) => b.songRow === songRow && !b.blank)
+    const into  = band ? spp - (band.row - band.block) : 0
+    const track = this.context?.track
+    const steps = track == null ? 0 : this.chainSteps(songRow, track)
+    return into > 0 && into < steps && into % ROWS_PER_PHRASE === 0 ? into : 0
   }
 
   /** The last song row at or above `row` where a track has a chain, null when it has none. */
@@ -497,6 +530,7 @@ export class PlaybackTracker {
 
   /** MIDI Start or Stop: positions start over (the clock itself keeps running). */
   transportReset(reason: StopReason = 'reset'): void {
+    if (reason === 'transport-stop') this.stopPending = true
     const wasPlaying         = this.playing
     this.playing             = false
     this.transportRunning    = false
@@ -545,10 +579,11 @@ export class PlaybackTracker {
     for (let walked = 0; walked < MAX_CHAIN_WALK; walked += 1) {
       const room = end.end - startOf(chain, from)
       if (left < room) break
+      // HOP FF: stopped on its step.
       if (!end.next) return {
         songRow,
-        step   : end.last,
-        phase  : 0.999,
+        step   : end.last + 1,
+        phase  : 0,
         stopped: true
       }
       if (end.next.songRow === songRow && end.next.step === from && room > 0) {
@@ -635,10 +670,9 @@ export class PlaybackTracker {
         const narrowedEarliest = Math.max(anchor.earliest, earliest - shift)
         const narrowedLatest   = Math.min(anchor.latest, latest - shift)
         if (narrowedEarliest < narrowedLatest) {
-          anchor.earliest = narrowedEarliest
-          anchor.latest   = narrowedLatest
-          // A looped phrase comes round again and again: keep the anchor on the latest reading.
-          if (this.loops[track]) this.anchors[track] = {
+          // Kept on the latest reading: a run that comes round again (a looped phrase, a HOP back, a
+          // chain looping on itself) would otherwise be measured from its first time round.
+          this.anchors[track] = {
             songRow,
             step,
             earliest: narrowedEarliest + shift,
@@ -675,27 +709,78 @@ export class PlaybackTracker {
   /** Feeds a screen read at `ms`. Returns true when it showed a play marker. */
   observe(screen: M8Screen, ms: number): boolean {
     this.dropStaleClock(ms)
+    // The screen still shows the play markers a moment after a MIDI Stop: they would start it again.
+    if (this.stopPending) {
+      this.stopPending = false
+      this.markersFrom = ms + STOP_SETTLE_MS
+    }
+    if (ms < this.markersFrom) return false
     const view  = viewOf(screen)
     const tempo = /T.(\d{2,3}(?:\.\d+)?)/.exec(screen.lines[5]?.slice(30) ?? '')
     if (tempo && !this.clock) this.bpm = Math.max(MIN_BPM, Number.parseFloat(tempo[1]))
     if (view.kind !== 'song' && view.kind !== 'chain' && view.kind !== 'phrase') {
-      this.unmarkedSince  = null
-      this.lastPhraseMark = null
+      this.unmarkedSince      = null
+      this.lastPhraseMark     = null
+      this.lastUnmarkedPhrase = null
+      this.lastMarks          = []
       return false
     }
-    const positions = readPlayPositions(view.kind, screen)
-    const now       = this.now(ms) - this.latency()
-    const starting  = !this.playing
-    let markerSeen  = false
+    this.lastViewKind = view.kind
+    const positions   = readPlayPositions(view.kind, screen)
+    const now         = this.now(ms) - this.latency()
+    const starting    = !this.playing
+    let markerSeen    = false
     if (view.kind !== 'phrase' || positions?.row == null) this.lastPhraseMark = null
+    // A Phrase view's marks: the chain row playing is the one that is not the view's, or the only one.
+    const marks      = readChainMarks(view)
+    const position   = view.kind === 'phrase' ? this.viewPosition(view.id, marks) : null
+    const songOn     = marks.length === 2 && position != null
+    const playingRow = songOn ? (marks.find((mark) => mark !== position) ?? null) : marks.length === 1 ? marks[0] : null
+    this.lastMarks   = marks
     if (view.kind === 'song' && positions?.tracks) {
       markerSeen = this.observeSongView(positions.tracks, now)
     } else if (positions?.row != null && view.id != null) {
       markerSeen = true
-      this.observeChainOrPhraseView(view.kind as 'chain' | 'phrase', view.id, positions.row, now, readChainPosition(view), starting)
+      this.observeChainOrPhraseView(view.kind as 'chain' | 'phrase', view.id, positions.row, now, playingRow, starting, songOn)
+    } else if (songOn && playingRow != null) {
+      // Another phrase of the chain on screen plays: the second mark says which row.
+      markerSeen = true
+      this.observePlayingRow(playingRow, now)
     }
     this.updatePlaying(markerSeen, view.kind, view.id, ms, now)
+    this.lastUnmarkedPhrase = view.kind === 'phrase' && view.id != null && positions?.row == null ? {
+      id: view.id,
+      at: now
+    } : null
     return markerSeen
+  }
+
+  /** Which of a Phrase view's marks is its chain position, remembered for that phrase (see viewChainPosition). */
+  private viewPosition(id: number | null, marks: number[]): number | null {
+    const known   = id != null && this.viewMark?.id === id ? this.viewMark.row : this.viewChainRow
+    const row     = viewChainPosition(marks, known, this.lastMarks)
+    this.viewMark = id != null && row != null ? {
+      id,
+      row
+    } : this.viewMark?.id === id ? this.viewMark : null
+    return row
+  }
+
+  /**
+   * A Phrase view whose second mark is on a row playing another phrase: the M8's track plays that
+   * row of the chain on screen, which started within the last phrase (like a Chain view's marker).
+   */
+  private observePlayingRow(chainRow: number, now: number): void {
+    const context = this.context
+    const chainId = context ? this.model.song[context.songRow]?.[context.track] : null
+    if (!context || chainId == null) return
+    const track  = context.track
+    if (this.loops[track]) this.setLoop(track, null, 'moved-on')
+    const anchor  = this.anchors[track]
+    const walked  = anchor ? this.walk(anchor, track, now) : null
+    // The song row it walks when that row holds the same chain (a chain on several rows), else the M8's.
+    const songRow = walked && !walked.stopped && this.model.song[walked.songRow]?.[track] === chainId ? walked.songRow : context.songRow
+    this.constrain(track, songRow, chainRow * ROWS_PER_PHRASE, now - this.phraseUnits(songRow, track, chainRow), now)
   }
 
   /** The Song view marks each playing track's chain. */
@@ -731,8 +816,8 @@ export class PlaybackTracker {
 
   /**
    * A Chain or Phrase view marks the row playing, for the tracks that play what it shows;
-   * `chainPosition` is the chain row a Phrase view shows its phrase at (its '<'), `starting`
-   * says no song was playing before this reading.
+   * `chainPosition` is the chain row a Phrase view's marks say plays, `starting` says no song was
+   * playing before this reading, `songOn` that a second mark says the song plays on.
    */
   private observeChainOrPhraseView(
     kind: 'chain' | 'phrase',
@@ -741,8 +826,9 @@ export class PlaybackTracker {
     now: number,
     chainPosition: number | null,
     starting: boolean,
+    songOn = false,
   ): void {
-    if (kind === 'phrase') this.notePhraseLoop(id, markedRow, chainPosition, now)
+    if (kind === 'phrase') this.notePhraseLoop(id, markedRow, chainPosition, now, songOn)
     let matched = false
     for (let track = 0; track < TRACKS; track += 1) {
       const anchor = this.anchors[track]
@@ -775,11 +861,15 @@ export class PlaybackTracker {
       }
     }
     if (!matched) {
-      const placed = this.placeFromScreen(kind, id, markedRow, now, chainPosition)
-      const anchor = placed == null ? null : this.anchors[placed]
-      // Playing that starts on a Phrase view, on its first beat and without a MIDI Start, is Play on
-      // that view: that phrase alone (a song already playing would rarely be caught on its first beat).
-      if (placed != null && anchor && kind === 'phrase' && starting && markedRow < LOOP_START_ROWS && !this.transportRunning) {
+      const placed   = this.placeFromScreen(kind, id, markedRow, now, chainPosition)
+      const anchor   = placed == null ? null : this.anchors[placed]
+      // Playing that starts on a Phrase view without a MIDI Start is Play on that view: that phrase alone.
+      // Started, not caught midway: on its first beat, or since the read before (the view without a marker).
+      const unmarked = this.lastUnmarkedPhrase
+      const fresh    =
+        markedRow < LOOP_START_ROWS ||
+        (placed != null && anchor != null && unmarked?.id === id && (markedRow - 1) * this.stepUnits(anchor.songRow, placed, anchor.step) <= now - unmarked.at)
+      if (placed != null && anchor && kind === 'phrase' && starting && fresh && !songOn && !this.transportRunning) {
         this.setLoop(placed, {
           songRow : anchor.songRow,
           chainRow: Math.floor(anchor.step / ROWS_PER_PHRASE)
@@ -789,11 +879,11 @@ export class PlaybackTracker {
   }
 
   /**
-   * A Phrase view whose marker starts the phrase over while its '<' stays: the M8 plays that
-   * phrase alone, where the track's walk had it go on, so the track loops it. With the '<'
-   * moved on (the song plays on), a loop ends and the reading places the track afresh.
+   * A Phrase view whose marker starts the phrase over while its one mark stays: the M8 plays that
+   * phrase alone, where the track's walk had it go on, so the track loops it. A second mark (the
+   * song plays on) or the mark moved ends a loop, and the reading places the track afresh.
    */
-  private notePhraseLoop(id: number, markedRow: number, chainPosition: number | null, now: number): void {
+  private notePhraseLoop(id: number, markedRow: number, chainPosition: number | null, now: number, songOn: boolean): void {
     const last          = this.lastPhraseMark
     this.lastPhraseMark = {
       id,
@@ -801,11 +891,12 @@ export class PlaybackTracker {
       chainPosition
     }
     if (chainPosition == null) return
-    const startedOver = last != null && last.id === id && last.chainPosition === chainPosition && markedRow < last.row
+    // A song started from the MIDI transport plays on (Play on a Phrase view sends none).
+    const startedOver = !songOn && !this.transportRunning && last != null && last.id === id && last.chainPosition === chainPosition && markedRow < last.row
     for (let track = 0; track < TRACKS; track += 1) {
       const loop = this.loops[track]
       if (loop) {
-        if (loop.chainRow !== chainPosition) {
+        if (songOn || loop.chainRow !== chainPosition) {
           this.setLoop(track, null, 'moved-on')
           this.anchors[track] = null
         }
@@ -826,21 +917,20 @@ export class PlaybackTracker {
   }
 
   /**
-   * The chain row phrase `id` on screen plays at on a track whose walk is on `walkedRow`: that
-   * row, unless the track is the one the M8 shows, its window is too wide to tell the phrase's
-   * repeats apart and the '<' names a repeat. Null when neither row plays that phrase.
+   * The chain row phrase `id` on screen plays at on a track whose walk is on `walkedRow`: on the
+   * track the M8 shows, the row its marks say plays (`chainPosition`); else the walked row. Null
+   * when that row plays another phrase.
    */
   private phraseRepeat(track: number, songRow: number, walkedRow: number, id: number, chainPosition: number | null): number | null {
     const chainId = this.model.song[songRow]?.[track]
     const rows    = chainId == null ? undefined : this.model.chains[chainId]?.rows
-    const anchor  = this.anchors[track]
     const context = this.context
     const shown   =
       chainPosition != null &&
       context?.track === track &&
       this.model.song[context.songRow]?.[track] === chainId &&
       rows?.[chainPosition]?.phrase === id
-    if (shown && anchor && anchor.latest - anchor.earliest > REPEATS_WINDOW * this.phraseUnits(songRow, track, walkedRow)) return chainPosition
+    if (shown) return chainPosition
     return rows?.[walkedRow]?.phrase === id ? walkedRow : null
   }
 
@@ -867,6 +957,21 @@ export class PlaybackTracker {
     return place.track
   }
 
+  /**
+   * True when the Phrase view on screen shows its chain position alone while the M8's track, by
+   * what we know, plays another row of that chain: the song would add a second mark there.
+   */
+  private expectsSecondMark(now: number): boolean {
+    const context  = this.context
+    const position = this.viewMark?.row
+    if (this.transportRunning || !context || position == null || this.lastMarks.length !== 1) return false
+    const anchor = this.anchors[context.track]
+    const walked = anchor ? this.walk(anchor, context.track, now) : null
+    if (!walked || walked.stopped) return false
+    const chainId = this.model.song[context.songRow]?.[context.track]
+    return chainId != null && this.model.song[walked.songRow]?.[context.track] === chainId && Math.floor(walked.step / ROWS_PER_PHRASE) !== position
+  }
+
   /** Whether the song still plays after a reading with or without a marker. */
   private updatePlaying(markerSeen: boolean, kind: 'song' | 'chain' | 'phrase', id: number | null, ms: number, now: number): void {
     if (markerSeen) {
@@ -887,7 +992,7 @@ export class PlaybackTracker {
       // Every playing track has a marker on the Song view: none left means stopped, unless
       // the MIDI transport says it plays (the playing rows are scrolled off screen).
       if (!this.transportRunning && ms - this.lastMarkerAt > STOPPED_AFTER_MS) this.transportReset('markers-gone')
-    } else if (this.expectsMarker(kind, id, now)) {
+    } else if (this.expectsMarker(kind, id, now) || (kind === 'phrase' && this.expectsSecondMark(now))) {
       // The chain / phrase on screen should be playing by what we know, yet it shows no marker.
       this.unmarkedSince ??= ms
       if (ms - this.unmarkedSince > STOPPED_AFTER_MS) this.transportReset('unmarked-view')
