@@ -540,3 +540,72 @@ describe('HOP in a phrase', () => {
     expect(at(tracker, 653)[0]?.step).toBe(20)
   })
 })
+
+describe('a phrase played more than once in its chain', () => {
+  // Track 1: chain 00 on song row 0, phrase 00 four times.
+  const song      = emptyModel('repeats')
+  song.phrases    = {
+    0: {
+      id   : 0,
+      steps: Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
+    }
+  }
+  song.chains     = {
+    0: {
+      id  : 0,
+      rows: Array.from({ length: 16 }, (_, row) => ({
+        phrase   : row < 4 ? 0 : null,
+        transpose: 0
+      }))
+    }
+  }
+  song.song       = [[0, ...Array(7).fill(null)]]
+  const repeats   = buildTimeline(song)
+  const withTempo = (lines: string[]): M8Screen => {
+    const out = [...lines]
+    out[5]    = `${out[5].padEnd(33)}T>120`
+    return {
+      width : 40,
+      height: 24,
+      lines : out
+    }
+  }
+  /** The Phrase view at chain position `chainPosition` (its '<'), step `step` playing. */
+  const phraseAt  = (chainPosition: number | null, step: number) => withTempo(markStep(phraseScreen(song.phrases[0], chainPosition), step))
+  const tracker   = () => {
+    const made   = new PlaybackTracker(song, repeats)
+    made.context = {
+      songRow: 0,
+      track  : 0
+    }
+    return made
+  }
+
+  test("first seen on a Phrase view, it plays the repeat the '<' marks", () => {
+    const marked = tracker()
+    marked.observe(phraseAt(2, 4), 1000)
+    expect(marked.playheads(1001)[0]).toMatchObject({
+      songRow: 0,
+      step   : 2 * ROWS_PER_PHRASE + 4
+    })
+    const unmarked = tracker()
+    unmarked.observe(phraseAt(null, 4), 1000)
+    expect(unmarked.playheads(1001)[0]?.step).toBe(4)
+  })
+
+  test("a window too wide to tell the repeats apart takes the '<'; once narrow, the walk wins", () => {
+    const placed = tracker()
+    // First seen on the Song view: somewhere in the chain.
+    const lines  = songScreen(song, 0)
+    lines[6]     = `${lines[6].slice(0, 3)}>${lines[6].slice(4)}`
+    placed.observe(withTempo(lines), 1000)
+    placed.observe(phraseAt(3, 4), 1050)
+    expect(placed.playheads(1051)[0]?.step).toBe(3 * ROWS_PER_PHRASE + 4)
+    // 16 steps on, the chain has started over; the '<' still shows row 3, but the walk knows better.
+    placed.observe(phraseAt(3, 4), 1050 + 16 * STEP_MS)
+    expect(placed.playheads(1051 + 16 * STEP_MS)[0]).toMatchObject({
+      songRow: 0,
+      step   : 4
+    })
+  })
+})

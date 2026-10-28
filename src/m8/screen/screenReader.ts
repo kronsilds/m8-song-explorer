@@ -178,6 +178,20 @@ export function readPhrase(view: ScreenView): Phrase | null {
   }
 }
 
+/** What the M8 draws in the margin of the Phrase view's row of the same number as its chain position. */
+const CHAIN_POSITION_MARK = '<'
+
+/**
+ * The chain row the Phrase view shows the phrase of (the chain position): the M8 draws a '<' in
+ * the margin of the step row with that number (row 3 for chain row 3). It tells apart the
+ * repeats of a phrase played more than once in its chain. Null when no row has it, or several.
+ */
+export function readChainPosition(view: ScreenView): number | null {
+  if (view.kind !== 'phrase') return null
+  const marked = parseGridScreen('phrase', view.screen).filter((row) => view.screen.lines[row.screenRow]?.[0] === CHAIN_POSITION_MARK)
+  return marked.length === 1 ? marked[0].rowIndex : null
+}
+
 export function readTable(view: ScreenView): Table | null {
   if (view.kind !== 'table' || view.id == null) return null
   const rows = parseGridScreen('table', view.screen)
