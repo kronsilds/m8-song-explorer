@@ -41,7 +41,7 @@ const HELP_HTML         = `
   <div class="help-title">NAVIGATE</div>
   <dl>
     <dt>Drag</dt><dd>turn around the song: the track under the pointer opens (FX and tables)</dd>
-    <dt>Right drag · Shift drag</dt><dd>pan</dd>
+    <dt>Right drag · Shift drag</dt><dd>pan; turned, the track the pan starts on opens and stays open</dd>
     <dt>Wheel</dt><dd>scroll the song · Ctrl/pinch zooms</dd>
     <dt>Click · Double click</dt><dd>select · focus</dd>
     <dt>Arrows · PgUp/PgDn</dt><dd>move the selection · scroll 16 rows</dd>
