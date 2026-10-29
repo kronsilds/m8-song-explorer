@@ -1,5 +1,6 @@
-// Mouse and touch input over the 3D view: drag turns, right / Shift drag pans, the wheel
-// scrolls (Ctrl / pinch zooms), click selects, double click focuses, hover highlights.
+// Mouse and touch input over the 3D view: drag turns, right / Shift drag pans (each starting
+// on the track pressed), the wheel scrolls (Ctrl / pinch zooms), click selects, double click
+// focuses, hover highlights.
 
 import type { Selection } from '../../model/selection'
 import type { CameraRig } from '../camera/rig'
@@ -12,6 +13,10 @@ export interface PointerTarget {
   unitsPerPixel(): number
   /** Zooms by `factor` (distance) toward the point under the pointer. */
   zoomAt(clientX: number, clientY: number, factor: number): void
+  /** A pan by hand (a drag, or a sideways wheel gesture) starts at this pointer position. */
+  panStarted(clientX: number, clientY: number): void
+  /** A pan by hand moved the pointer between these positions: what it held stays under it. */
+  dragPan(fromX: number, fromY: number, toX: number, toY: number): void
   /** The view was panned sideways: the track in focus may have changed. */
   panned(): void
   /** A turn by hand starts from a press at this pointer position. */
@@ -38,6 +43,8 @@ const ZOOM_PER_WHEEL_UNIT   = 0.0022
 const SCROLL_PER_WHEEL_UNIT = 0.9
 /** Looking almost along the tracks, a pan speeds up no more than this allows. */
 export const PAN_MIN_COS    = 0.35
+/** A wheel event this long after the last one starts a new gesture. */
+const WHEEL_GESTURE_MS      = 250
 /** Wheel delta units: pixels, lines, pages. */
 const WHEEL_UNIT_PX         = [1, 16, 400]
 
@@ -60,8 +67,9 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
    */
   const alongTracks = (yaw: number) => target.unitsPerPixel() / Math.max(PAN_MIN_COS, Math.cos(yaw))
 
-  let drag        : Drag | null = null
-  let pendingHover: { x: number; y: number } | null = null
+  let drag         : Drag | null = null
+  let pendingHover : { x: number; y: number } | null = null
+  let lastWheelAt  = Number.NEGATIVE_INFINITY
 
   element.addEventListener('contextmenu', (event) => event.preventDefault())
   for (const type of ['pointerdown', 'pointermove', 'wheel'] as const) element.addEventListener(type, () => target.interacted(), { passive: true })
@@ -101,20 +109,20 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
     const dx = event.clientX - current.x
     const dy = event.clientY - current.y
     if (!current.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
-    if (!current.moved && !current.pan) target.turnStarted(current.startX, current.startY)
+    if (!current.moved) {
+      if (current.pan) target.panStarted(current.startX, current.startY)
+      else target.turnStarted(current.startX, current.startY)
+    }
     current.moved = true
-    current.x     = event.clientX
-    current.y     = event.clientY
-    const goal    = target.rig.goal
-    if (current.pan) {
-      goal.target.x -= dx * alongTracks(goal.yaw)
-      goal.target.y += dy * target.unitsPerPixel()
-      target.panned()
-    } else {
+    if (current.pan) target.dragPan(current.x, current.y, event.clientX, event.clientY)
+    else {
+      const goal = target.rig.goal
       goal.yaw   -= dx * YAW_PER_PX
       goal.pitch += dy * PITCH_PER_PX
       target.turnedByHand()
     }
+    current.x = event.clientX
+    current.y = event.clientY
     target.invalidate()
   }
 
@@ -140,11 +148,15 @@ export function bindPointerControls(element: HTMLElement, target: PointerTarget)
     'wheel',
     (event) => {
       event.preventDefault()
-      const goal = target.rig.goal
-      const unit = WHEEL_UNIT_PX[event.deltaMode] ?? 1
+      const goal     = target.rig.goal
+      const unit     = WHEEL_UNIT_PX[event.deltaMode] ?? 1
+      const starting = event.timeStamp - lastWheelAt > WHEEL_GESTURE_MS
+      lastWheelAt    = event.timeStamp
       if (event.ctrlKey || event.metaKey || event.altKey) {
         target.zoomAt(event.clientX, event.clientY, Math.exp(event.deltaY * unit * ZOOM_PER_WHEEL_UNIT))
       } else {
+        // A gesture that starts sideways is a pan, starting where the pointer is, as a drag does.
+        if (starting && (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY))) target.panStarted(event.clientX, event.clientY)
         const scale   = SCROLL_PER_WHEEL_UNIT
         goal.target.y -= event.deltaY * unit * scale * target.unitsPerPixel()
         goal.target.x += (event.shiftKey ? event.deltaY : event.deltaX) * unit * scale * alongTracks(goal.yaw)

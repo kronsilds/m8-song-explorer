@@ -31,7 +31,7 @@ import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../mode
 import { phraseMoved, trackMoved } from '../model/stepMoves'
 import type { PhraseInstance } from '../model/timeline'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
-import { fitDistance, type Lens, rayMeets, rayThrough, screenX, shiftTarget, sideShift } from './camera/framing'
+import { fitDistance, type Lens, rayMeets, rayThrough, shiftTarget, sideShift } from './camera/framing'
 import { CameraRig, placeCamera, type RigPose } from './camera/rig'
 import { type SceneButton, ScenePicker } from './input/picker'
 import { bindPointerControls, PAN_MIN_COS, type PointerTarget } from './input/pointerControls'
@@ -89,8 +89,8 @@ const FRAME_MARGINS       = {
 /** An automatic framing stands back far enough for this many rows, and not so far that rows get shorter than this (pixels). */
 const FRAME_MIN_ROWS      = 50
 const FRAME_MIN_ROW_PX    = 12
-/** Turned toward the walls, a pan opens the next track this far (world x) past the halfway mark, either way. */
-const PAN_SLACK           = TRACK_PITCH / 4
+/** What a pan by hand holds counts as no nearer or further than these multiples of the target's distance. */
+const GRAB_DEPTH_LIMITS   = [0.3, 3] as const
 /** Where a cell lands after the view scrolls to it, as a fraction of the visible stretch from the edge opposite to where it left (so a scroll is about 4/5 of a page). */
 const SCROLL_LAND         = 0.2
 /** Following the M8: a cell lands this many rows under the headers, and the view scrolls when fewer rows than LOOKAHEAD_ROWS are left under it. */
@@ -157,8 +157,12 @@ export class World implements PointerTarget {
   private allWallsOpen                  = false
   /** Track whose wall opens when nothing is selected. */
   private focusedTrack                  = 0
-  /** Track opened by hand (a turn started on it, or panned to while turned); wins until the next selection or cursor move. */
+  /** Track opened by hand (a turn, or a pan while turned, started on it); wins until the next selection or cursor move. */
   private handTrack                     : number | null = null
+  /** After a track opens by hand, the track that stays still on screen while the walls move, and the layout it was set for (see anchorTo). */
+  private switchAnchor                  : { track: number; focus: number; allOpen: boolean } | null = null
+  /** How far to the side of the camera's pose the view is drawn while the walls move around the anchor (0 once they settle). */
+  private shownShiftX                   = 0
   /** The turn by hand under way: the target and the yaw it started from, and where the open track was centred then. */
   private turning                       : { base: Vector3; pivot: Vector3; yaw: number } | null = null
   /** Track the M8 cursor is on while following it; wins over the selection. */
@@ -298,6 +302,7 @@ export class World implements PointerTarget {
   }
 
   private rebuild(): void {
+    this.releaseAnchor()
     for (const view of this.trackViews) {
       view.dispose()
       this.root.remove(view.group)
@@ -429,6 +434,7 @@ export class World implements PointerTarget {
   view(preset: ViewPreset, immediate = false): void {
     const goal   = this.rig.goal
     const layout = this.layout
+    this.releaseAnchor()
     // Nothing chosen: the track in the middle of the view is the one that opens.
     if (preset !== 'overview' && this.handTrack == null && this.followedTrack == null && !this.selection) {
       this.focusedTrack = this.trackUnder(0) ?? this.focusedTrack
@@ -601,6 +607,11 @@ export class World implements PointerTarget {
    * when it meets none.
    */
   private trackUnder(ndcX: number, ndcY = 0, pose = this.rig.goal): number | null {
+    return this.hitUnder(ndcX, ndcY, pose)?.track ?? null
+  }
+
+  /** As trackUnder, with how deep along the view the ray meets it (its direction is one deep). */
+  private hitUnder(ndcX: number, ndcY: number, pose: RigPose): { track: number; depth: number } | null {
     const ray        = rayThrough(pose, this.lens(), ndcX, ndcY)
     const meet       = (ax: number, az: number, bx: number, bz: number) => rayMeets(ray, new Vector3(ax, 0, az), new Vector3(bx, 0, bz))
     let nearest      : number | null = null
@@ -612,17 +623,54 @@ export class World implements PointerTarget {
       if (wall) hits.push(meet(left + WALL_HINGE, 0, left + WALL_HINGE + wall * Math.cos(WALL_ANGLE), -wall * Math.sin(WALL_ANGLE)))
       for (const along of hits) if (along != null && along < nearestAlong) [nearest, nearestAlong] = [track, along]
     }
-    return nearest
+    return nearest == null ? null : {
+      track: nearest,
+      depth: nearestAlong
+    }
   }
 
-  /** Opens another track's wall by hand; the view moves with that track's column, so it stays where it is on screen. */
+  /** Opens another track's wall by hand; the view moves with that track's column, so it stays where it is on screen while the walls move. */
   private openByHand(track: number): void {
     const turn             = this.wallTurn(this.rig.goal.yaw)
     const before           = this.frontX(track, true, turn)
     this.handTrack         = track
-    const moved            = this.frontX(track, true, turn) - before
-    this.rig.goal.target.x += moved
+    this.rig.goal.target.x += this.frontX(track, true, turn) - before
+    this.anchorTo(track)
     this.invalidate()
+  }
+
+  /**
+   * Keeps `anchor` still on screen while the walls move to the new layout: the camera's pose
+   * jumps to where it will be once they settle (so it does not ease there on its own, at
+   * another pace than the walls), and the view is drawn shifted back by what the anchor
+   * still has to move (see updateWalls), so nothing jumps on screen.
+   */
+  private anchorTo(anchor: number): void {
+    const turn                = this.wallTurn(this.rig.current.yaw)
+    const shift               = this.frontX(anchor) - this.frontXWith(anchor, this.focusTrack(), turn)
+    this.rig.current.target.x += this.shownShiftX - shift
+    this.shownShiftX          = shift
+    this.switchAnchor         = {
+      track  : anchor,
+      focus  : this.focusTrack(),
+      allOpen: this.allWallsOpen
+    }
+  }
+
+  /** Stops keeping a track still: the camera's pose takes the shift the view is drawn with, so nothing moves on screen. */
+  private releaseAnchor(): void {
+    this.rig.current.target.x += this.shownShiftX
+    this.shownShiftX          = 0
+    this.switchAnchor         = null
+  }
+
+  /** The pose the view is drawn from: the camera's, shifted while the walls move around an anchor. */
+  private shownPose(): RigPose {
+    const pose = this.rig.current
+    return {
+      ...pose,
+      target: pose.target.clone().setX(pose.target.x + this.shownShiftX)
+    }
   }
 
   /**
@@ -1110,66 +1158,63 @@ export class World implements PointerTarget {
   // Pointer input (see pointerControls)
 
   /**
-   * After a pan. Turned toward the walls, the neighbour opens once the view leaves the open
-   * track's stretch of the pan (see panNeighbour); the camera stays where it is, the walls
-   * fold and unfold around it. Facing the front with nothing selected, the track in the middle
-   * is the one a turn opens.
+   * A pan by hand starts from a press (or a sideways wheel gesture) at this pointer position.
+   * Turned toward the walls, the track grabbed there opens if it is not open already, staying
+   * under the pointer while the walls move (see openByHand), and it stays open for the whole
+   * pan, whatever the pan brings to the middle of the view.
    */
-  panned(): void {
-    if (this.wallTurn(this.rig.goal.yaw) > 0.5) {
-      for (let moves = 0; moves < TRACKS; moves += 1) {
-        const next = this.panNeighbour()
-        if (next == null) break
-        this.handTrack = next
-      }
-      this.invalidate()
-      return
+  panStarted(clientX: number, clientY: number): void {
+    if (this.wallTurn(this.rig.goal.yaw) <= 0.5) return
+    const track = this.trackAt(clientX, clientY)
+    if (track != null && track !== this.focusTrack()) this.openByHand(track)
+  }
+
+  /**
+   * A pan by hand moved the pointer from one position to another: the view moves along the
+   * tracks (and up or down them) so that what the pointer held there (a column or an open
+   * wall, else the plane of the columns) is under it again. Nearer things move faster on
+   * screen, and a thing gets nearer or further as the pan carries it across the screen (the
+   * tracks are seen at an angle), so the step is solved for that point.
+   */
+  dragPan(fromX: number, fromY: number, toX: number, toY: number): void {
+    const pose         = this.shownPose()
+    const lens         = this.lens()
+    const [ndcX, ndcY] = this.ndcAt(fromX, fromY)
+    const [toNX, toNY] = this.ndcAt(toX, toY)
+    let depth          = this.hitUnder(ndcX, ndcY, pose)?.depth
+    if (depth == null) {
+      const ray = rayThrough(pose, lens, ndcX, ndcY)
+      if (ray.direction.z < -1e-6) depth = -ray.origin.z / ray.direction.z
     }
-    if (this.selection) return
+    depth                  = MathUtils.clamp(depth ?? pose.distance, pose.distance * GRAB_DEPTH_LIMITS[0], pose.distance * GRAB_DEPTH_LIMITS[1])
+    // The held point, `depth` deep at screen x `ndcX`, lands at `toNX` once the target moves by
+    // `shift` along x, which brings it nearer by shift * sin(yaw) * cos(pitch).
+    const across           = lens.tanHalfFov * lens.aspect
+    const nearer           = Math.sin(pose.yaw) * Math.cos(pose.pitch)
+    const shift            = (across * depth * (toNX - ndcX)) / Math.max(PAN_MIN_COS, Math.cos(pose.yaw) + toNX * across * nearer)
+    this.rig.goal.target.x -= shift
+    this.rig.goal.target.y -= lens.tanHalfFov * depth * (toNY - ndcY)
+    this.panned()
+  }
+
+  /** After a pan step. Facing the front with nothing selected, the track in the middle is the one a turn opens; turned, the open track stays. */
+  panned(): void {
+    if (this.wallTurn(this.rig.goal.yaw) > 0.5 || this.selection) return
     this.handTrack    = null
     this.focusedTrack = this.trackUnder(0) ?? this.focusedTrack
   }
 
-  /**
-   * Turned: the neighbour to open when the view has left the open track's stretch of the pan,
-   * else null. The stretch is measured along the pan (the target's x): from where the track is
-   * centred, halfway to where its neighbour would be centred once open, plus the part of the
-   * track still off screen that side (so a pan can run along a long wall), plus a little slack.
-   * The same rule both ways, and the neighbour's stretch starts beyond the slack, so the
-   * open track does not flip back and forth.
-   */
-  private panNeighbour(): number | null {
-    const goal      = this.rig.goal
-    const focus     = this.focusTrack()
-    const turn      = this.wallTurn(goal.yaw)
-    const lens      = this.lens()
-    const centred   = this.trackCentre(goal, focus, true)
-    // Along the line of sight to the goal's depth: the same view, as a pan (which keeps the depth) reaches it.
-    const centre    = centred.x + (goal.target.z - centred.z) * Math.tan(goal.yaw)
-    const probe     = {
-      ...goal,
-      target: new Vector3(centre, goal.target.y, goal.target.z)
-    }
-    const points    = this.trackSpan(focus, true)
-    const across    = points.map((point) => screenX(probe, lens, point))
-    const leftmost  = points[across.indexOf(Math.min(...across))]
-    const rightmost = points[across.indexOf(Math.max(...across))]
-    // Shifts along the camera's right, turned into pan x (see pointerControls).
-    const perX      = Math.max(PAN_MIN_COS, Math.cos(goal.yaw))
-    const offRight  = Math.max(0, sideShift(probe, lens, [rightmost], FRAME_MARGINS)) / perX
-    const offLeft   = Math.max(0, -sideShift(probe, lens, [leftmost], FRAME_MARGINS)) / perX
-    const own       = (track: number) => this.frontXWith(track, track, turn)
-    const x         = goal.target.x
-    if (focus + 1 < this.trackViews.length && x > centre + (own(focus + 1) - own(focus)) / 2 + offRight + PAN_SLACK) return focus + 1
-    if (focus > 0 && x < centre - (own(focus) - own(focus - 1)) / 2 - offLeft - PAN_SLACK) return focus - 1
-    return null
+  /** The track under a pointer position: the cell's there, else the column or open wall shown there. */
+  private trackAt(clientX: number, clientY: number): number | null {
+    const cell = this.cellAt(clientX, clientY)
+    if (cell) return selectionTrack(cell)
+    const [ndcX, ndcY] = this.ndcAt(clientX, clientY)
+    return this.trackUnder(ndcX, ndcY, this.shownPose())
   }
 
   /** A turn by hand opens the track it started on, and turns around it. */
   turnStarted(clientX: number, clientY: number): void {
-    const cell         = this.cellAt(clientX, clientY)
-    const [ndcX, ndcY] = this.ndcAt(clientX, clientY)
-    const track        = cell ? selectionTrack(cell) : this.trackUnder(ndcX, ndcY, this.rig.current)
+    const track = this.trackAt(clientX, clientY)
     if (track != null && track !== this.focusTrack()) this.openByHand(track)
     this.turning = {
       base : this.rig.goal.target.clone(),
@@ -1333,8 +1378,7 @@ export class World implements PointerTarget {
    * Keeps the last track in view: the view may not go further right than the middle of
    * its column (or along its wall when it is open), measured where the tracks settle for
    * the yaw being turned to, so closing the walls pulls the view back with them. Turned, a
-   * little more: the target stands off the wall in depth, and the pan must reach past the
-   * last track's halfway mark to open it.
+   * little more, as the target stands off the wall in depth.
    */
   private limitPan(): void {
     const last = this.trackViews.length - 1
@@ -1474,6 +1518,15 @@ export class World implements PointerTarget {
       view.setFrontAlpha(frontAlpha)
       x += TRACK_PITCH + wallAlpha * (this.wallExtent(track) + OPEN_GAP)
     }
+    // Draw the view so the anchor stays still (see anchorTo), until the walls settle or another layout is asked for.
+    const anchor = this.switchAnchor
+    if (anchor) {
+      if (anchor.focus !== focus || anchor.allOpen !== this.allWallsOpen) this.releaseAnchor()
+      else {
+        this.shownShiftX = this.frontX(anchor.track) - this.frontXWith(anchor.track, focus, turn)
+        if (Math.abs(this.shownShiftX) < 1e-4) this.releaseAnchor()
+      }
+    }
     // The rules between song rows cross every track: they leave with the other tracks, or they would cut across the view along the wall.
     const rules = this.bandRules?.material as LineBasicMaterial | undefined
     if (rules && Math.abs(rules.opacity - BAND_RULE_OPACITY * staying) > 1e-4) {
@@ -1496,6 +1549,10 @@ export class World implements PointerTarget {
     const playing = this.updatePlayheads(dt)
 
     this.rig.apply(this.camera)
+    if (this.shownShiftX) {
+      this.camera.position.x += this.shownShiftX
+      this.camera.updateMatrixWorld()
+    }
     const camera    = this.rig.current
     const half      = this.visibleHalfHeight()
     const barsAlpha = 0.08 + 0.82 * (1 - smoothstep(5, 10, pxPerRow))

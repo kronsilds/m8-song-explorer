@@ -57,10 +57,14 @@ instruments → tables) and shows it as a 3D tracker:
   under the track headers (which stay clear of the top bar, even when it wraps onto more rows in
   a narrow window). A drag that turns
   the view opens the track it starts on and turns around it, bringing it to the middle. Panning
-  moves parallel to the tracks, so the zoom never changes. Turned, each track has its stretch of
-  the pan, from where it is centred to halfway to its neighbours (longer when part of its wall is
-  off screen); panning out of it opens the neighbour, the same either way. Ctrl+wheel zooms toward
-  the pointer.
+  moves parallel to the tracks, so the zoom never changes, and a pan drag keeps what it grabbed
+  under the pointer (sideways; nearer things move faster). Turned, a pan opens the track it
+  starts on, as a turn does: the track pressed (right or Shift drag), or the one under the
+  pointer when a wheel or trackpad gesture starts sideways (a gesture that starts vertical
+  scrolls the rows and opens nothing). That track stays still on screen while the walls move,
+  and stays open for the whole pan, whatever the pan brings to the middle; to read another
+  track, start a pan on it. Facing the front, the track in the middle is the one a turn opens.
+  Ctrl+wheel zooms toward the pointer.
 - **Chain transpose and scales**: a phrase a chain row transposes shows the transpose under its
   number in the tree (`+5`, `-12`), and its notes as played in the transpose colour: the written
   note moved by the chain and project TRANSPOSE, then brought up into the track's scale (the M8
