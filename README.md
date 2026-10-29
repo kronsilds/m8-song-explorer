@@ -101,6 +101,10 @@ instruments → tables) and shows it as a 3D tracker:
   repeat its `<` marks when the phrase plays more than once in the chain (Option+Up/Down moves
   along). It moves along with Option+Left/Right on a Chain or Phrase view (the same song row on
   the other track) and Option+Up/Down on a Chain view (the track's next chain in the song).
+  The cursor is read 30 ms after the M8 stops drawing, and at least every 100 ms while it keeps
+  drawing (a held key, notes on the cursor row while the song plays). Edits are folded in only
+  once the screen has been quiet for 140 ms, so a half-drawn screen never reaches the saved song
+  (`src/app/syncScheduler.ts`).
 - **Auto select** (`A`) makes the selection follow the M8 cursor, so the Selection panel explains
   what the cursor is on. Reaching the velocity / instrument / FX columns of a phrase, a table or an instrument
   turns the view to the wall; back on a note, chain or song cell it turns back (also while the

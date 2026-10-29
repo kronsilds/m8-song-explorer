@@ -30,6 +30,7 @@ import { dumpScreen } from './diagnostics'
 import { bindKeyboard, type KeyCommands } from './keyboard'
 import { PlaybackFeed } from './playbackFeed'
 import { preferences } from './preferences'
+import { type SyncKind, SyncScheduler } from './syncScheduler'
 import { ThemeColorsSource } from './themeColors'
 import { TrackMixer } from './trackMixer'
 
@@ -37,8 +38,6 @@ import { TrackMixer } from './trackMixer'
 type DeviceTask = 'explore' | 'theme' | 'sync' | 'show'
 
 const HANDSHAKE_TIMEOUT_MS = 6000
-/** Device events are read once things calm down for this long. */
-const SYNC_DEBOUNCE_MS     = 140
 /** While exploring, the view is redrawn at most this often. */
 const EXPLORE_REDRAW_MS    = 1200
 
@@ -97,7 +96,8 @@ export class ExplorerApp {
   private autoSelected    : Selection | null = null
   /** The M8 has another song loaded than the one explored: nothing from the screen is merged. */
   private otherSongLoaded = false
-  private syncTimer       = 0
+  /** Reads the M8 after its events: the cursor soon, edits once the screen is quiet. */
+  private readonly syncs  = new SyncScheduler((kind) => this.sync(kind))
   /** The view the M8 was last seen on ('phrase:3'), to log its changes. */
   private deviceView      : string | null = null
 
@@ -455,25 +455,35 @@ export class ExplorerApp {
   // Live: what the M8 shows now
 
   private scheduleSync(): void {
-    clearTimeout(this.syncTimer)
-    this.syncTimer = window.setTimeout(() => void this.sync(), SYNC_DEBOUNCE_MS)
+    this.syncs.poke()
   }
 
-  /** What the M8 shows now: its theme colours, edits made on the device, and where its cursor is. */
-  private async sync(): Promise<void> {
+  /**
+   * What the M8 shows now. Every read marks and follows the place under its cursor. A settled
+   * read (the screen quiet long enough to be fully drawn) also takes the theme colours, notices
+   * another song and folds edits made on the device into the model: a half-drawn screen must
+   * never reach the saved song.
+   */
+  private async sync(kind: SyncKind): Promise<void> {
     const client = this.client
     if (!client?.isConnected || this.task) return
+    const settled = kind === 'settled'
     try {
       const [state, screen] = await Promise.all([client.fetchState(), client.getScreen()])
-      // Background and titles: a palette change rebuilds the whole scene, so only stable colours.
-      if (this.theme.observe(observeThemeColors(state))) this.refreshPalette()
-      this.noteOtherSong(client, isOtherSong(this.model, screen))
+      if (settled) {
+        // Background and titles: a palette change rebuilds the whole scene, so only stable colours.
+        if (this.theme.observe(observeThemeColors(state))) this.refreshPalette()
+        this.noteOtherSong(client, isOtherSong(this.model, screen))
+      } else if (isOtherSong(this.model, screen)) {
+        // Only a settled read pauses for another song; until then nothing is followed on it.
+        return
+      }
       if (this.otherSongLoaded) {
         this.world.setDevicePlaces([])
         this.world.setDeviceInstrument(null)
         return
       }
-      if (absorbScreen(this.model, screen)) {
+      if (settled && absorbScreen(this.model, screen)) {
         const seen = viewOf(screen)
         debugLog.event('device-edit', {
           view   : seen.kind,
