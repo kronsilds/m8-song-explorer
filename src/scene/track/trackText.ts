@@ -3,8 +3,9 @@
 
 import { fxColumn } from '../../model/columns'
 import { hex2, hexDigit } from '../../model/hex'
+import { tableTicOf } from '../../model/instrumentPage'
 import { formatTranspose, playedNote, transposeSemitones } from '../../model/music/harmony'
-import { FX_LANES, type FxCell, type PhraseStep, ROWS_PER_PHRASE, ROWS_PER_TABLE, type TableRow } from '../../model/song'
+import { allFxCells, FX_LANES, type FxCell, fxValues, type PhraseStep, ROWS_PER_PHRASE, ROWS_PER_TABLE, type TableRow } from '../../model/song'
 import type { PhraseInstance } from '../../model/timeline'
 import type { Panel, SongLayout } from '../layout'
 import type { CellColors, Palette } from '../palette'
@@ -87,11 +88,15 @@ export class TrackTextBuilder {
       rich.add(`TABLE ${hex2(table)}`, palette.title)
     }
     const type = instrument?.type ?? (instrumentId != null ? '?' : 'AUX TABLE')
+    // An instrument's table is the one of its number, so a table with content shows the instrument's TBL.TIC (its speed) in place of the
+    // number, unless the song plays it as an aux table (TBX): then the number says which table that is.
+    const tic  = panel.contentRows > 0 && !this.usedAsAux(table) ? tableTicOf(instrument ?? undefined) : null
+    const text = tic == null ? `TBL ${hex2(table)}` : `TIC ${hex2(tic)}`
     rich
       .newLine()
       .add(type.slice(0, TYPE_WIDTH - 1).padEnd(TYPE_WIDTH), palette.label)
       // Bright when the table has something in it, dim when it is empty.
-      .add(`TBL ${hex2(table)}`, panel.contentRows > 0 ? palette.value : palette.empty)
+      .add(text, panel.contentRows > 0 ? palette.value : palette.empty)
     // Ø: an empty table (the font has no ∅); +N: rows with something in them that a folded panel hides.
     if (panel.contentRows === 0) rich.add(' Ø', palette.label)
     else if (rows < panel.contentRows) rich.add(` +${panel.contentRows - rows}`, palette.label)
@@ -108,6 +113,12 @@ export class TrackTextBuilder {
       this.addFxLanes(rich, row.fx, palette.table)
     }
     return rich
+  }
+
+  /** True when a TBX anywhere in the song starts the table as an aux table. */
+  private usedAsAux(table: number): boolean {
+    for (const fx of allFxCells(this.layout.model)) if (fxValues(fx, 'TBX').includes(table)) return true
+    return false
   }
 
   private addFxLanes(rich: RichText, fx: FxCell[] | undefined, colors: Record<ReturnType<typeof fxColumn>, CellColors>): void {

@@ -340,13 +340,16 @@ function describeTableCell(model: SongModel, selection: TableSelection, song: So
 }
 
 /** The TIC the song starts a table at most often, else its instrument's TBL.TIC; and the other TICs it is started at. */
-function tableTic(model: SongModel, table: number, uses: TableUse[]): { tic: number; others: number[] } {
+function tableTic(model: SongModel, table: number, uses: TableUse[]): { tic: number; others: number[]; instrument: number | null } {
   const counts = new Map<number, number>()
   for (const use of uses) counts.set(use.tic, (counts.get(use.tic) ?? 0) + 1)
   const sorted = [...counts].sort((a, b) => b[1] - a[1]).map(([tic]) => tic)
+  const own    = tableTicOf(model.instruments[table])
   return {
-    tic   : sorted[0] ?? tableTicOf(model.instruments[table]) ?? DEFAULT_TIC,
-    others: sorted.slice(1)
+    tic       : sorted[0] ?? own ?? DEFAULT_TIC,
+    others    : sorted.slice(1),
+    // The instrument's own TBL.TIC when the song starts the table only at other speeds.
+    instrument: sorted.length && own != null && !sorted.includes(own) ? own : null
   }
 }
 
@@ -358,12 +361,13 @@ function chromaticAt(model: SongModel, song: SongContext, use: TableUse): boolea
 
 /** How the table plays: how fast, where the column of the selected cell goes, and the chord of the N column. */
 function tableFacts(model: SongModel, selection: TableSelection, table: Table, song: SongContext): Fact[] {
-  const facts           = [] as Fact[]
-  const uses            = tableUses(model, song.timeline, song.effective, selection.table)
-  const { tic, others } = tableTic(model, selection.table, uses)
-  const tempo           = model.tempo ?? null
-  const also            = others.length ? ` (also started at TIC ${others.map((other) => hex2(other)).join(', ')})` : ''
+  const facts                       = [] as Fact[]
+  const uses                        = tableUses(model, song.timeline, song.effective, selection.table)
+  const { tic, others, instrument } = tableTic(model, selection.table, uses)
+  const tempo                       = model.tempo ?? null
+  const also                        = others.length ? ` (also started at TIC ${others.map((other) => hex2(other)).join(', ')})` : ''
   facts.push(['Speed', `TIC ${hex2(tic)}: ${ticText(tic, tempo)}${also}`])
+  if (instrument != null) facts.push(['Instrument TIC', `TBL.TIC ${hex2(instrument)} of instrument ${hex2(selection.table)}, which the song never starts this table at`])
   const notes    = uses.filter((use) => !use.aux).length
   const auxSteps = uses.length - notes
   const tracks   = [...new Set(uses.map((use) => use.track + 1))].sort()
