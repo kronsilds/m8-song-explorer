@@ -77,6 +77,28 @@ export function isOtherSong(model: SongModel, screen: M8Screen): boolean | null 
   return different >= OTHER_SONG_MIN_CELLS && different > compared * OTHER_SONG_MIN_SHARE
 }
 
+/**
+ * Whether the screen positively shows this song: the same name on the Project view, or on the
+ * Song view at least 5 visible song cells and nearly all equal (a few may be edited since).
+ */
+export function matchesSong(model: SongModel, screen: M8Screen): boolean {
+  const project = readProject(screen)
+  if (project) return project.name != null && model.name != null && project.name === model.name
+  const view = viewOf(screen)
+  if (!isPage(view, 'song')) return false
+  let compared  = 0
+  let different = 0
+  for (const reading of readSongRows(view)) {
+    reading.chains.forEach((chain, track) => {
+      const known = model.song[reading.row]?.[track] ?? null
+      if (chain == null && known == null) return
+      compared += 1
+      if (chain !== known) different += 1
+    })
+  }
+  return compared >= OTHER_SONG_MIN_CELLS && different <= compared * 0.1
+}
+
 const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 /** Stores `item` under its id unless the model already holds the same; true when it changed. */

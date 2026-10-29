@@ -2,10 +2,10 @@
 // (the song shown, the device connection, what runs on the device) and turns HUD actions and
 // keys into commands.
 
-import { createM8ClientSync, type M8Client, observeThemeColors } from '@yam8d/m8-sdk'
+import { createM8ClientSync, type M8Client, type M8Screen, observeThemeColors } from '@yam8d/m8-sdk'
 import { ExploreCancelled } from '../m8/driver'
 import { clientPort, type M8Port, withTimeout } from '../m8/port'
-import { absorbScreen, deviceFocus, isOtherSong } from '../m8/screen/liveScreen'
+import { absorbScreen, deviceFocus, isOtherSong, matchesSong } from '../m8/screen/liveScreen'
 import { viewOf } from '../m8/screen/screenReader'
 import { describeSelection } from '../m8/semantics'
 import { exploreSong, moveToSongTop } from '../m8/tasks/explorer'
@@ -17,7 +17,7 @@ import { demoSong } from '../model/demo'
 import { hex2 } from '../model/hex'
 import { type Selection, sameSelection } from '../model/selection'
 import { lastSongRow, type MidiSync, type SongModel, usedItems } from '../model/song'
-import { loadModel, loadTheme, saveModel, saveTheme } from '../model/storage'
+import { loadModel, loadTheme, rememberedSongs, rememberSong, saveModel, saveTheme } from '../model/storage'
 import type { ThemeColors } from '../scene/palette'
 import { preloadText } from '../scene/text'
 import { World } from '../scene/world'
@@ -96,6 +96,8 @@ export class ExplorerApp {
   private autoSelected    : Selection | null = null
   /** The M8 has another song loaded than the one explored: nothing from the screen is merged. */
   private otherSongLoaded = false
+  /** A song was imported by hand: remembered songs are not swapped in until the next exploration. */
+  private recallPaused    = false
   /** Reads the M8 after its events: the cursor soon, edits once the screen is quiet. */
   private readonly syncs  = new SyncScheduler((kind) => this.sync(kind))
   /** The view the M8 was last seen on ('phrase:3'), to log its changes. */
@@ -308,14 +310,41 @@ export class ExplorerApp {
   }
 
   private async importSong(): Promise<void> {
-    const model = await pickSongFile()
-    if (!model) return this.hud.notify('That file is not a song exported by this app', 'warn')
+    const picked = await pickSongFile()
+    if (picked.kind === 'cancelled') return
+    if (picked.kind === 'invalid') return this.hud.notify(picked.reason, 'warn', 6000)
+    const { model } = picked
     debugLog.event('import', {
       name  : model.name,
       chains: Object.keys(model.chains).length
     })
+    // The file was asked for: the library does not swap it for a remembered song of the M8.
+    this.recallPaused = true
     this.setModel(model, false)
     saveModel(model)
+    rememberSong(model)
+    this.hud.notify(`Loaded ${model.name ?? 'the song'} from file`)
+  }
+
+  /**
+   * The M8 shows another song than the model: when the library holds one that matches the
+   * screen, it is shown again instead of exploring. True when it was loaded.
+   */
+  private recallSong(screen: M8Screen): boolean {
+    if (this.recallPaused) return false
+    const remembered = rememberedSongs().find((candidate) => matchesSong(candidate, screen))
+    if (!remembered) return false
+    debugLog.event('recall', {
+      name      : remembered.name,
+      capturedAt: remembered.capturedAt,
+      replaced  : this.model.name
+    })
+    this.otherSongLoaded = false
+    this.setModel(remembered, false)
+    saveModel(remembered)
+    this.hud.notify(`${remembered.name} was explored before: shown from this browser. Explore song to read it again.`, 'info', 6000)
+    this.scheduleSync()
+    return true
   }
 
   // ---------------------------------------------------------------------------
@@ -473,7 +502,9 @@ export class ExplorerApp {
       if (settled) {
         // Background and titles: a palette change rebuilds the whole scene, so only stable colours.
         if (this.theme.observe(observeThemeColors(state))) this.refreshPalette()
-        this.noteOtherSong(client, isOtherSong(this.model, screen))
+        const other = isOtherSong(this.model, screen)
+        if (other && this.recallSong(screen)) return
+        this.noteOtherSong(client, other)
       } else if (isOtherSong(this.model, screen)) {
         // Only a settled read pauses for another song; until then nothing is followed on it.
         return
@@ -493,6 +524,7 @@ export class ExplorerApp {
         })
         this.world.setModel(this.model, true)
         saveModel(this.model)
+        rememberSong(this.model)
         this.updateSummary()
       }
       const focus  = deviceFocus(state, screen)
@@ -648,7 +680,9 @@ export class ExplorerApp {
         }
         this.setModel(explored, false)
         saveModel(explored)
-        const warnings = explored.warnings.length
+        if (!exploration.signal.aborted) rememberSong(explored)
+        this.recallPaused = false
+        const warnings    = explored.warnings.length
         run.finish(exploration.signal.aborted ? 'cancelled' : 'done', {
           name       : explored.name,
           tempo      : explored.tempo ?? null,
