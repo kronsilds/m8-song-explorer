@@ -10,10 +10,11 @@ import type { Instrument } from './song'
 
 export const INSTRUMENT_SIZE = 215
 const NAME_SIZE              = 12
-const MODS_AT                = 0x3f
-const MOD_SIZE               = 6
+export const MODS_AT         = 0x3f
+export const MOD_SIZE        = 6
 
-const KINDS = ['WAVSYNTH', 'MACROSYN', 'SAMPLER', 'MIDI OUT', 'FMSYNTH', 'HYPERSYN', 'EXTERNAL']
+/** Instrument types by the first byte of the slot (FF = no instrument). */
+export const KINDS = ['WAVSYNTH', 'MACROSYN', 'SAMPLER', 'MIDI OUT', 'FMSYNTH', 'HYPERSYN', 'EXTERNAL']
 
 /** Names seen on a device, by value. */
 const FILTERS        = ['OFF', 'LOWPASS']

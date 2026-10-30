@@ -1,13 +1,15 @@
 // Reads a Dirtywave M8 .m8s song file into the song model: header, project name and tempo, the
-// song grid, chains and phrases. Layout checked on two files (fw 6.5.0 and 6.6.2). Instruments
-// and the tables of the instruments the song uses, the scales and the grooves it points at are read, and FX command bytes are kept as '?XX' until their
-// names are compared with a device. Pure: bytes in, model out.
+// song grid, chains and phrases. Layout checked on files saved by fw 6.5.0 and 6.6.2. Like a device
+// exploration it also reads the instruments the song uses, their tables and the tables TBL / TBX
+// point at, and the scales and grooves it points at. FX commands are named by m8sFx.ts.
+// Pure: bytes in, model out.
 
+import { fxName } from './m8sFx'
 import { INSTRUMENT_SIZE, readInstrument } from './m8sInstruments'
 import { referencedGrooves } from './music/groove'
 import { referencedScales } from './music/harmony'
 import { noteText } from './music/pitch'
-import { type Chain, emptyFx, emptyModel, type FxCell, type Groove, type Instrument, type Phrase, type PhraseStep, ROWS_PER_CHAIN, ROWS_PER_PHRASE, ROWS_PER_TABLE, type Scale, SONG_ROWS, type SongModel, type Table, TRACKS } from './song'
+import { type Chain, emptyFx, emptyModel, type FxCell, type Groove, type Instrument, type Phrase, type PhraseStep, ROWS_PER_CHAIN, ROWS_PER_PHRASE, ROWS_PER_TABLE, referencedTables, type Scale, SONG_ROWS, type SongModel, type Table, TRACKS, usedItems } from './song'
 
 const MAGIC           = 'M8VERSION\0'
 const NAME_AT         = 0x94
@@ -50,50 +52,57 @@ export const isM8sFile = (bytes: Uint8Array): boolean => MAGIC.split('').every((
 
 const orNull = (byte: number): number | null => (byte === EMPTY ? null : byte)
 
-/**
- * Sequencer command ids of fw 6.5.0 and 6.6.2 (the same song saved on both gave the same ids), in file order. Checked against a device exploration at 00 ARP,
- * 08 RET, 0D PBN and 13 SNG; the ones between follow the manual's order. Higher ids (TBL and up,
- * and the instrument commands from 20) are not known yet, and 6.6 numbers differently.
- */
-const FX_NAMES_65 = ['ARP', 'CHA', 'DEL', 'GRV', 'HOP', 'KIL', 'RND', 'RNL', 'RET', 'REP', 'RMX', 'NTH', 'PSL', 'PBN', 'PVB', 'PVX', 'SCA', 'SCG', 'SED', 'SNG']
+/** Names a command byte for the instrument that plays it (null when none is known). */
+type FxNamer = (cmd: number, instrument: number | null) => string
 
-/** Table-only ids and instrument commands (from 0x80, they depend on the instrument type); only the ones seen on a device are named. */
-const TABLE_FX     : Record<number, string> = {
-  21: 'THO',
-  22: 'TIC'
-}
-const INSTRUMENT_FX: Record<string, Record<number, string>> = {
-  WAVSYNTH: {
-    129: 'PIT',
-    130: 'FIN',
-    131: 'OSC',
-    159: 'LF3',
-    160: 'LT3'
-  },
-  FMSYNTH : { 132: 'FM1' }
-}
-
-function readFx(bytes: Uint8Array, at: number, names: readonly string[]): FxCell {
+function readFx(bytes: Uint8Array, at: number, name: FxNamer, instrument: number | null): FxCell {
   if (bytes[at] === EMPTY) return emptyFx()
   return {
-    cmd: names[bytes[at]] ?? `?${bytes[at].toString(16).toUpperCase().padStart(2, '0')}`,
+    cmd: name(bytes[at], instrument),
     val: bytes[at + 1]
   }
 }
 
-function readStep(bytes: Uint8Array, at: number, names: readonly string[]): PhraseStep {
-  const note = bytes[at]
+/**
+ * A phrase. Instrument commands are named after the instrument of their step, else the last one
+ * above it in the phrase, else the first one below (an assumption: the M8 names them after the
+ * instrument the track plays).
+ */
+function readPhrase(bytes: Uint8Array, id: number, name: FxNamer): Phrase {
+  const at    = PHRASES_AT + id * PHRASE_SIZE
+  const insts = Array.from({ length: ROWS_PER_PHRASE }, (_, step) => orNull(bytes[at + step * STEP_SIZE + 2]))
+  let playing = insts.find((inst) => inst != null) ?? null
   return {
-    note: note === EMPTY ? null : note === NOTE_OFF ? 'OFF' : note < NOTE_OFF ? noteText(note + NOTE_BASE) : null,
-    vel : orNull(bytes[at + 1]),
-    inst: orNull(bytes[at + 2]),
-    fx  : [0, 1, 2].map((lane) => readFx(bytes, at + 3 + lane * 2, names))
+    id,
+    steps: insts.map((inst, step): PhraseStep => {
+      const start = at + step * STEP_SIZE
+      const note  = bytes[start]
+      playing     = inst ?? playing
+      return {
+        note: note === EMPTY ? null : note === NOTE_OFF ? 'OFF' : note < NOTE_OFF ? noteText(note + NOTE_BASE) : null,
+        vel : orNull(bytes[start + 1]),
+        inst,
+        fx  : [0, 1, 2].map((lane) => readFx(bytes, start + 3 + lane * 2, name, playing))
+      }
+    })
   }
 }
 
-/** A table: per row a transpose byte, a volume byte (FF = none) and three FX pairs. */
-function readTable(bytes: Uint8Array, id: number, names: readonly string[], type: string | null): Table {
-  const typeNames = INSTRUMENT_FX[type ?? ''] ?? {}
+/** For each table a phrase's TBL / TBX points at, the instrument playing that step (as in readPhrase). */
+function tableInstruments(phrases: Record<number, Phrase>): Map<number, number> {
+  const owners = new Map<number, number>()
+  for (const phrase of Object.values(phrases)) {
+    let playing = phrase.steps.find((step) => step.inst != null)?.inst ?? null
+    for (const step of phrase.steps) {
+      playing = step.inst ?? playing
+      for (const table of referencedTables(step.fx)) if (playing != null && !owners.has(table)) owners.set(table, playing)
+    }
+  }
+  return owners
+}
+
+/** A table: per row a transpose byte, a volume byte (FF = none) and three FX pairs, named for `instrument`. */
+function readTable(bytes: Uint8Array, id: number, name: FxNamer, instrument: number | null): Table {
   return {
     id,
     rows: Array.from({ length: ROWS_PER_TABLE }, (_, row) => {
@@ -101,14 +110,7 @@ function readTable(bytes: Uint8Array, id: number, names: readonly string[], type
       return {
         transpose: bytes[at],
         volume   : orNull(bytes[at + 1]),
-        fx       : [0, 1, 2].map((lane): FxCell => {
-          const cmd = bytes[at + 2 + lane * 2]
-          const fx  = readFx(bytes, at + 2 + lane * 2, names)
-          return cmd === EMPTY ? fx : {
-            cmd: TABLE_FX[cmd] ?? typeNames[cmd] ?? fx.cmd,
-            val: fx.val
-          }
-        })
+        fx       : [0, 1, 2].map((lane) => readFx(bytes, at + 2 + lane * 2, name, instrument))
       }
     })
   }
@@ -146,7 +148,7 @@ function hyperScales(instruments: Record<number, Instrument>): number[] {
   const ids: number[] = []
   for (const instrument of Object.values(instruments)) {
     if (instrument.type !== 'HYPERSYN') continue
-    const id = instrument.lines.map((line) => /^SCALEs+([0-9A-F]{2})/i.exec(line)?.[1]).find(Boolean)
+    const id = instrument.lines.map((line) => /^SCALE\s+([0-9A-F]{2})/i.exec(line)?.[1]).find(Boolean)
     if (id && Number.parseInt(id, 16) > 0) ids.push(Number.parseInt(id, 16) & 0x0f)
   }
   return ids
@@ -178,9 +180,11 @@ export function readM8sFile(bytes: Uint8Array): SongModel | null {
   model.song = rows.slice(0, lastRow + 1)
 
   // Like an exploration, only the chains the song uses and the phrases those chains use.
-  const names   = major === 6 && minor <= 6 ? FX_NAMES_65 : []
-  const chains  : Record<number, Chain>   = {}
-  const phrases : Record<number, Phrase> = {}
+  // Command ids were read from fw 6.6.2 files; the 6.5.0 sample agrees on every command it uses.
+  const hasInstruments = bytes.length >= INSTRUMENTS_AT + 128 * INSTRUMENT_SIZE
+  const fxNamer        : FxNamer = (cmd, instrument) => (major === 6 ? fxName(bytes, cmd, INSTRUMENTS_AT, hasInstruments ? instrument : null) : `?${cmd.toString(16).toUpperCase().padStart(2, '0')}`)
+  const chains         : Record<number, Chain>   = {}
+  const phrases        : Record<number, Phrase> = {}
   for (const id of new Set(model.song.flat().filter((cell): cell is number => cell != null && cell < SLOTS))) {
     const chainRows = Array.from({ length: ROWS_PER_CHAIN }, (_, row) => {
       const at = CHAINS_AT + id * CHAIN_SIZE + row * CHAIN_ROW_SIZE
@@ -195,29 +199,29 @@ export function readM8sFile(bytes: Uint8Array): SongModel | null {
     }
     for (const { phrase } of chainRows) {
       if (phrase == null || phrase >= SLOTS || phrases[phrase]) continue
-      phrases[phrase] = {
-        id   : phrase,
-        steps: Array.from({ length: ROWS_PER_PHRASE }, (_, step) => readStep(bytes, PHRASES_AT + phrase * PHRASE_SIZE + step * STEP_SIZE, names))
-      }
+      phrases[phrase] = readPhrase(bytes, phrase, fxNamer)
     }
-  }
-  const instruments: Record<number, Instrument> = {}
-  if (bytes.length >= INSTRUMENTS_AT + 128 * INSTRUMENT_SIZE) {
-    const used = new Set(Object.values(phrases).flatMap((phrase) => phrase.steps.map((step) => step.inst)))
-    for (const id of used) {
-      const instrument = id != null && id < 128 ? readInstrument(bytes, id, INSTRUMENTS_AT) : null
-      if (instrument) instruments[instrument.id] = instrument
-    }
-  }
-  // The exploration reads the table of each used instrument (same number); tables only reached through TBL / TBX are not found.
-  const tables: Record<number, Table> = {}
-  if (bytes.length >= INSTRUMENTS_AT) {
-    for (const instrument of Object.values(instruments)) tables[instrument.id] = readTable(bytes, instrument.id, names, instrument.type)
   }
   model.chains      = chains
   model.phrases     = phrases
+  // As the exploration: the instruments the phrases play or INS picks, the table of each (same
+  // number), then the tables TBL / TBX point at, named after the instrument playing the TBL / TBX
+  // step (else the instrument of the same number).
+  const instruments : Record<number, Instrument> = {}
+  const tables      : Record<number, Table>      = {}
   model.instruments = instruments
   model.tables      = tables
+  if (hasInstruments) {
+    for (const id of usedItems(model).instruments) {
+      const instrument = id < 128 ? readInstrument(bytes, id, INSTRUMENTS_AT) : null
+      if (instrument) instruments[instrument.id] = instrument
+    }
+    for (const instrument of Object.values(instruments)) tables[instrument.id] = readTable(bytes, instrument.id, fxNamer, instrument.id)
+    const owners = tableInstruments(phrases)
+    for (const id of usedItems(model).tables) {
+      if (!tables[id] && id < 256) tables[id] = readTable(bytes, id, fxNamer, owners.get(id) ?? (id < 128 ? id : null))
+    }
+  }
   if (bytes.length >= SCALES_AT + SCALE_COUNT * SCALE_SIZE) {
     // The same scales and grooves an exploration reads: the project's, the ones SCA / SCG / GRV point at and Hypersynth SCALE picks.
     const scaleIds = new Set([model.projectScale ?? 0, ...referencedScales(model), ...hyperScales(instruments)])
@@ -225,7 +229,7 @@ export function readM8sFile(bytes: Uint8Array): SongModel | null {
     model.grooves  = Object.fromEntries(referencedGrooves(model).filter((id) => id < 32).map((id) => [id, readGroove(bytes, id)]))
   }
   model.warnings    = [
-    `Read from a .m8s file (firmware ${major}.${minor}.${patch}): tables only reached through TBL/TBX and the Sampler, MIDI OUT and External instruments' sample, bank and program settings are not read from files yet, instrument values show their hex when the name is not known, and FX commands above 13 show as ?XX.`
+    `Read from a .m8s file (firmware ${major}.${minor}.${patch}): the Sampler, MIDI OUT and External instruments' sample, bank and program settings are not read from files yet, instrument values show their hex when the name is not known, and FX commands with an unknown id show as ?XX.`
   ]
   return model
 }
