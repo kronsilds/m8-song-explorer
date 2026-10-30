@@ -1,6 +1,7 @@
 // Song JSON export and import through the browser's download and file picker, so a song can
 // be looked at without the M8.
 
+import { isM8sFile, readM8sFile } from '../model/m8sFile'
 import type { SongModel } from '../model/song'
 import { reviveSong } from '../model/storage'
 
@@ -22,13 +23,24 @@ export type PickedSong =
 
 /** Reads a song exported by this app; the reason says what was wrong with the file otherwise. */
 export async function readSongFile(file: File): Promise<PickedSong> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  if (isM8sFile(bytes)) {
+    const song = readM8sFile(bytes)
+    return song ? {
+      kind : 'song',
+      model: song
+    } : {
+      kind  : 'invalid',
+      reason: `${file.name} is cut short or from an unsupported firmware`
+    }
+  }
   let value: unknown
   try {
-    value = JSON.parse(await file.text())
+    value = JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return {
       kind  : 'invalid',
-      reason: `${file.name} is not a JSON file${/\.m8s$/i.test(file.name) ? ' (a .m8s song cannot be opened yet: use Explore song on the M8)' : ''}`
+      reason: `${file.name} is neither a .m8s song nor a JSON file`
     }
   }
   const model = reviveSong(value)
@@ -52,7 +64,7 @@ export function pickSongFile(): Promise<PickedSong> {
   return new Promise((resolve) => {
     const input         = document.createElement('input')
     input.type          = 'file'
-    input.accept        = 'application/json,.json'
+    input.accept        = 'application/json,.json,.m8s'
     input.style.display = 'none'
     // Attached while the dialog is open: some browsers drop the events of a detached input.
     document.body.append(input)

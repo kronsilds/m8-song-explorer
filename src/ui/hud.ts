@@ -201,7 +201,7 @@ export class Hud {
     section(
       'SONG FILE',
       ['export', 'Export', 'Save the explored song as JSON'],
-      ['import', 'Import', 'Load a song JSON'],
+      ['import', 'Import', 'Load a song JSON or an .m8s file'],
       ['demo', 'Demo', 'Show the demo song'],
     )
     const tab = element('div', 'menu-tab')
