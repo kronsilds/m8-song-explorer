@@ -50,20 +50,12 @@ test('ASHAMEDDATA: song, chains and phrases equal the device exploration of the 
   const bytes    = sample('ASHAMEDDATA')
   const explored = existsSync('../m8-ashameddata-2026-10-29.json') ? JSON.parse(readFileSync('../m8-ashameddata-2026-10-29.json', 'utf8')) : null
   if (!bytes || !explored) return
-  const model  = readM8sFile(bytes)!
+  const model  = readM8sFile(bytes)
+  if (!model) throw new Error('ASHAMEDDATA.m8s did not read')
   const padded = (song: (number | null)[][]) => Array.from({ length: 256 }, (_, row) => song[row] ?? Array(8).fill(null))
   expect(padded(model.song)).toEqual(padded(explored.song))
   expect(model.chains).toEqual(explored.chains)
-  // FX names the file knows (ids up to 13) match; the others stay ?XX.
-  for (const [id, phrase] of Object.entries<{ steps: { fx: { cmd: string | null }[] }[] }>(explored.phrases)) {
-    phrase.steps.forEach((step, index) => {
-      step.fx.forEach((fx, lane) => {
-        const got = model.phrases[Number(id)].steps[index].fx[lane].cmd
-        if (got && !got.startsWith('?')) expect(got).toBe(fx.cmd)
-      })
-    })
-  }
-  expect(model.phrases[0].steps[0].note).toBe(explored.phrases[0].steps[0].note)
+  expect(model.phrases).toEqual(explored.phrases)
 })
 
 test('ASHAMEDDATA: the 15 instruments give the same Instrument and Inst. Mods lines as the device', () => {
@@ -130,6 +122,32 @@ test('ASHAMEDDATA1: project transpose 3, scale 2, key D, groove 5 at 48 ppq, and
   expect(scale?.notes[2].offset).toBe(1.5)
   expect(scale?.notes[7].offset).toBe(-24)
   expect(scale?.notes[0].offset).toBe(0)
+})
+
+// FXIDS: every FX command typed in on the device (fw 6.6.2), cell after cell in the order Edit+Right
+// steps through them; the names are the ones its screen showed. Phrases 00-01 play instrument 00 (none),
+// phrase 02 instrument 01 (WAVSYNTH, modulators set to ADSR, DRUM, TRIG and TRACKING), and phrases 04,
+// 06 ... 0E instruments 02-07 (MACROSYN, SAMPLER, FMSYNTH, HYPERSYN, MIDI OUT, EXTERNAL; default AHD, AHD, LFO, LFO modulators).
+const SEQUENCER_SHOWN  = 'ARP ARC CHA DEL GRV HOP RND RNL RET REP RTO NTH PSL PBN PVB PVX SCA SCG SED SNG TBL THO TIC TBX TPO TSP GGR RMX INS NXT KIL OFF MTT VMV VMX VDE VRE VIN USB EQI EQM VT1 VT2 VT3 VT4 VT5 VT6 VT7 VT8 XMT XMM XMF XMW XMR XDT XDF XDW XDR XRS XRD XRM XRF XRW XRH XRZ IMX IDE IRE VI2 IM2 ID2 IR2 DJC DJR DJT OTT OTC OTI'
+const DEFAULT_MODS     = 'EA1 AT1 HO1 DE1 ET1 EA2 AT2 HO2 DE2 ET2 LA3 LO3 LS3 LF3 LT3 LA4 LO4 LS4 LF4 LT4'
+const INSTRUMENT_SHOWN : Record<number, string> = {
+  2 : 'VOL PIT FIN OSC SIZ MUL WRP SCN FIL CUT RES AMP LIM PAN SNC ERR DRY SMX SDL SRV EA1 AT1 DE1 SU1 ET1 EA2 PK2 BO2 DE2 ET2 EA3 AT3 HO3 DE3 ET3 TA4 TS4 TL4 TH4 TX4',
+  4 : `VOL PIT FIN OSC TBR COL DEG RED FIL CUT RES AMP LIM PAN TRG ERR DRY SMX SDL SRV ${DEFAULT_MODS}`,
+  6 : `VOL PIT FIN PLY STA LOP LEN DEG FLT CUT RES AMP LIM PAN SLI ERR DRY SMX SDL SRV ${DEFAULT_MODS}`,
+  8 : `VOL PIT FIN ALG FM1 FM2 FM3 FM4 FIL CUT RES AMP LIM PAN SNC ERR DRY SMX SDL SRV ${DEFAULT_MODS}`,
+  10: `VOL PIT FIN CRD CVO SWM WID SUB FIL CUT RES AMP LIM PAN SNC ERR DRY SMX SDL SRV ${DEFAULT_MODS}`,
+  12: `VOL PIT MPG MPB ADD CHD CCA CCB CCC CCD CCE CCF CCG CCH CCI CCJ --- --- --- --- ${DEFAULT_MODS}`,
+  14: `VOL PIT MPB MPG CCA CCB CCC CCD FIL CUT RES AMP LIM PAN ADD CHD DRY SMX SDL SRV ${DEFAULT_MODS}`
+}
+
+test('FXIDS: every FX command id is named as the device showed it', () => {
+  const bytes = sample('FXIDS')
+  if (!bytes) return
+  const model = readM8sFile(bytes)
+  if (!model) throw new Error('FXIDS.m8s did not read')
+  const shown = (...ids: number[]) => ids.flatMap((id) => model.phrases[id].steps.flatMap((step) => step.fx.map((fx) => fx.cmd))).filter((cmd) => cmd != null).join(' ')
+  expect(shown(0, 1)).toBe(SEQUENCER_SHOWN)
+  for (const [id, names] of Object.entries(INSTRUMENT_SHOWN)) expect(shown(Number(id))).toBe(names)
 })
 
 test('ASHAMEDDATAZ: Sampler, External and MIDI OUT instruments read as the device shows them', async () => {
