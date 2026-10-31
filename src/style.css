@@ -177,6 +177,31 @@ body,
   background: var(--device);
 }
 
+/* The top bar's fold buttons take the colours of the track header's: lit on every track, only the label on some. */
+.tool-label {
+  align-self: center;
+  padding: 0 6px 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--label);
+}
+
+.tool.fold-fx.some {
+  color: var(--link);
+}
+
+.tool.fold-ins.some {
+  color: var(--table-link);
+}
+
+.tool.fold-fx.active {
+  background: var(--link);
+}
+
+.tool.fold-ins.active {
+  background: var(--table-link);
+}
+
 .tool.channel {
   display: flex;
   align-items: center;
@@ -192,6 +217,24 @@ body,
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 1px 2px;
+}
+
+.tool.wall-angle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  color: var(--label);
+}
+
+.wall-slider {
+  width: 110px;
+  accent-color: var(--title);
+}
+
+.wall-value {
+  min-width: 3ch;
+  color: var(--value);
 }
 
 .tool.primary {

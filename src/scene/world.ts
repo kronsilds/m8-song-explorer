@@ -1,6 +1,7 @@
-// The 3D view: builds a TrackView per track, frames the camera, opens the wall of the focused
-// track as the view turns, keeps text alive near the camera, and turns pointer input into
-// selections. Picking, pointer input, markers and playheads live in their own modules.
+// The 3D view: builds a TrackView per track, frames the camera, unfolds the walls of the tracks
+// the user opened (their step details and their panels, each apart), keeps text alive near the
+// camera, and turns pointer input into selections. Picking, pointer input, markers and
+// playheads live in their own modules.
 
 import {
   Box3,
@@ -23,34 +24,39 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import type { TrackToggle } from '../m8/midiControl'
 import type { TrackPlayhead } from '../m8/playback'
+import type { ScreenEdit } from '../m8/screen/liveScreen'
 import { PHRASE_COLUMNS, TABLE_COLUMNS } from '../model/columns'
 import { hex2 } from '../model/hex'
 import { TablePlayback } from '../model/music/tablePlayback'
-import { isWallCell, type Selection, sameSelection, selectionTrack } from '../model/selection'
+import { isPanelSelection, isWallCell, type PanelSelection, type Selection, sameSelection, selectionTrack } from '../model/selection'
 import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../model/song'
 import { phraseMoved, trackMoved } from '../model/stepMoves'
 import type { PhraseInstance } from '../model/timeline'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
-import { fitDistance, type Lens, rayMeets, rayThrough, shiftTarget, sideShift } from './camera/framing'
+import { type Align, fitDistance, fitsAcross, type Lens, type Margins, rayMeets, rayThrough, screenX, shiftTarget, sideShift, trackSlide } from './camera/framing'
 import { CameraRig, placeCamera, type RigPose } from './camera/rig'
 import { type SceneButton, ScenePicker } from './input/picker'
 import { bindPointerControls, PAN_MIN_COS, type PointerTarget } from './input/pointerControls'
 import { isTitlePlace, placeOf } from './instrumentFace'
 import {
   BAND_GAP,
-  CHAR_W,
+  DEFAULT_PANEL_COLS,
+  DEFAULT_WALL_DEGREES,
   FRONT_W,
   HEADER_H,
   type Link,
-  PANEL_CHARS,
+  MAX_PANEL_COLS,
   PANEL_COL_W,
   PANEL_U0,
+  PANELS_SLIDE,
   type Panel,
+  panelU,
   ROW_H,
+  SIDE_END,
   SongLayout,
   TRACK_GAP,
   TRACK_PITCH,
-  WALL_ANGLE,
+  type TrackLayout,
   WALL_HINGE,
 } from './layout'
 import { CellMarker, type CellRect } from './markers/cellMarker'
@@ -60,15 +66,33 @@ import { TablePlayheadView } from './markers/tablePlayheadView'
 import type { Palette } from './palette'
 import { easeFactor, linkCurve, smoothstep } from './shapes'
 import { RichText, type TextBlock, TextPool } from './text'
-import { HEADER_TOP } from './track/trackHeader'
-import { PANEL_TAB_ROOM, type PanelFace, TrackView } from './track/trackView'
+import { FACE_WIDTH } from './track/instrumentFaceView'
+import { type ButtonState, type FoldSection, HEADER_BOTTOM, HEADER_TOP } from './track/trackHeader'
+import {
+  type CarriedParts,
+  FACE_PAD_LEFT,
+  FACE_PAD_TOP,
+  flipPose,
+  PANEL_TAB_ROOM,
+  type PanelFace,
+  TrackView,
+  WALL_STEPS_U,
+  WALL_STEPS_W,
+} from './track/trackView'
 
 export type { ViewPreset } from './camera/cameraAngles'
 
-/** Room between an open wall's far end and the next track's column. */
-const OPEN_GAP            = 12
-/** Walls open as the view turns between these yaws, and other tracks leave between the second pair. */
-const WALL_OPEN_YAWS      = [MathUtils.degToRad(5), MathUtils.degToRad(24)] as const
+/**
+ * Room between the end of what a track unfolds (its step details, its wall of panels, or a panel
+ * turned out of it) and the next track's column, along x: the same for every track, whatever it
+ * unfolds and however deep its wall goes.
+ */
+const OPEN_GAP            = 4
+/** Turned between these yaws, the view may reach a little further past the last track. */
+const TURN_YAWS           = [MathUtils.degToRad(5), MathUtils.degToRad(24)] as const
+/** Turned further than this, the track in the middle of the view guides the headers' height. */
+const TURNED_YAW          = MathUtils.degToRad(15)
+/** While a wall is unfolded, the tracks that are not leave between these yaws (looking along the wall). */
 const OTHERS_LEAVE_YAWS   = [MathUtils.degToRad(34), MathUtils.degToRad(54)] as const
 /** Text below this many pixels per row is not drawn; bars show instead. */
 const MIN_TEXT_PX_PER_ROW = 5
@@ -96,14 +120,50 @@ const SCROLL_LAND         = 0.2
 /** Following the M8: a cell lands this many rows under the headers, and the view scrolls when fewer rows than LOOKAHEAD_ROWS are left under it. */
 const LAND_TOP_ROWS       = 2
 const LOOKAHEAD_ROWS      = 4
+/** Screen height (normalized device y) under which rows count as out of view: just over the footer line. */
+const VIEW_BOTTOM_NDC     = -0.92
 /** Pixels between the HUD and the headers' top edge. */
 const HEADER_GAP_PX       = 8
+/** The headers never show lower on the screen than this (normalized height, -1 bottom to 1 top: a third of the way down). */
+const HEADER_LOWEST_NDC   = 1 / 3
+/** Pixels an automatic framing keeps between what it shows and a panel of the HUD over the view. */
+const COVER_GAP_PX        = 12
+/** An automatic framing keeps clear of the HUD's panels while that leaves it this much of the width (a fraction). */
+const MIN_FREE_WIDTH      = 0.4
 /** Pixels above the bottom of the view where the halo of a playhead below it sits: just over the footer line. */
 const HALO_BOTTOM_PX      = 26
 /** Ease rate per second of the headers' glide to their height (the pose eases at 9). */
 const HEADER_GLIDE_RATE   = 15.5
-/** A turn by hand brings the open track to the middle of the view over this much turn. */
-const CENTRE_TURN         = MathUtils.degToRad(25)
+
+/** A part of the view a panel of the HUD covers, in pixels from the view's top-left corner. */
+export interface CoveredArea {
+  left  : number
+  top   : number
+  width : number
+  height: number
+}
+
+/**
+ * What a navigation shows (world points, where things settle): `box` whole when it fits on the
+ * screen, else `core` (a panel's card) when there is one and it fits, else `cell` first.
+ */
+interface Focus {
+  box  : Vector3[]
+  core?: Vector3[]
+  cell : Vector3[]
+}
+
+/**
+ * Where a navigation to another track left from, taken before anything folded: the track, where
+ * its column settled then, and the goal's x. The view pans by the distance between the two
+ * tracks, so the new one shows where the old one was.
+ */
+interface Departure {
+  to   : Selection
+  track: number
+  x    : number
+  goalX: number
+}
 
 /** How the camera moves when a selection is made. */
 export interface SelectOptions {
@@ -129,6 +189,10 @@ export class World implements PointerTarget {
   private readonly probePoint  = new Vector3()
   /** Pixels at the top of the view that the HUD covers. */
   private topInset             = 90
+  /** Parts of the view the HUD's selection panel covers: automatic framings keep clear of them. */
+  private covered              : CoveredArea[] = []
+  /** Measures them now (the panel may just have changed its content), when given; else `covered` is used. */
+  coverage                     : (() => CoveredArea[]) | null = null
   /** Where the headers' top stands above the view's centre now (gliding to where it belongs); null before the first frame. */
   private headerOffset         : number | null = null
   readonly pool                = new TextPool()
@@ -138,6 +202,8 @@ export class World implements PointerTarget {
   onHover                      : (selection: Selection | null) => void = () => {}
   /** A track's mute or solo button was clicked. */
   onTrackButton                : (track: number, kind: TrackToggle) => void = () => {}
+  /** A track unfolded or folded a part of its wall. */
+  onFolds                      : () => void = () => {}
   /** Scroll with the playhead of the focused track while the song plays. */
   followPlayback               = false
 
@@ -152,25 +218,42 @@ export class World implements PointerTarget {
     muted : [] as boolean[],
     soloed: [] as boolean[]
   }
-  /** How open each track's wall is (0..1), easing toward its goal. */
-  private wallOpenness                  : number[] = Array(TRACKS).fill(0)
-  private allWallsOpen                  = false
-  /** Track whose wall opens when nothing is selected. */
+  /** Which parts of each track's wall its header buttons unfolded: they stay unfolded until the button folds them. */
+  private folds                         : Record<FoldSection, boolean>[] = Array.from({ length: TRACKS }, () => ({
+    fx    : false,
+    panels: false
+  }))
+  /**
+   * Parts unfolded by a navigation (the selection, or the followed M8 cursor, going to a cell on
+   * them) and not by their button: they fold again once a navigation leaves the track.
+   */
+  private autoFolds                     : Record<FoldSection, boolean>[] = Array.from({ length: TRACKS }, () => ({
+    fx    : false,
+    panels: false
+  }))
+  /** How unfolded each part of each track's wall is (0..1), easing toward `folds`. */
+  private unfolding                     : Record<FoldSection, number>[] = Array.from({ length: TRACKS }, () => ({
+    fx    : 0,
+    panels: 0
+  }))
+  /** How long each track's wall is drawn, easing toward its layout's length when its columns change. */
+  private shownWallLen                  : number[] = []
+  /** How far the wall is turned from the front (radians). */
+  private wallAngle                     = MathUtils.degToRad(DEFAULT_WALL_DEGREES)
+  /** Track the view is centred on and guided by when nothing is selected: the one in the middle of the view. */
   private focusedTrack                  = 0
-  /** Track opened by hand (a turn, or a pan while turned, started on it); wins until the next selection or cursor move. */
+  /** Track pressed by hand (a turn started on it); wins until the next selection, pan or cursor move. */
   private handTrack                     : number | null = null
-  /** After a track opens by hand, the track that stays still on screen while the walls move, and the layout it was set for (see anchorTo). */
-  private switchAnchor                  : { track: number; focus: number; allOpen: boolean } | null = null
-  /** How far to the side of the camera's pose the view is drawn while the walls move around the anchor (0 once they settle). */
-  private shownShiftX                   = 0
-  /** The turn by hand under way: the target and the yaw it started from, and where the open track was centred then. */
+  /** The turn by hand under way: the target and the yaw it started from, and where the centre of the track turned around was then. */
   private turning                       : { base: Vector3; pivot: Vector3; yaw: number } | null = null
   /** Track the M8 cursor is on while following it; wins over the selection. */
   private followedTrack                 : number | null = null
   /** The device place last followed: the same place again (a screen refresh) changes nothing, so a click wins until the cursor moves. */
   private followedSelection             : Selection | null = null
-  /** The view was turned by following, so following a front cell turns it back. */
-  private turnedByFollowing             = false
+  /** A navigation to another track under way (see Departure), until the view goes to its place. */
+  private departure                     : Departure | null = null
+  /** Where each track's column settled at the start of this frame (see noteSettledColumns). */
+  private readonly settledColumns       : number[] = []
   private selection                     : Selection | null = null
   private hovered                       : Selection | null = null
   private devicePlaces                  : Selection[] = []
@@ -183,6 +266,8 @@ export class World implements PointerTarget {
   /** Transposed phrases show the notes they play (else the notes written, as on the M8). */
   private playedNotes                   = true
   private trimTables                    = true
+  /** Columns each track's wall may have, as its header button set them (see SongLayout). */
+  private readonly panelColumns         : number[] = []
   /** Cuts taken so far: dramatic takes alternate low / high. */
   private cuts                          = 0
   /** The preset the view was last set to, until it is turned by hand. */
@@ -258,7 +343,7 @@ export class World implements PointerTarget {
   setModel(model: SongModel, keepView = false): void {
     const previous     = this.layout
     const hadLayout    = previous != null
-    this.layout        = new SongLayout(model, this.trimTables)
+    this.layout        = new SongLayout(model, this.trimTables, this.panelColumns)
     this.tablePlayback = new TablePlayback(model, this.layout.timeline, this.layout.effective)
     if (previous) {
       for (const track of this.layout.tracks) {
@@ -302,7 +387,6 @@ export class World implements PointerTarget {
   }
 
   private rebuild(): void {
-    this.releaseAnchor()
     for (const view of this.trackViews) {
       view.dispose()
       this.root.remove(view.group)
@@ -317,31 +401,129 @@ export class World implements PointerTarget {
     }
     const blocks: TextBlock[] = []
     for (const track of layout.tracks) {
-      const view       = new TrackView(layout, track, this.palette, this.playedNotes)
-      view.onTextReady = () => this.invalidate()
-      view.faceGoal    = (panel) => this.faceGoal(panel)
-      view.setTrackModes(!!this.trackModes.muted[track.track], !!this.trackModes.soloed[track.track])
-      view.group.position.x = track.track * TRACK_PITCH
-      this.root.add(view.group)
+      const view                     = this.makeTrackView(layout, track)
+      this.shownWallLen[track.track] = track.wallLen
+      view.group.position.x          = this.settledX(track.track)
       this.trackViews.push(view)
       blocks.push(...view.blocks)
     }
-    const rightEdge = layout.tracks.reduce((x, track) => x + TRACK_PITCH + track.wallExtent + OPEN_GAP, 0) + 10
-    blocks.push(...this.buildSpine(layout, rightEdge))
+    blocks.push(...this.buildSpine(layout))
     this.pool.setBlocks(blocks)
-    this.rig.bounds = {
-      minX: -10,
-      maxX: rightEdge,
-      minY: layout.bottomY,
-      maxY: layout.rowY(0) + HEADER_H
-    }
+    this.setBounds(layout)
     this.removeSelectedLinks()
     this.refreshMarkers()
     this.invalidate()
   }
 
-  /** Song row numbers down the left edge, a rule between song rows across the tracks, and the song title. */
-  private buildSpine(layout: SongLayout, rightEdge: number): TextBlock[] {
+  /** A track's view, wired to the world (with `carried`, it takes over what the view it replaces handed over). */
+  private makeTrackView(layout: SongLayout, track: TrackLayout, carried: CarriedParts | null = null): TrackView {
+    const view       = new TrackView(layout, track, this.palette, this.playedNotes, this.wallAngle, carried)
+    view.signature   = layout.trackSignature(track.track)
+    view.onTextReady = () => this.invalidate()
+    view.faceGoal    = (panel) => this.faceGoal(panel)
+    view.setTrackModes(!!this.trackModes.muted[track.track], !!this.trackModes.soloed[track.track])
+    view.setFoldButtons(this.foldState(track.track, 'fx'), this.foldState(track.track, 'panels'))
+    this.root.add(view.group)
+    return view
+  }
+
+  private setBounds(layout: SongLayout): void {
+    this.rig.bounds = {
+      minX: -10,
+      maxX: this.songEnd() + 10,
+      minY: layout.bottomY,
+      maxY: layout.rowY(0) + HEADER_H
+    }
+  }
+
+  /**
+   * The same song after an edit made on the M8 (the model changed in place): only what changed is
+   * drawn again. A track whose content is the same keeps its view; another gets a new view that
+   * takes over the old one's header, panel texts and faces. Panels keep their place, fade and
+   * turn; texts that show the same stay, changed ones swap in once laid out; the camera stays.
+   */
+  updateModel(model: SongModel): void {
+    const previous = this.layout
+    if (!previous || this.trackViews.length !== TRACKS) {
+      this.setModel(model, true)
+      return
+    }
+    const layout       = new SongLayout(model, this.trimTables, this.panelColumns)
+    layout.adoptState(previous)
+    this.layout        = layout
+    this.tablePlayback = new TablePlayback(model, layout.timeline, layout.effective)
+    const replaced     : TrackView[] = []
+    this.trackViews    = this.trackViews.map((old, track) => {
+      const lanes = layout.tracks[track]
+      if (layout.trackSignature(track) === old.signature) {
+        old.relink(layout, lanes)
+        return old
+      }
+      const view            = this.makeTrackView(layout, lanes, old.handOver())
+      view.group.position.x = old.group.position.x
+      view.setWallLength(this.shownWallLen[track] ?? lanes.wallLen)
+      // Unfolded as far as the old one: its panels are drawn before the walls ease, in the next frame.
+      view.setFolds(old.sideAlpha, old.panelsAlpha, old.slide)
+      view.setFrontAlpha(old.frontAlpha)
+      replaced.push(old)
+      return view
+    })
+    this.spine.clear()
+    if (this.bandRules) {
+      this.scene.remove(this.bandRules)
+      this.bandRules.geometry.dispose()
+    }
+    const blocks       = [...this.trackViews.flatMap((view) => view.blocks), ...this.buildSpine(layout)]
+    this.pool.setBlocks(blocks, true)
+    this.setBounds(layout)
+    // The places marked are the same places in the new layout.
+    this.followedSelection = this.followedSelection && this.resolve(this.followedSelection)
+    this.hovered           = this.hovered && this.resolve(this.hovered)
+    this.devicePlaces      = this.devicePlaces.flatMap((place) => this.resolve(place) ?? [])
+    this.removeSelectedLinks()
+    this.select(this.selection && this.resolve(this.selection), {
+      silent: true,
+      reveal: false
+    })
+    for (const old of replaced) {
+      this.root.remove(old.group)
+      old.dispose()
+    }
+    this.invalidate()
+  }
+
+  /**
+   * An item edited on the M8 shows its new values at once (the model holds them already): a
+   * phrase's notes and step details, a table's panels, an instrument's panels and faces. Bars,
+   * links and panels that come or go follow with updateModel. An edit that moves things (a song
+   * cell, a chain's phrases) or changes many (the project, a scale, a groove) goes to it at once:
+   * true then (the whole scene is up to date).
+   */
+  showEdit(edit: ScreenEdit): boolean {
+    const layout = this.layout
+    if (!layout) return false
+    let whole = false
+    if (edit.kind === 'phrase' && edit.id != null) {
+      const keys = new Set((layout.timeline.byPhrase.get(edit.id) ?? []).flatMap((instance) => [`f:${instance.key}`, `w:${instance.key}`]))
+      this.pool.refresh((block) => keys.has(block.key))
+    } else if (edit.kind === 'table' && edit.id != null) {
+      for (const view of this.trackViews) view.refreshTable(edit.id)
+    } else if ((edit.kind === 'inst' || edit.kind === 'instmods') && edit.id != null) {
+      layout.forgetFace(edit.id)
+      for (const view of this.trackViews) view.refreshInstrument(edit.id)
+    } else {
+      this.updateModel(layout.model)
+      whole = true
+    }
+    this.invalidate()
+    return whole
+  }
+
+  /**
+   * Song row numbers down the left edge, a rule between song rows across the tracks, and the song
+   * title. The rules are one unit long: updateWalls stretches them to the end of the last track.
+   */
+  private buildSpine(layout: SongLayout): TextBlock[] {
     const blocks : TextBlock[] = []
     const rules  : number[] = []
     const spineX = -3.4
@@ -359,7 +541,7 @@ export class World implements PointerTarget {
         build : () => new RichText().add(hex2(band.songRow), empty ? this.palette.empty : this.palette.label)
       })
       const ruleY = top + BAND_GAP / 2
-      rules.push(-4, ruleY, -0.2, rightEdge, ruleY, -0.2)
+      rules.push(0, ruleY, -0.2, 1, ruleY, -0.2)
     })
     const geometry = new BufferGeometry()
     geometry.setAttribute('position', new Float32BufferAttribute(rules, 3))
@@ -406,41 +588,91 @@ export class World implements PointerTarget {
     return Math.max(width / 2 / Math.tan(horizontalFov / 2), height / 2 / Math.tan(verticalFov / 2))
   }
 
+  /** Width of the whole song as it stands once the walls settle, with a little room at its right. */
+  private songWidth(): number {
+    return this.songEnd() + 6
+  }
+
   private overviewDistance(): number {
-    return this.distanceToFit((TRACKS * TRACK_PITCH + 6) * 1.04, 40)
+    return this.distanceToFit(this.songWidth() * 1.04, 40)
   }
 
-  /**
-   * Left edge of a track's front column; `settled` gives where it will be once the walls
-   * finish moving, for a view turned `turn` (0 facing the front, walls closed .. 1 turned).
-   */
-  private frontX(track: number, settled = false, turn = 1): number {
-    if (!settled) return this.trackViews[track]?.group.position.x ?? track * TRACK_PITCH
-    return this.frontXWith(track, this.focusTrack(), turn)
+  /** Left edge of a track's front column as drawn now (the walls may still be moving). */
+  private frontX(track: number): number {
+    return this.trackViews[track]?.group.position.x ?? track * TRACK_PITCH
   }
 
-  /** Left edge of a track's front column once the walls settle with `focus` the open track. */
-  private frontXWith(track: number, focus: number, turn: number): number {
+  /** Left edge of a track's front column once the walls settle. */
+  private settledX(track: number): number {
     let x = 0
-    for (let t = 0; t < track; t += 1) x += TRACK_PITCH + (this.allWallsOpen || t === focus ? turn * (this.wallExtent(t) + OPEN_GAP) : 0)
+    for (let t = 0; t < track; t += 1) x += TRACK_PITCH + this.settledWidth(t)
     return x
   }
 
-  /** How far a track's open wall reaches along x. */
-  private wallExtent(track: number): number {
-    return this.layout?.tracks[track]?.wallExtent ?? 0
+  /** Right edge of the last track's front column once the walls settle: where its open parts end is songEnd. */
+  private songEnd(): number {
+    const last = TRACKS - 1
+    return this.settledX(last) + FRONT_W + this.settledWidth(last)
+  }
+
+  /** Extra room a track takes to the right of its column once its walls settle. */
+  private settledWidth(track: number): number {
+    const fold = this.opened(track)
+    return this.openWidth(track, fold.fx ? 1 : 0, fold.panels ? 1 : 0, this.trackViews[track]?.faceAmount(true) ?? 0)
+  }
+
+  /**
+   * Extra room a track takes to the right of its column for how far its step details (`fx`) and
+   * its panels (`panels`) are unfolded (0..1): how far they reach along x at the wall's angle, the
+   * panels turned out of the wall past its end (`face`: how far, 0..1), and OPEN_GAP to the next
+   * column instead of TRACK_GAP; for a wall `wallLen` long (the layout's, or as drawn while it
+   * eases to it). A fold's width follows the content and the angle, not the camera, so tracks
+   * never slide as the view turns.
+   */
+  private openWidth(track: number, fx: number, panels: number, face: number, wallLen = this.layout?.tracks[track]?.wallLen ?? 0): number {
+    const lanes = this.layout?.tracks[track]
+    if (!lanes) return 0
+    const reach = this.wallReach(fx, panels, wallLen)
+    const open  = 1 - (1 - fx) * (1 - panels)
+    const room  = OPEN_GAP + WALL_HINGE - FRONT_W - TRACK_GAP
+    return reach * Math.cos(this.wallAngle) + this.turnedOvershoot(track, wallLen) * panels * face + open * room
+  }
+
+  /**
+   * How far along the wall (from its hinge) its unfolded parts reach, for how far the step
+   * details and the panels are unfolded: the details alone end at SIDE_END; the panels alone
+   * start at the hinge (the wall slides back by PANELS_SLIDE); both reach the wall's end.
+   */
+  private wallReach(fx: number, panels: number, wallLen: number): number {
+    const panelsAlone = wallLen - PANELS_SLIDE
+    return fx * SIDE_END + panels * panelsAlone + fx * panels * (PANELS_SLIDE - SIDE_END)
+  }
+
+  /** How far the wall slid back along itself for how unfolded the step details are. */
+  private wallSlide(fx: number): number {
+    return (1 - fx) * PANELS_SLIDE
+  }
+
+  /**
+   * How far past the wall's end (along x) an instrument face turned out of it reaches in the
+   * worst case: at the last column that can hold one, where it stands face on to the front.
+   */
+  private turnedOvershoot(track: number, wallLen: number): number {
+    const lanes = this.layout?.tracks[track]
+    if (!lanes?.hasFaces) return 0
+    const cos = Math.cos(this.wallAngle)
+    return Math.max(0, panelU(Math.max(0, lanes.cols - 2)) * cos + FACE_WIDTH - wallLen * cos)
   }
 
   view(preset: ViewPreset, immediate = false): void {
     const goal   = this.rig.goal
     const layout = this.layout
-    this.releaseAnchor()
-    // Nothing chosen: the track in the middle of the view is the one that opens.
+    // Nothing chosen: the track in the middle of the view is the one the view centres on.
     if (preset !== 'overview' && this.handTrack == null && this.followedTrack == null && !this.selection) {
       this.focusedTrack = this.trackUnder(0) ?? this.focusedTrack
     }
     if (preset === 'overview') {
-      const width   = TRACKS * TRACK_PITCH + 6
+      const width   = this.songWidth()
       goal.yaw      = 0
       goal.pitch    = 0
       goal.roll     = 0
@@ -452,7 +684,7 @@ export class World implements PointerTarget {
       this.aim(preset)
     }
     this.preset = preset
-    if (preset === 'angle' || preset === 'side') goal.target.copy(this.trackCentre(goal, this.focusTrack(), true, true))
+    if (preset === 'angle' || preset === 'side') goal.target.copy(this.trackCentre(goal, this.focusTrack(), this.isUnfolded(this.focusTrack()), true))
     else if (preset === 'front') this.frameFront()
     if (immediate) this.rig.jump()
     this.invalidate()
@@ -461,7 +693,7 @@ export class World implements PointerTarget {
   /** Turns the goal to a preset's angles (a new dramatic take each cut). */
   private aim(preset: TurnPreset): void {
     if (this.dramatic) this.cuts += 1
-    Object.assign(this.rig.goal, presetAngles(preset, this.dramatic, this.cuts))
+    Object.assign(this.rig.goal, presetAngles(preset, this.dramatic, this.cuts, MathUtils.radToDeg(this.wallAngle)))
   }
 
   /** Switches dramatic angles; the current preset is taken again the new way. */
@@ -472,10 +704,175 @@ export class World implements PointerTarget {
     this.invalidate()
   }
 
-  toggleAllWalls(): boolean {
-    this.allWallsOpen = !this.allWallsOpen
+  // ---------------------------------------------------------------------------
+  // Folds
+
+  /** The parts of a track's wall that are unfolded (or unfolding): by its buttons, or by a navigation. */
+  private opened(track: number): Record<FoldSection, boolean> {
+    const fold = this.folds[track]
+    const auto = this.autoFolds[track]
+    return {
+      fx    : fold.fx || auto.fx,
+      panels: fold.panels || auto.panels
+    }
+  }
+
+  /** Something of the track's wall is unfolded (or unfolding). */
+  private isUnfolded(track: number): boolean {
+    const opened = this.opened(track)
+    return opened.fx || opened.panels
+  }
+
+  /** How a fold button is lit: on when it keeps its part unfolded, auto when a navigation unfolded it. */
+  private foldState(track: number, section: FoldSection): ButtonState {
+    if (this.folds[track][section]) return 'on'
+    return this.autoFolds[track][section] ? 'auto' : 'off'
+  }
+
+  private showFoldButtons(track: number): void {
+    this.trackViews[track]?.setFoldButtons(this.foldState(track, 'fx'), this.foldState(track, 'panels'))
+  }
+
+  /** Every part of every track's wall is unfolded by its button (or, with `section`, that part of every track's). */
+  allUnfolded(section?: FoldSection): boolean {
+    return this.folds.every((fold) => (section ? fold[section] : fold.fx && fold.panels))
+  }
+
+  /** How far a part is unfolded across the tracks: on every track by its button (all), on some (by a button or a navigation), or on none. */
+  foldCoverage(section: FoldSection): 'off' | 'some' | 'all' {
+    if (this.allUnfolded(section)) return 'all'
+    return this.folds.some((_, track) => this.opened(track)[section]) ? 'some' : 'off'
+  }
+
+  /** The parts of a track's wall its buttons unfolded. */
+  foldsOf(track: number): Record<FoldSection, boolean> {
+    return { ...this.folds[track] }
+  }
+
+  /**
+   * Unfolds every part of every track's wall (or, with `section`, that part of every track's), or
+   * folds them all when they are all unfolded; returns true when they are unfolded.
+   */
+  toggleAllFolds(section?: FoldSection): boolean {
+    const open = !this.allUnfolded(section)
+    for (const track of this.folds.keys()) {
+      for (const part of ['fx', 'panels'] as const) {
+        if (section && section !== part) continue
+        this.folds[track][part]     = open
+        this.autoFolds[track][part] = false
+      }
+      this.showFoldButtons(track)
+    }
+    if (open) this.revealTrack(this.focusTrack())
+    this.foldsChanged()
+    return open
+  }
+
+  /**
+   * A track's fold button: unfolds its part of the wall until the button is pressed again, and
+   * brings it into view. A part a navigation unfolded stays unfolded, now for good.
+   */
+  toggleFold(track: number, section: FoldSection): void {
+    const fold = this.folds[track]
+    if (!fold) return
+    const wasOpen                  = this.opened(track)[section]
+    fold[section]                  = !fold[section]
+    this.autoFolds[track][section] = false
+    this.showFoldButtons(track)
+    if (fold[section] && !wasOpen) this.revealTrack(track)
+    this.foldsChanged()
+  }
+
+  private foldsChanged(): void {
+    this.refreshSelectedLinks()
     this.invalidate()
-    return this.allWallsOpen
+    this.onFolds()
+  }
+
+  /**
+   * A navigation went to `selection`: what navigations unfolded on other tracks folds again, and
+   * the part of the wall its cell is on (its step details, or its panels) unfolds and comes into
+   * view, until a navigation leaves the track. A cell of the front column unfolds nothing.
+   */
+  private unfoldFor(selection: Selection): void {
+    const track = selectionTrack(selection)
+    this.foldAutoExcept(track)
+    if (!isWallCell(selection)) return
+    // The instrument column is on the front too: going there leaves the step details folded.
+    const section: FoldSection | null = selection.kind !== 'step' ? 'panels' : selection.column !== 'inst' ? 'fx' : null
+    if (!section || this.opened(track)[section]) return
+    this.autoFolds[track][section] = true
+    this.showFoldButtons(track)
+    this.revealTrack(track)
+    this.foldsChanged()
+  }
+
+  /**
+   * Folds again what navigations unfolded on every track but `keep` (on all of them when null),
+   * and moves the view with `keep` (else the focused track) so its column stays where it is on
+   * screen while the tracks on its left close up.
+   */
+  private foldAutoExcept(keep: number | null): void {
+    const folding = [...this.autoFolds.keys()].filter((track) => track !== keep && (this.autoFolds[track].fx || this.autoFolds[track].panels))
+    if (!folding.length) return
+    const still  = keep ?? this.focusTrack()
+    const before = this.settledX(still)
+    for (const track of folding) {
+      this.autoFolds[track] = {
+        fx    : false,
+        panels: false
+      }
+      this.showFoldButtons(track)
+    }
+    this.rig.goal.target.x += this.settledX(still) - before
+    this.foldsChanged()
+  }
+
+  /** Slides the view sideways, no more than it takes, for a track's column and its unfolded wall to be on screen (its column first). */
+  private revealTrack(track: number): void {
+    const span = this.trackSpan(track, this.isUnfolded(track))
+    this.slideGoal(span, span.slice(0, 2))
+  }
+
+  /**
+   * Slides the goal sideways to frame `points` (see sideShift): along the tracks, so the camera
+   * keeps its distance from them and the zoom stays as it is, as a pan by hand does (along the
+   * view only when it looks almost along the tracks). The margins keep clear of the HUD's selection
+   * panel at every height by default (see frameMargins).
+   */
+  private slideGoal(points: Vector3[], mustSee: Vector3[] = [], align: Align = 'least', margins = this.frameMargins()): void {
+    const goal  = this.rig.goal
+    const lens  = this.lens()
+    const slide = trackSlide(goal, lens, margins)
+    shiftTarget(goal, sideShift(goal, lens, points, margins, mustSee, align, slide), slide)
+    this.clampGoal()
+  }
+
+  /**
+   * The `cols` header button: a track's wall gets one more column of panels (up to the most they
+   * want), or goes back to the usual number. Only that track changes: its wall eases to its new
+   * length, its panels glide to their new columns and the tracks on its right slide along.
+   */
+  private cycleColumns(track: number): void {
+    const lanes = this.layout?.tracks[track]
+    if (!lanes || !this.layout) return
+    const wider              = lanes.cols < lanes.wanted
+    this.panelColumns[track] = wider ? Math.min(MAX_PANEL_COLS, lanes.cols + 1) : DEFAULT_PANEL_COLS
+    if (!this.layout.setColumnLimit(track, this.panelColumns[track])) return
+    this.trackViews[track]?.refreshColumns()
+    if (wider) this.revealTrack(track)
+    this.refreshSelectedLinks()
+    this.invalidate()
+  }
+
+  /** Turns the wall `degrees` from the front (the Options panel's slider). */
+  setWallDegrees(degrees: number): void {
+    const angle = MathUtils.degToRad(degrees)
+    if (Math.abs(angle - this.wallAngle) < 1e-4) return
+    this.wallAngle = angle
+    for (const view of this.trackViews) view.setWallAngle(angle)
+    this.refreshSelectedLinks()
+    this.invalidate()
   }
 
   zoom(factor: number): void {
@@ -488,20 +885,11 @@ export class World implements PointerTarget {
     this.invalidate()
   }
 
-  /** The track whose wall opens: the one opened by hand, else the followed one, else the selected one, else the one in the middle of the view. */
+  /** The track the view centres on: the one pressed by hand, else the followed one, else the selected one, else the one in the middle of the view. */
   focusTrack(): number {
     if (this.handTrack != null) return this.handTrack
     if (this.followedTrack != null) return this.followedTrack
     return this.selection ? selectionTrack(this.selection) : this.focusedTrack
-  }
-
-  /** The track whose wall is open now, and where its column will settle. */
-  private focusAnchor(): { track: number; left: number } {
-    const track = this.focusTrack()
-    return {
-      track,
-      left: this.frontX(track, true)
-    }
   }
 
   private lens(): Lens {
@@ -519,27 +907,86 @@ export class World implements PointerTarget {
     return [Math.min(near, far), Math.max(near, far)]
   }
 
+  /** Where the point `u` along the wall of a track whose column starts at `left` is (x, z), for the wall slid back by `slide`. */
+  private onWall(left: number, u: number, slide: number): Vector3 {
+    return new Vector3(left + WALL_HINGE + (u - slide) * Math.cos(this.wallAngle), 0, -(u - slide) * Math.sin(this.wallAngle))
+  }
+
   /**
    * Points across what a framing shows of a track, where it settles, for the goal view: its
-   * front column, and when `open` its wall up to the panels shown for the rows in view (at
-   * least its first panel column), and the panels turned out of it.
+   * front column, and when `open` what it has unfolded: its step details, and its panels up to
+   * the ones shown for the rows in view (at least its first panel column), each as wide as the
+   * face it turns to (an instrument face reaches past the wall's end).
    */
   private trackSpan(track: number, open: boolean): Vector3[] {
     const goal  = this.rig.goal
     const y     = goal.target.y
-    const left  = this.frontX(track, true, open ? 1 : 0)
+    const left  = this.settledX(track)
     const front = [new Vector3(left, y, 0), new Vector3(left + FRONT_W, y, 0)]
+    const fold  = this.opened(track)
     const lanes = this.layout?.tracks[track]
     if (!open || !this.layout || !lanes) return front
-    const onWall = (u: number) => new Vector3(left + WALL_HINGE + u * Math.cos(WALL_ANGLE), y, -u * Math.sin(WALL_ANGLE))
+    const slide  = this.wallSlide(fold.fx ? 1 : 0)
+    const onWall = (u: number) => this.onWall(left, u, slide).setY(y)
+    if (!fold.panels) return [...front, onWall(SIDE_END)]
     // Which panels the rows in view would show, and in which columns (the panels themselves stay where they are).
-    const range  = this.stickRange(goal, true)
-    let end      = Math.min(lanes.wallLen, PANEL_U0 + PANEL_COL_W)
-    for (const { panel, u } of this.layout.probe(track, range.panelTop, range.bottom, range.view)) {
-      if (panel.flip < 0.05) end = Math.max(end, Math.min(lanes.wallLen, u + PANEL_CHARS * CHAR_W + 1))
+    const range = this.stickRange(goal, true)
+    const ends  = this.layout.probe(track, range.panelTop, range.bottom, range.view).map((shown) => this.cardCorners(track, shown).corners[1].setY(y))
+    return [...front, onWall(Math.min(lanes.wallLen, PANEL_U0 + PANEL_COL_W)), ...ends]
+  }
+
+  /**
+   * The corners of a panel's card where the layout puts it (wall u `u`, title line at `y`, `rows`
+   * rows), as large as the face it turns to: top left, top right (the tab over it included),
+   * bottom left, bottom right. With them, the card's left edge on the wall and the way it runs
+   * from there (an instrument face may turn out of the wall toward the front, see flipPose).
+   */
+  private cardCorners(track: number, shown: { panel: Panel; u: number; y: number; rows: number }): { corners: Vector3[]; start: Vector3; along: Vector3 } {
+    const view   = this.trackViews[track]
+    const face   = view?.settledFace(shown.panel) ?? 'table'
+    const width  = view?.settledWidth(shown.panel) ?? 0
+    const angle  = this.wallAngle * (1 - flipPose(face === 'inst' ? 1 : 0).turn)
+    const along  = new Vector3(Math.cos(angle), 0, -Math.sin(angle))
+    const start  = this.onWall(this.settledX(track), shown.u - FACE_PAD_LEFT, this.wallSlide(this.opened(track).fx ? 1 : 0))
+    const end    = start.clone().addScaledVector(along, width)
+    const top    = shown.y + PANEL_TAB_ROOM
+    const bottom = shown.y + FACE_PAD_TOP - (shown.rows * ROW_H + 0.5)
+    return {
+      corners: [start.clone().setY(top), end.clone().setY(top), start.clone().setY(bottom), end.setY(bottom)],
+      start,
+      along
     }
-    const turned = (this.trackViews[track]?.turnedPanelEnds() ?? []).map((point) => new Vector3(point.x + left, y, point.z))
-    return [...front, onWall(end), ...turned]
+  }
+
+  /**
+   * Where the panel of a panel cell settles for the goal view: its card's corners (see
+   * cardCorners) and the cell's centre on the face the panel turns to. Null when the layout would
+   * not show the panel there (none of its uses is near the rows in view).
+   */
+  private settledCard(selection: PanelSelection): { corners: Vector3[]; cell: Vector3 } | null {
+    const { layout } = this
+    const track      = selection.track
+    const view       = this.trackViews[track]
+    const panel      = this.panelOf(track, selection.table)
+    if (!layout || !view || !panel) return null
+    const range = this.stickRange(this.rig.goal, true)
+    const shown = layout.probe(track, range.panelTop, range.bottom, range.view).find((p) => p.panel === panel)
+    if (!shown) return null
+    const { corners, start, along } = this.cardCorners(track, shown)
+    // Cells are placed in the frame of the face: x from its first character, y from its title line.
+    const rect                      = cellRects(layout, view, selection, (table) => this.panelOf(track, table), true).at(-1)
+    const cell                      = rect ? start.clone().addScaledVector(along, FACE_PAD_LEFT + rect.x + rect.w / 2).setY(shown.y + rect.y - rect.h / 2) : corners[0]
+    return {
+      corners,
+      cell
+    }
+  }
+
+  /** How far the bottom of a card (see cardCorners) reaches under the bottom of the view, where it stands; 0 or less when it is above it. */
+  private cutBelow(corners: Vector3[]): number {
+    const goal = this.rig.goal
+    this.aimProbe(goal)
+    return Math.max(...corners.slice(2).map((corner) => this.probedHeight(goal, corner.x, VIEW_BOTTOM_NDC, corner.z) - corner.y))
   }
 
   /**
@@ -549,12 +996,14 @@ export class World implements PointerTarget {
    * (within readable distances).
    */
   private trackCentre(pose: RigPose, track: number, open: boolean, fit = false): Vector3 {
-    const lens  = this.lens()
-    const probe = {
+    const lens    = this.lens()
+    // Centred in what the HUD's selection panel leaves free.
+    const margins = this.frameMargins()
+    const probe   = {
       ...pose,
       target: pose.target.clone()
     }
-    let points  = this.trackSpan(track, open)
+    let points    = this.trackSpan(track, open)
     // Twice when fitting: standing elsewhere shows other rows, and so maybe other panels.
     for (let pass = 0; pass < (fit ? 2 : 1); pass += 1) {
       const box      = new Box3().setFromPoints(points)
@@ -562,37 +1011,33 @@ export class World implements PointerTarget {
       probe.target.z = (box.min.z + box.max.z) / 2
       if (!fit) break
       const [near, far] = this.readableDistances()
-      probe.distance    = fitDistance(probe, lens, points, FRAME_MARGINS, near, far)
+      probe.distance    = fitDistance(probe, lens, points, margins, near, far)
       pose.distance     = probe.distance
       points            = this.trackSpan(track, open)
     }
-    shiftTarget(probe, sideShift(probe, lens, points, FRAME_MARGINS, [], 'center'))
+    shiftTarget(probe, sideShift(probe, lens, points, margins, [], 'center'))
     return probe.target
   }
 
-  /** Where the target goes to centre the focused track at the goal's yaw: its column facing the front, blending to its column and wall as the wall opens. */
-  private trackPivot(): Vector3 {
-    const goal  = this.rig.goal
-    const track = this.focusTrack()
-    const turn  = this.wallTurn(goal.yaw)
-    const front = this.trackCentre(goal, track, false)
-    return turn > 0 ? front.lerp(this.trackCentre(goal, track, true), turn) : front
+  /** Where the target goes to centre a track at the goal's yaw: its column, and what it has unfolded. */
+  private trackPivot(track: number): Vector3 {
+    return this.trackCentre(this.rig.goal, track, this.isUnfolded(track))
   }
 
   /**
    * Facing the front, a framing of the tracks as a whole: centred on all of them, then slid
-   * no more than it takes for the focused track's column to be on screen.
+   * no more than it takes for the focused track's column to be on screen. The target stands on
+   * the tracks' plane, or `z` off it (a navigation keeps the camera's distance from the tracks).
    */
-  private frameFront(): void {
+  private frameFront(z = 0): void {
     const goal = this.rig.goal
     const last = this.trackViews.length - 1
     if (last < 0) return
-    const y    = goal.target.y
-    const lens = this.lens()
-    const all  = [new Vector3(0, y, 0), new Vector3(this.frontX(last, true, 0) + FRONT_W, y, 0)]
-    goal.target.set((all[0].x + all[1].x) / 2, y, 0)
-    shiftTarget(goal, sideShift(goal, lens, all, FRAME_MARGINS, [], 'center'))
-    shiftTarget(goal, sideShift(goal, lens, this.trackSpan(this.focusTrack(), false), FRAME_MARGINS))
+    const y   = goal.target.y
+    const all = [new Vector3(0, y, 0), new Vector3(this.songEnd(), y, 0)]
+    goal.target.set((all[0].x + all[1].x) / 2, y, z)
+    this.slideGoal(all, [], 'center')
+    this.slideGoal(this.trackSpan(this.focusTrack(), false))
   }
 
   /** Normalized device coordinates (-1..1, y up) of a pointer position. */
@@ -619,8 +1064,11 @@ export class World implements PointerTarget {
     for (let track = 0; track < this.trackViews.length; track += 1) {
       const left = this.frontX(track)
       const hits = [meet(left - TRACK_GAP / 2, 0, left + FRONT_W + TRACK_GAP / 2, 0)]
-      const wall = this.trackViews[track].wallAlpha > 0.5 ? this.layout?.tracks[track]?.wallLen : undefined
-      if (wall) hits.push(meet(left + WALL_HINGE, 0, left + WALL_HINGE + wall * Math.cos(WALL_ANGLE), -wall * Math.sin(WALL_ANGLE)))
+      const wall = this.shownWall(track)
+      if (wall) {
+        const [from, to] = [this.onWall(left, wall[0], this.trackViews[track].slide), this.onWall(left, wall[1], this.trackViews[track].slide)]
+        hits.push(meet(from.x, from.z, to.x, to.z))
+      }
       for (const along of hits) if (along != null && along < nearestAlong) [nearest, nearestAlong] = [track, along]
     }
     return nearest == null ? null : {
@@ -629,135 +1077,364 @@ export class World implements PointerTarget {
     }
   }
 
-  /** Opens another track's wall by hand; the view moves with that track's column, so it stays where it is on screen while the walls move. */
-  private openByHand(track: number): void {
-    const turn             = this.wallTurn(this.rig.goal.yaw)
-    const before           = this.frontX(track, true, turn)
-    this.handTrack         = track
-    this.rig.goal.target.x += this.frontX(track, true, turn) - before
-    this.anchorTo(track)
-    this.invalidate()
-  }
-
-  /**
-   * Keeps `anchor` still on screen while the walls move to the new layout: the camera's pose
-   * jumps to where it will be once they settle (so it does not ease there on its own, at
-   * another pace than the walls), and the view is drawn shifted back by what the anchor
-   * still has to move (see updateWalls), so nothing jumps on screen.
-   */
-  private anchorTo(anchor: number): void {
-    const turn                = this.wallTurn(this.rig.current.yaw)
-    const shift               = this.frontX(anchor) - this.frontXWith(anchor, this.focusTrack(), turn)
-    this.rig.current.target.x += this.shownShiftX - shift
-    this.shownShiftX          = shift
-    this.switchAnchor         = {
-      track  : anchor,
-      focus  : this.focusTrack(),
-      allOpen: this.allWallsOpen
-    }
-  }
-
-  /** Stops keeping a track still: the camera's pose takes the shift the view is drawn with, so nothing moves on screen. */
-  private releaseAnchor(): void {
-    this.rig.current.target.x += this.shownShiftX
-    this.shownShiftX          = 0
-    this.switchAnchor         = null
-  }
-
-  /** The pose the view is drawn from: the camera's, shifted while the walls move around an anchor. */
-  private shownPose(): RigPose {
-    const pose = this.rig.current
-    return {
-      ...pose,
-      target: pose.target.clone().setX(pose.target.x + this.shownShiftX)
-    }
+  /** The stretch of a track's wall (u from, u to) that shows enough to be grabbed, null when nothing of it does. */
+  private shownWall(track: number): [from: number, to: number] | null {
+    const view  = this.trackViews[track]
+    const lanes = this.layout?.tracks[track]
+    if (!view || !lanes) return null
+    const side   = view.sideAlpha > 0.5
+    const panels = view.panelsAlpha > 0.5
+    if (!side && !panels) return null
+    return [side ? 0 : PANELS_SLIDE, panels ? lanes.wallLen : SIDE_END]
   }
 
   /**
    * Follows the M8 cursor: its track becomes the focused one; a wall cell (velocity,
-   * instrument, FX, a table, an instrument panel) turns the view and opens the wall, a
-   * note, chain or song cell turns it back to the front. Null stops following.
+   * instrument, FX, a table, an instrument panel) unfolds the part of the wall it is on and
+   * comes into view. Null stops following.
    */
   follow(selection: Selection | null, options: { scroll?: boolean } = {}): void {
     if (selection && sameSelection(selection, this.followedSelection)) return
+    // With auto select, select() took the departure before it folded anything.
+    if (selection && !(this.departure && sameSelection(this.departure.to, selection))) this.departure = this.departFrom(this.followedSelection, selection)
     this.followedSelection = selection
     if (!selection) {
       if (this.followedTrack != null) this.focusedTrack = this.followedTrack
-      this.followedTrack     = null
-      this.turnedByFollowing = false
+      this.followedTrack = null
       this.invalidate()
       return
     }
-    const from         = this.focusAnchor()
     this.handTrack     = null
     this.followedTrack = selectionTrack(selection)
-    this.turnFor(selection, from, options.scroll !== false, true)
+    this.reachCell(selection, options.scroll !== false, true)
     this.invalidate()
   }
 
   /**
-   * A wall cell turns the view and opens the wall; a note, chain or song cell turns it back
-   * to the front when it was turned that way. Then scrolls the cell into view, unless
-   * `scroll` is off (the playheads scroll the view while the song plays).
+   * Where each track's column settles, as of this frame: a navigation measures where it left from
+   * with it, since the M8 may have turned a panel (widening a track) just before the selection moves.
    */
-  private turnFor(selection: Selection, from: { track: number; left: number }, scroll = true, landTop = false): void {
-    const goal         = this.rig.goal
-    const trackChanged = from.track !== selectionTrack(selection)
-    const onWall       = isWallCell(selection)
-    if (onWall && (goal.yaw < FACING_FRONT_YAW || trackChanged)) {
-      this.view('angle')
-      this.turnedByFollowing = true
+  private noteSettledColumns(): void {
+    let x = 0
+    for (let track = 0; track < this.trackViews.length; track += 1) {
+      this.settledColumns[track] = x
+      x                          += TRACK_PITCH + this.settledWidth(track)
     }
-    const turnedBack = !onWall && this.turnedByFollowing
-    if (turnedBack) {
-      this.aim('front')
-      this.preset            = 'front'
-      goal.target.z          = 0
-      this.turnedByFollowing = false
+  }
+
+  /** The departure of a navigation from `from` to `to` (see Departure), when they are on different tracks. */
+  private departFrom(from: Selection | null, to: Selection): Departure | null {
+    if (!from || selectionTrack(from) === selectionTrack(to)) return null
+    const track = selectionTrack(from)
+    return {
+      to,
+      track,
+      x    : this.settledColumns[track] ?? this.settledX(track),
+      goalX: this.rig.goal.target.x
     }
-    // Keep the cell in view, measured where it will be once the walls have moved.
-    const point = this.settledPoint(selection)
-    const half  = this.visibleHalfHeight(goal.distance) * 0.7
-    if (point && scroll) this.scrollRowsInto(point.y + ROW_H / 2, point.y - ROW_H / 2, landTop)
-    if (goal.yaw >= FACING_FRONT_YAW) {
-      // Turned: another track takes the same framing, at the same distance; the cell stays on screen.
-      if (trackChanged) goal.target.copy(this.trackCentre(goal, selectionTrack(selection), true))
-      if (point) shiftTarget(goal, sideShift(goal, this.lens(), [point], FRAME_MARGINS))
-    } else if (point && (scroll || turnedBack) && (turnedBack || Math.abs(point.x - goal.target.x) > half * this.camera.aspect)) {
-      this.frameFront()
-    }
+  }
+
+  /**
+   * After a navigation to another track (see Departure): the view pans along the tracks by the
+   * distance between them, so the new track shows where the old one was, and a cell at the same
+   * place in it (row and column) where the old cell was. The framing that follows moves only if
+   * something it must show is still cut.
+   */
+  private panAcrossTracks(selection: Selection): void {
+    const departure = this.departure
+    this.departure  = null
+    if (!departure || !sameSelection(departure.to, selection)) return
+    const track = selectionTrack(selection)
+    if (track === departure.track) return
+    this.rig.goal.target.x = departure.goalX + this.settledX(track) - departure.x
+    this.clampGoal()
+  }
+
+  /**
+   * Unfolds the part of the wall a wall cell is on, then brings the selection into view (measured
+   * where it will be once the walls have moved), clear of the HUD's selection panel: the view slides
+   * along the tracks, keeping its distance from them, and scrolls, unless `scroll` is off (the
+   * playheads scroll the view while the song plays), so that all it marks shows (the phrase of a
+   * chain row, the chain of a song cell), or its top when that is taller than the view. The
+   * camera does not turn.
+   */
+  private reachCell(selection: Selection, scroll = true, landTop = false): void {
+    const before = this.rig.goal.target.clone()
+    this.unfoldFor(selection)
+    this.panAcrossTracks(selection)
+    this.frameCell(selection, scroll, landTop)
+    if (this.rig.goal.target.distanceTo(before) > 0.05) this.cutDramatic(selection, scroll, landTop)
     this.invalidate()
   }
 
-  /** World centre of a selection's cell once the track positions have settled. */
-  private settledPoint(selection: Selection): Vector3 | null {
-    const rect = this.rectsOf(selection).at(-1)
-    if (!rect) return null
-    const track = selectionTrack(selection)
-    const point = new Vector3(rect.x + rect.w / 2, rect.y - rect.h / 2, 0)
-    const view  = this.trackViews[track]
-    // Into the track's group (the wall, or a panel turned out of it), whose x is then where it settles.
-    for (let object: Object3D | null = rect.parent; view && object && object !== view.group; object = object.parent) {
-      object.updateMatrix()
-      point.applyMatrix4(object.matrix)
+  /** Frames a selection with the goal's angles (see reachCell): a panel cell's card, else the phrase of the cell. */
+  private frameCell(selection: Selection, scroll: boolean, landTop: boolean): void {
+    if (isPanelSelection(selection)) {
+      this.reachPanel(selection, scroll)
+      return
     }
-    point.x += this.frontX(track, true)
-    return point
+    const focus = this.focusOf(selection)
+    if (!focus) return
+    // Twice: a scroll moves things across a little (pitch, roll) or past a panel of the HUD, and a
+    // slide brings them nearer or further, which moves them up or down the screen.
+    for (let pass = 0; pass < 2; pass += 1) {
+      if (scroll) this.scrollToShow(focus, landTop)
+      this.slideToShow(selection, focus)
+    }
   }
 
-  /** Moves the camera so a selection is in view (turning toward the wall for wall cells). */
+  /**
+   * With dramatic angles, a navigation that moved the view is a cut: the preset (Front, Turn or
+   * Side; not an angle turned by hand) takes a new take, and the camera swings around the cell, which
+   * stays where the framing put it on screen. The framing then moves only if something is cut.
+   */
+  private cutDramatic(selection: Selection, scroll: boolean, landTop: boolean): void {
+    const preset = this.preset
+    if (!this.dramatic || !preset || preset === 'overview') return
+    const anchor = isPanelSelection(selection) ? (this.settledCard(selection)?.cell ?? null) : this.settledPoint(selection)
+    const shown  = anchor ? this.goalNdc(anchor) : null
+    this.aim(preset)
+    if (anchor && shown) this.keepOnScreen(anchor, shown)
+    this.frameCell(selection, scroll, landTop)
+  }
+
+  /** Where a world point shows from the goal view (normalized device coordinates). */
+  private goalNdc(point: Vector3): { x: number; y: number } {
+    this.aimProbe(this.rig.goal)
+    const { x, y } = this.probePoint.copy(point).project(this.probeCamera)
+    return {
+      x,
+      y
+    }
+  }
+
+  /** Moves the goal's target along the tracks and up or down until `point` shows at `ndc` (a few Newton steps). */
+  private keepOnScreen(point: Vector3, ndc: { x: number; y: number }): void {
+    const target = this.rig.goal.target
+    const step   = 0.5
+    for (let pass = 0; pass < 4; pass += 1) {
+      const at = this.goalNdc(point)
+      const ex = ndc.x - at.x
+      const ey = ndc.y - at.y
+      if (Math.abs(ex) < 1e-4 && Math.abs(ey) < 1e-4) break
+      target.x     += step
+      const alongX = this.goalNdc(point)
+      target.x     -= step
+      target.y     += step
+      const alongY = this.goalNdc(point)
+      target.y     -= step
+      const [a, b] = [(alongX.x - at.x) / step, (alongY.x - at.x) / step]
+      const [c, d] = [(alongX.y - at.y) / step, (alongY.y - at.y) / step]
+      const det    = a * d - b * c
+      if (Math.abs(det) < 1e-9) break
+      target.x += (d * ex - b * ey) / det
+      target.y += (a * ey - c * ex) / det
+    }
+    this.clampGoal()
+  }
+
+  /**
+   * What a navigation to a front or step cell shows, where things settle: the phrase it is in (a
+   * Song view cell: its chain, every phrase of its song row) across the front column, and the step
+   * details when they are unfolded; and the cell itself.
+   */
+  private focusOf(selection: Extract<Selection, { kind: 'step' | 'chain' }>): Focus | null {
+    const layout = this.layout
+    if (!layout) return null
+    const { instance } = selection
+    const track        = instance.track
+    let rows           = ROWS_PER_PHRASE
+    if (selection.kind === 'chain' && selection.view === 'song') {
+      const last = layout.timeline.byTrack[track].filter((other) => other.songRow === instance.songRow).at(-1) ?? instance
+      rows       = last.row - instance.row + ROWS_PER_PHRASE
+    }
+    const top    = layout.rowY(instance.row) + 0.1
+    const bottom = layout.rowY(instance.row + rows - 1) - ROW_H - 0.1
+    const left   = this.settledX(track)
+    const across = [new Vector3(left - 0.2, 0, 0), new Vector3(left + FRONT_W, 0, 0)]
+    // Unfolded, the step details stand on the wall where it settles (not slid back).
+    if (this.opened(track).fx) across.push(this.onWall(left, WALL_STEPS_U + WALL_STEPS_W, 0))
+    const cell   = this.settledCorners(selection)
+    if (!cell.length) return null
+    return {
+      box: across.flatMap((point) => [point.clone().setY(top), point.clone().setY(bottom)]),
+      cell
+    }
+  }
+
+  /**
+   * Scrolls for the whole focus box to show between the sticky headers and the bottom of the view
+   * (measured where each of its points stands: seen at an angle, a nearer one shows larger), or,
+   * when it is taller than that, its cell. Nothing moves while it shows. Else it lands with room
+   * in the direction the view went: following the M8 (`landTop`), its top just under the headers
+   * (what follows matters more), a cell left with LOOKAHEAD_ROWS under it; otherwise SCROLL_LAND
+   * of the stretch from the edge it came in by.
+   */
+  private scrollToShow(focus: Focus, landTop: boolean): void {
+    const goal = this.rig.goal
+    this.aimProbe(goal)
+    const range          = this.stickRange(goal, true)
+    const viewTop        = Math.min(range.headerTop, this.layout?.headerRestY ?? Number.POSITIVE_INFINITY) - HEADER_BOTTOM
+    // How far its top is under the headers, and its bottom under the view (the view moves up by
+    // `above` to show the one, down by `below` to show the other).
+    const outside        = (points: Vector3[]) => ({
+      above: Math.max(...points.map((point) => point.y)) - viewTop,
+      below: Math.max(...points.map((point) => this.probedHeight(goal, point.x, VIEW_BOTTOM_NDC, point.z) - point.y))
+    })
+    let { above, below } = outside(focus.box)
+    let lookahead        = 0
+    if (above + below > 0) {
+      ;({ above, below } = outside(focus.cell))
+      lookahead          = landTop ? LOOKAHEAD_ROWS * ROW_H : 0
+    }
+    if (above <= 0 && below + lookahead <= 0) return
+    // Room left around it once shown, and the stretch the view shows (where its cell stands).
+    const room    = Math.max(0, -(above + below))
+    const cell    = focus.cell[0]
+    const span    = viewTop - this.probedHeight(goal, cell.x, VIEW_BOTTOM_NDC, cell.z)
+    const shift   = landTop
+      ? above + Math.min(LAND_TOP_ROWS * ROW_H, room)
+      : below > 0
+        ? above + Math.min(span * SCROLL_LAND, room)
+        : -below - Math.min(span * SCROLL_LAND, room)
+    goal.target.y += shift
+    this.clampGoal()
+  }
+
+  /**
+   * Slides the view along the tracks when the focus box does not show whole between the margins
+   * (clear of the HUD's selection panel at the heights it spans): its track, the box and as much of
+   * its unfolded wall as fits, comes to the middle of the free room (turned, a track left at an
+   * edge would stand far off and small); a box wider than the screen fills it, its cell in view.
+   * Facing the front, a song that fits the screen whole for a front cell is framed whole instead.
+   */
+  private slideToShow(selection: Selection, focus: Focus): void {
+    const goal    = this.rig.goal
+    const margins = this.frameMargins(...this.screenHeights(focus.box))
+    if (this.inFrame(focus.box, margins)) return
+    if (goal.yaw < FACING_FRONT_YAW && !isWallCell(selection) && this.songFits(margins)) {
+      this.frameFront(goal.target.z)
+      if (this.inFrame(focus.box, margins)) return
+    }
+    const track = selectionTrack(selection)
+    const slide = trackSlide(goal, this.lens(), margins)
+    const fits  = (points: Vector3[]) => fitsAcross(goal, this.lens(), points, margins, slide)
+    if (fits(focus.box)) this.slideGoal([...this.trackSpan(track, this.isUnfolded(track)), ...focus.box], focus.box, 'center', margins)
+    else if (focus.core && fits(focus.core)) this.slideGoal(focus.box, focus.core, 'center', margins)
+    else this.slideGoal(focus.core ?? focus.box, focus.cell, 'center', margins)
+  }
+
+  /** True when every point shows between the margins, seen from the goal view. */
+  private inFrame(points: Vector3[], margins: Margins): boolean {
+    const goal = this.rig.goal
+    const lens = this.lens()
+    return points.every((point) => {
+      const x = screenX(goal, lens, point)
+      return x >= margins.left - 1 - 1e-3 && x <= 1 - margins.right + 1e-3
+    })
+  }
+
+  /** True when the whole song, where the tracks settle, fits across the screen at the goal's distance. */
+  private songFits(margins: Margins): boolean {
+    const y = this.rig.goal.target.y
+    return fitsAcross(this.rig.goal, this.lens(), [new Vector3(0, y, 0), new Vector3(this.songEnd(), y, 0)], margins)
+  }
+
+  /**
+   * Brings the whole card of a panel cell into view, where it settles and as large as the face it
+   * turns to (an instrument face is wider and taller than its table), with its track's column
+   * (chain, phrase and notes) beside it whichever side the view comes from: see slideToShow; the
+   * card first when both do not fit, the cell when the card does not. Panels stick under the
+   * headers while rows that use them are near, so the view scrolls only when none is (to the
+   * nearest), or, unless `scroll` is off, when the card would be cut at the bottom (the headers
+   * rest lower at the start of the song, and rise with the rows until they reach the top).
+   */
+  private reachPanel(selection: PanelSelection, scroll: boolean): void {
+    const goal  = this.rig.goal
+    let card    = this.settledCard(selection)
+    const panel = this.panelOf(selection.track, selection.table)
+    if (!card && scroll && panel && this.layout) {
+      const range = this.stickRange(goal, true)
+      const top   = this.layout.nearestUseY(panel, range.headerTop, range.bottom)
+      this.scrollRowsInto(top, top - ROW_H, true)
+      card = this.settledCard(selection)
+    }
+    if (!card) return
+    this.slideToShow(selection, this.cardFocus(selection.track, card))
+    if (!scroll) return
+    let cut = this.cutBelow(card.corners)
+    for (let pass = 0; pass < 3 && cut > 0.05; pass += 1) {
+      const before  = goal.target.y
+      goal.target.y -= cut
+      this.clampGoal()
+      const next = this.settledCard(selection)
+      const left = next ? this.cutBelow(next.corners) : Number.POSITIVE_INFINITY
+      // Scrolling no longer lifts it (it sticks under the headers at the top): the view stays.
+      if (!next || left > cut - 0.05) {
+        goal.target.y = before
+        break
+      }
+      ;[card, cut] = [next, left]
+    }
+    this.slideToShow(selection, this.cardFocus(selection.track, card))
+  }
+
+  /** What a navigation to a panel cell shows: the card with its track's column at the card's heights, the card, the cell. */
+  private cardFocus(track: number, card: { corners: Vector3[]; cell: Vector3 }): Focus {
+    const left   = this.settledX(track)
+    const top    = Math.max(...card.corners.map((corner) => corner.y))
+    const bottom = Math.min(...card.corners.map((corner) => corner.y))
+    const column = [left - 0.2, left + FRONT_W].flatMap((x) => [new Vector3(x, top, 0), new Vector3(x, bottom, 0)])
+    return {
+      box : [...column, ...card.corners],
+      core: card.corners,
+      cell: [card.cell]
+    }
+  }
+
+  /** World centre of a selection's cell once the track positions and the wall have settled. */
+  private settledPoint(selection: Selection): Vector3 | null {
+    const corners = this.settledCorners(selection)
+    if (!corners.length) return null
+    return corners.reduce((sum, corner) => sum.add(corner), new Vector3()).multiplyScalar(1 / corners.length)
+  }
+
+  /** World corners of a selection's cell once the track positions and the wall have settled (none when it has no cell). */
+  private settledCorners(selection: Selection): Vector3[] {
+    const rect = this.rectsOf(selection).at(-1)
+    if (!rect) return []
+    const track   = selectionTrack(selection)
+    const corners = [
+      new Vector3(rect.x, rect.y, 0),
+      new Vector3(rect.x + rect.w, rect.y, 0),
+      new Vector3(rect.x, rect.y - rect.h, 0),
+      new Vector3(rect.x + rect.w, rect.y - rect.h, 0),
+    ]
+    const view    = this.trackViews[track]
+    // Into the track's group (the wall, or a panel turned out of it), whose x is then where it settles.
+    let onWall    = false
+    for (let object: Object3D | null = rect.parent; view && object && object !== view.group; object = object.parent) {
+      onWall = onWall || object === view.wall
+      object.updateMatrix()
+      for (const corner of corners) corner.applyMatrix4(object.matrix)
+    }
+    // The wall may still have to slide into the place it settles at.
+    const slid    = view && onWall ? this.wallSlide(this.opened(track).fx ? 1 : 0) - view.slide : 0
+    for (const corner of corners) {
+      corner.x += this.settledX(track) - slid * Math.cos(this.wallAngle)
+      corner.z += slid * Math.sin(this.wallAngle)
+    }
+    return corners
+  }
+
+  /** Moves the camera so a selection is in view. */
   focusSelection(selection = this.selection): void {
     if (!selection) return
-    const rect = this.rectsOf(selection).at(-1)
-    if (!rect) return
-    const world  = rect.parent.localToWorld(new Vector3(rect.x + rect.w / 2, rect.y - rect.h / 2, 0))
-    const goal   = this.rig.goal
-    const onWall = rect.parent !== this.trackViews[selectionTrack(selection)]?.front
-    if (onWall && goal.yaw < FACING_FRONT_YAW) {
-      this.aim('angle')
-      this.preset = null
-    }
-    goal.target.set(world.x, world.y, onWall ? world.z : 0)
+    this.unfoldFor(selection)
+    const point = this.settledPoint(selection)
+    if (!point) return
+    const goal = this.rig.goal
+    goal.target.set(point.x, point.y, isWallCell(selection) ? point.z : 0)
     goal.distance = Math.min(goal.distance, 70)
     this.invalidate()
   }
@@ -772,22 +1449,26 @@ export class World implements PointerTarget {
    * Scrolls a cell (spanning heights bottom..top) into the stretch between the sticky headers
    * and the bottom of the view. A cell that left it at the bottom comes back near the top, one
    * that left at the top comes back near the bottom: SCROLL_LAND of the stretch from the far
-   * edge, so the view moves most of a page and the next moves need no scrolling.
+   * edge, so the view moves most of a page and the next moves need no scrolling. The bottom of
+   * the view is measured where the cell stands (`at`, else at the target): seen at an angle, a
+   * cell nearer than the target shows larger, so fewer rows fit under it.
    */
-  private scrollRowsInto(top: number, bottom: number, landTop = false): void {
-    const goal        = this.rig.goal
+  private scrollRowsInto(top: number, bottom: number, landTop = false, at?: Vector3): void {
+    const goal = this.rig.goal
+    this.aimProbe(goal)
     const range       = this.stickRange(goal, true)
     const viewTop     = range.headerTop - ROW_H - 0.4
-    const span        = viewTop - range.bottom
+    const viewBottom  = at ? this.probedHeight(goal, at.x, VIEW_BOTTOM_NDC, at.z) : range.bottom
+    const span        = viewTop - viewBottom
     const aboveCentre = viewTop - goal.target.y
-    const belowCentre = goal.target.y - range.bottom
+    const belowCentre = goal.target.y - viewBottom
     if (landTop) {
       // What follows a cell matters more than what precedes it: scroll when it sits too low, and land it just under the headers.
-      if (bottom < range.bottom + LOOKAHEAD_ROWS * ROW_H || top > viewTop) goal.target.y = top - aboveCentre + LAND_TOP_ROWS * ROW_H
-      return
-    }
-    if (bottom < range.bottom) goal.target.y = top - aboveCentre + span * SCROLL_LAND
+      if (bottom < viewBottom + LOOKAHEAD_ROWS * ROW_H || top > viewTop) goal.target.y = top - aboveCentre + LAND_TOP_ROWS * ROW_H
+    } else if (bottom < viewBottom) goal.target.y = top - aboveCentre + span * SCROLL_LAND
     else if (top > viewTop) goal.target.y = bottom + belowCentre - span * SCROLL_LAND
+    // Near the start of the song the view goes no higher than the headers allow.
+    this.clampGoal()
   }
 
   private scrollIntoView(selection: Selection): void {
@@ -796,7 +1477,7 @@ export class World implements PointerTarget {
     const world = rect.parent.localToWorld(new Vector3(rect.x, rect.y, 0))
     const goal  = this.rig.goal
     const half  = this.visibleHalfHeight(goal.distance) * 0.8
-    this.scrollRowsInto(world.y, world.y - rect.h)
+    this.scrollRowsInto(world.y, world.y - rect.h, false, world)
     const halfWidth = half * this.camera.aspect
     if (world.x > goal.target.x + halfWidth || world.x < goal.target.x - halfWidth) goal.target.x = world.x
   }
@@ -833,7 +1514,7 @@ export class World implements PointerTarget {
     if (instrument === this.deviceInstrument) return
     this.deviceInstrument = instrument
     this.facesByHand.clear()
-    this.invalidate()
+    this.facesChanged()
   }
 
   /** Turns a panel over by hand. */
@@ -841,6 +1522,12 @@ export class World implements PointerTarget {
     const panel = this.panelOf(track, table)
     if (!panel || panel.instrument == null || !this.layout?.instrumentFace(panel.instrument)) return
     this.facesByHand.set(`${track}:${table}`, this.faceGoal(panel) === 'inst' ? 'table' : 'inst')
+    this.facesChanged()
+  }
+
+  /** The layout makes room for the faces panels turn to at once, so a framing made now sees where they settle. */
+  private facesChanged(): void {
+    for (const view of this.trackViews) view.applyFaceGoals()
     this.invalidate()
   }
 
@@ -895,20 +1582,24 @@ export class World implements PointerTarget {
   }
 
   select(selection: Selection | null, options: SelectOptions = {}): void {
-    const changed = !sameSelection(selection, this.selection)
-    const from    = this.focusAnchor()
-    if (!selection) this.focusedTrack = from.track
-    // A choice made here wins over the followed M8 cursor until the cursor moves, and over a track opened by hand.
+    const changed  = !sameSelection(selection, this.selection)
+    // A navigation (the arrows, auto select) to another track pans by the distance between the tracks: where it left from, before anything folds.
+    this.departure = selection && changed && (options.turn || options.silent) ? this.departFrom(this.selection, selection) : null
+    if (!selection) this.focusedTrack = this.focusTrack()
+    // A choice made here wins over the followed M8 cursor until the cursor moves, and over a track pressed by hand.
     if (!options.silent) {
       this.followedTrack = null
       this.handTrack     = null
     }
     this.selection = selection
+    // Leaving a track folds what navigations unfolded on it (cleared, the followed M8 cursor's track keeps them).
+    this.foldAutoExcept(selection ? selectionTrack(selection) : this.followedTrack)
     this.refreshMarkers()
-    if (selection && options.turn) this.turnFor(selection, from, true, options.landTop)
+    // The HUD first: its selection panel takes its new size, which the framing keeps clear of.
+    if (changed && !options.silent) this.onSelect(selection)
+    if (selection && options.turn) this.reachCell(selection, true, options.landTop)
     else if (selection && options.reveal !== false) this.scrollIntoView(selection)
     if (selection && options.focus) this.focusSelection(selection)
-    if (changed && !options.silent) this.onSelect(selection)
   }
 
   getSelection(): Selection | null {
@@ -1016,7 +1707,7 @@ export class World implements PointerTarget {
     const positions: number[] = []
     for (const link of links) {
       if (link.panel.alpha < 0.05) continue
-      const [from, to] = view.linkEnds(link.row, link.col, link.panel.shownY, link.panel.shownU)
+      const [from, to] = view.linkEnds(link.row, link.col, link.panel.shownY, link.panel.shownU, this.opened(view.track.track).fx ? 1 : 0)
       const points     = linkCurve(from, to)
       for (let i = 0; i < points.length - 1; i += 1) {
         const [a, b] = [points[i], points[i + 1]]
@@ -1158,18 +1849,6 @@ export class World implements PointerTarget {
   // Pointer input (see pointerControls)
 
   /**
-   * A pan by hand starts from a press (or a sideways wheel gesture) at this pointer position.
-   * Turned toward the walls, the track grabbed there opens if it is not open already, staying
-   * under the pointer while the walls move (see openByHand), and it stays open for the whole
-   * pan, whatever the pan brings to the middle of the view.
-   */
-  panStarted(clientX: number, clientY: number): void {
-    if (this.wallTurn(this.rig.goal.yaw) <= 0.5) return
-    const track = this.trackAt(clientX, clientY)
-    if (track != null && track !== this.focusTrack()) this.openByHand(track)
-  }
-
-  /**
    * A pan by hand moved the pointer from one position to another: the view moves along the
    * tracks (and up or down them) so that what the pointer held there (a column or an open
    * wall, else the plane of the columns) is under it again. Nearer things move faster on
@@ -1177,7 +1856,7 @@ export class World implements PointerTarget {
    * tracks are seen at an angle), so the step is solved for that point.
    */
   dragPan(fromX: number, fromY: number, toX: number, toY: number): void {
-    const pose         = this.shownPose()
+    const pose         = this.rig.current
     const lens         = this.lens()
     const [ndcX, ndcY] = this.ndcAt(fromX, fromY)
     const [toNX, toNY] = this.ndcAt(toX, toY)
@@ -1197,37 +1876,37 @@ export class World implements PointerTarget {
     this.panned()
   }
 
-  /** After a pan step. Facing the front with nothing selected, the track in the middle is the one a turn opens; turned, the open track stays. */
+  /** After a pan step. With nothing selected, the track in the middle of the view is the one the view centres on (the one a turn goes around). */
   panned(): void {
-    if (this.wallTurn(this.rig.goal.yaw) > 0.5 || this.selection) return
+    if (this.selection) return
     this.handTrack    = null
     this.focusedTrack = this.trackUnder(0) ?? this.focusedTrack
   }
 
-  /** The track under a pointer position: the cell's there, else the column or open wall shown there. */
+  /** The track under a pointer position: the cell's there, else the column or unfolded wall shown there. */
   private trackAt(clientX: number, clientY: number): number | null {
     const cell = this.cellAt(clientX, clientY)
     if (cell) return selectionTrack(cell)
     const [ndcX, ndcY] = this.ndcAt(clientX, clientY)
-    return this.trackUnder(ndcX, ndcY, this.shownPose())
+    return this.trackUnder(ndcX, ndcY, this.rig.current)
   }
 
-  /** A turn by hand opens the track it started on, and turns around it. */
+  /** A turn by hand goes around the track it started on. */
   turnStarted(clientX: number, clientY: number): void {
     const track = this.trackAt(clientX, clientY)
-    if (track != null && track !== this.focusTrack()) this.openByHand(track)
+    if (track != null && track !== this.focusTrack()) this.handTrack = track
     this.turning = {
       base : this.rig.goal.target.clone(),
-      pivot: this.trackPivot(),
+      pivot: this.trackPivot(this.focusTrack()),
       yaw  : this.rig.goal.yaw
     }
   }
 
   /**
-   * While turning by hand the view turns around the open track: the target's offset from the
-   * track's centre turns with the view (so the camera orbits the track), and shrinks as the turn
-   * goes on, bringing the track to the middle. The track's centre follows the wall as it opens.
-   * The height is left alone, so scrolling (following playback) goes on while turning.
+   * While turning by hand the view turns around the track: the target's offset from the
+   * track's centre turns with the view (so the camera orbits the track and the track stays where
+   * it is on screen). The height is left alone, so scrolling (following playback) goes on while
+   * turning.
    */
   turnedByHand(): void {
     this.preset   = null
@@ -1235,14 +1914,13 @@ export class World implements PointerTarget {
     if (!turning) return
     const goal   = this.rig.goal
     const turned = goal.yaw - turning.yaw
-    const keep   = Math.max(0, 1 - Math.abs(turned) / CENTRE_TURN)
     const dx     = turning.base.x - turning.pivot.x
     const dz     = turning.base.z - turning.pivot.z
-    const pivot  = this.trackPivot()
+    const pivot  = this.trackPivot(this.focusTrack())
     goal.target.set(
-      pivot.x + keep * (dx * Math.cos(turned) + dz * Math.sin(turned)),
+      pivot.x + dx * Math.cos(turned) + dz * Math.sin(turned),
       goal.target.y,
-      pivot.z + keep * (dz * Math.cos(turned) - dx * Math.sin(turned)),
+      pivot.z + dz * Math.cos(turned) - dx * Math.sin(turned),
     )
   }
 
@@ -1297,6 +1975,8 @@ export class World implements PointerTarget {
 
   pressButton(button: SceneButton): void {
     if (button.kind === 'flip') this.toggleFace(button.track, button.table)
+    else if (button.kind === 'fold') this.toggleFold(button.track, button.section)
+    else if (button.kind === 'cols') this.cycleColumns(button.track)
     else this.onTrackButton(button.track, button.kind)
   }
 
@@ -1369,26 +2049,35 @@ export class World implements PointerTarget {
     return jumped
   }
 
-  /** How far the walls open for a yaw (0 facing the front, 1 turned). */
-  private wallTurn(yaw: number): number {
-    return smoothstep(WALL_OPEN_YAWS[0], WALL_OPEN_YAWS[1], yaw)
-  }
-
   /**
-   * Keeps the last track in view: the view may not go further right than the middle of
-   * its column (or along its wall when it is open), measured where the tracks settle for
-   * the yaw being turned to, so closing the walls pulls the view back with them. Turned, a
-   * little more, as the target stands off the wall in depth.
+   * Keeps the last track in view: the view may not go further right than the middle of its
+   * column (or along its wall when it is unfolded), measured where the tracks settle, so folding
+   * a wall pulls the view back with it. Turned, a little more, as the target stands off the
+   * wall in depth. Nor may it rise so far above the start of the song that the headers, resting
+   * over its first row, show lower than HEADER_LOWEST_NDC.
    */
   private limitPan(): void {
     const last = this.trackViews.length - 1
     if (last < 0) return
-    const turn     = this.wallTurn(this.rig.goal.yaw)
-    const focus    = this.focusTrack()
-    const openness = (track: number) => (this.allWallsOpen || track === focus ? turn : 0)
-    let x          = 0
-    for (let track = 0; track < last; track += 1) x += TRACK_PITCH + openness(track) * (this.wallExtent(track) + OPEN_GAP)
-    this.rig.bounds.maxX = x + FRONT_W / 2 + openness(last) * this.wallExtent(last) + turn * (FRONT_W + OPEN_GAP)
+    const goal           = this.rig.goal
+    const turn           = smoothstep(TURN_YAWS[0], TURN_YAWS[1], goal.yaw)
+    this.rig.bounds.maxX = this.settledX(last) + FRONT_W / 2 + this.settledWidth(last) + turn * (FRONT_W + OPEN_GAP)
+    const restTop        = this.layout ? this.layout.headerRestY + HEADER_TOP : null
+    if (restTop == null || this.container.clientHeight <= 0) return
+    // Scrolling moves everything alike: the highest target puts the resting headers' top edge on that line of the screen.
+    this.aimProbe(goal)
+    const tracks = this.guideTracks(goal)
+    let shown    = 0
+    for (const track of tracks) shown += this.probedHeight(goal, this.settledX(track) + FRONT_W / 2, HEADER_LOWEST_NDC)
+    this.rig.bounds.maxY = goal.target.y + restTop - shown / tracks.length
+    // A song shorter than the view: its top wins.
+    this.rig.bounds.minY = Math.min(this.layout?.bottomY ?? this.rig.bounds.minY, this.rig.bounds.maxY)
+  }
+
+  /** Applies the view's limits (see limitPan) to the goal at once, so a framing measures where the view will be. */
+  private clampGoal(): void {
+    this.limitPan()
+    this.rig.clampGoal()
   }
 
   /** Tells the view how many pixels at its top the HUD covers: the track headers stick right under them. */
@@ -1398,26 +2087,64 @@ export class World implements PointerTarget {
     this.invalidate()
   }
 
-  /** The tracks that guide the header height: the opened one (chosen, followed, selected or turned to), else all of them. */
+  /** Tells the view which parts of it the HUD's selection panel covers (see frameMargins). */
+  setCoveredAreas(areas: CoveredArea[]): void {
+    this.covered = areas.map((area) => ({ ...area }))
+  }
+
+  /**
+   * The margins of an automatic framing of things that span the screen heights low..high
+   * (normalized, -1 bottom to 1 top; the whole height by default): wider on a side where a panel
+   * of the HUD covers some of those heights, so they stay clear of it, as long as that leaves
+   * MIN_FREE_WIDTH of the view.
+   */
+  private frameMargins(low = -1, high = 1): Margins {
+    const width  = this.container.clientWidth
+    const height = this.container.clientHeight
+    let left     = FRAME_MARGINS.left
+    let right    = FRAME_MARGINS.right
+    if (width <= 0 || height <= 0) return FRAME_MARGINS
+    for (const area of this.coverage?.() ?? this.covered) {
+      const top    = 1 - (2 * (area.top - COVER_GAP_PX)) / height
+      const bottom = 1 - (2 * (area.top + area.height + COVER_GAP_PX)) / height
+      if (high < bottom || low > top) continue
+      // Margins are fractions of the half width, from each edge to the panel's inner edge and the gap.
+      if (area.left + area.width / 2 > width / 2) right = Math.max(right, (2 * (width - area.left + COVER_GAP_PX)) / width)
+      else left = Math.max(left, (2 * (area.left + area.width + COVER_GAP_PX)) / width)
+    }
+    if (left + right > 2 * (1 - MIN_FREE_WIDTH)) return FRAME_MARGINS
+    return {
+      left,
+      right
+    }
+  }
+
+  /** The screen heights (normalized, -1 bottom to 1 top) that points span from the goal view. */
+  private screenHeights(points: Vector3[]): [low: number, high: number] {
+    this.aimProbe(this.rig.goal)
+    const heights = points.map((point) => this.probePoint.copy(point).project(this.probeCamera).y)
+    return [Math.min(...heights), Math.max(...heights)]
+  }
+
+  /** The tracks that guide the header height: the focused one (chosen, followed, selected or turned to), else all of them. */
   private guideTracks(pose: RigPose): number[] {
-    const opened = this.handTrack != null || this.followedTrack != null || this.selection != null || this.wallTurn(pose.yaw) > 0.5
-    return opened ? [this.focusTrack()] : this.trackViews.map((_, track) => track)
+    const focused = this.handTrack != null || this.followedTrack != null || this.selection != null || pose.yaw > TURNED_YAW
+    return focused ? [this.focusTrack()] : this.trackViews.map((_, track) => track)
   }
 
   /**
    * World height of the headers' top edge for a pose: the one at which the guide track's
    * header shows right under the HUD (the other tracks share its height). With no track
-   * opened, the mean over every track. `settled` places the tracks where their columns will
+   * focused, the mean over every track. `settled` places the tracks where their columns will
    * be once the walls have moved.
    */
   private headerTopEdge(pose: RigPose, settled: boolean): number {
     const height = this.container.clientHeight
     const ndcTop = height > 0 ? 1 - (2 * (this.topInset + HEADER_GAP_PX)) / height : 0.82
     this.aimProbe(pose)
-    const turn   = this.wallTurn(pose.yaw)
     const tracks = this.guideTracks(pose)
     let sum      = 0
-    for (const track of tracks) sum += this.probedHeight(pose, (settled ? this.frontX(track, true, turn) : this.frontX(track)) + FRONT_W / 2, ndcTop)
+    for (const track of tracks) sum += this.probedHeight(pose, (settled ? this.settledX(track) : this.frontX(track)) + FRONT_W / 2, ndcTop)
     return sum / tracks.length
   }
 
@@ -1429,9 +2156,9 @@ export class World implements PointerTarget {
     probe.updateMatrixWorld()
   }
 
-  /** The height at `x` on the tracks' plane that the probe camera (aimed at `pose`) shows at screen height `ndcY`, -1 bottom to 1 top. */
-  private probedHeight(pose: RigPose, x: number, ndcY: number): number {
-    const miss = (y: number) => this.probePoint.set(x, y, 0).project(this.probeCamera).y - ndcY
+  /** The height at `x` on the tracks' plane (or `z` off it) that the probe camera (aimed at `pose`) shows at screen height `ndcY`, -1 bottom to 1 top. */
+  private probedHeight(pose: RigPose, x: number, ndcY: number, z = 0): number {
+    const miss = (y: number) => this.probePoint.set(x, y, z).project(this.probeCamera).y - ndcY
     // Perspective bends the height a little with depth: a few secant steps from the flat estimate.
     let y      = pose.target.y + this.visibleHalfHeight(pose.distance) * ndcY
     for (let step = 0; step < 3; step += 1) {
@@ -1454,7 +2181,7 @@ export class World implements PointerTarget {
     const half      = this.visibleHalfHeight(pose.distance)
     const headerTop = glidedOffset != null ? centerY + glidedOffset : this.headerTopEdge(pose, settled) - HEADER_TOP
     const below     = ROW_H + 0.95 + PANEL_TAB_ROOM
-    const bottom    = centerY - half * 0.92
+    const bottom    = centerY + half * VIEW_BOTTOM_NDC
     const restY     = this.layout?.headerRestY ?? Number.POSITIVE_INFINITY
     return {
       headerTop,
@@ -1480,58 +2207,71 @@ export class World implements PointerTarget {
     const { headerTop, panelTop, bottom, view: viewHeight } = this.stickRange(this.rig.current, false, this.headerOffset)
     for (const view of this.trackViews) {
       if (view.setHeaderY(headerTop)) busy = true
-      if ((view.wallAlpha > 0.01 || this.allWallsOpen) && layout.stick(view.track.track, panelTop, bottom, viewHeight)) panelsMoved = true
+      if ((view.panelsAlpha > 0.01 || this.opened(view.track.track).panels) && layout.stick(view.track.track, panelTop, bottom, viewHeight)) panelsMoved = true
       view.panelCeiling = panelTop
       if (view.updatePanels(dt, textOn)) panelsMoved = true
-      if (view.wallAlpha > 0.01 && view.updateLinks(centerY + half * 1.05, centerY - half * 1.05)) busy = true
+      if (view.panelsAlpha > 0.01 && view.updateLinks(centerY + half * 1.05, centerY - half * 1.05)) busy = true
     }
     // Markers and thick links attached to a panel follow it, frame by frame.
     if (panelsMoved && this.selection) this.refreshMarkers()
     return busy || panelsMoved
   }
 
-  /** Walls open as the view turns (the focused track's, or all of them); the other tracks step back, and leave once looking along a wall. */
+  /**
+   * Eases the unfolding of every track's wall and places the tracks along x as they open. While a
+   * wall is unfolded and the view looks along it, the tracks that are folded leave.
+   */
   private updateWalls(dt: number): boolean {
-    let busy          = false
-    const yaw         = this.rig.current.yaw
-    const turn        = this.wallTurn(yaw)
-    const staying     = 1 - smoothstep(OTHERS_LEAVE_YAWS[0], OTHERS_LEAVE_YAWS[1], yaw)
-    const othersAlpha = (1 - 0.65 * turn) * staying
-    const focus       = this.focusTrack()
-    const ease        = easeFactor(dt, WALL_EASE_RATE)
-    let x             = 0
+    let busy      = false
+    const yaw     = this.rig.current.yaw
+    const anyOpen = this.folds.some((_, track) => this.isUnfolded(track))
+    const staying = anyOpen ? 1 - smoothstep(OTHERS_LEAVE_YAWS[0], OTHERS_LEAVE_YAWS[1], yaw) : 1
+    const ease    = easeFactor(dt, WALL_EASE_RATE)
+    let x         = 0
     for (let track = 0; track < this.trackViews.length; track += 1) {
-      const opens              = this.allWallsOpen || track === focus
-      const goal               = opens ? 1 : 0
-      const before             = this.wallOpenness[track]
-      this.wallOpenness[track] += (goal - before) * ease
-      if (Math.abs(goal - this.wallOpenness[track]) < 0.001) this.wallOpenness[track] = goal
-      if (this.wallOpenness[track] !== before) busy = true
-      const wallAlpha  = this.wallOpenness[track] * turn
-      const frontAlpha = opens ? 1 : othersAlpha
-      const view       = this.trackViews[track]
+      const view    = this.trackViews[track]
+      const fold    = this.opened(track)
+      const amounts = this.unfolding[track]
+      for (const section of ['fx', 'panels'] as const) {
+        const goal       = fold[section] ? 1 : 0
+        const before     = amounts[section]
+        amounts[section] += (goal - before) * ease
+        if (Math.abs(goal - amounts[section]) < 0.001) amounts[section] = goal
+        if (amounts[section] !== before) busy = true
+      }
+      const frontAlpha = this.isUnfolded(track) ? 1 : staying
+      const slide      = this.wallSlide(amounts.fx)
+      const wallLen    = this.layout?.tracks[track]?.wallLen ?? 0
+      const before     = this.shownWallLen[track] ?? wallLen
+      let shownLen     = before + (wallLen - before) * ease
+      if (Math.abs(wallLen - shownLen) < 0.01) shownLen = wallLen
+      if (shownLen !== before) {
+        this.shownWallLen[track] = shownLen
+        view.setWallLength(shownLen)
+        busy = true
+      }
       const changed    =
-        Math.abs(view.group.position.x - x) > 1e-4 || Math.abs(view.wallAlpha - wallAlpha) > 1e-4 || Math.abs(view.frontAlpha - frontAlpha) > 1e-4
+        Math.abs(view.group.position.x - x) > 1e-4 || Math.abs(view.frontAlpha - frontAlpha) > 1e-4 || view.sideAlpha !== amounts.fx || view.panelsAlpha !== amounts.panels
       if (changed) busy = true
       view.group.position.x = x
-      view.setWallAlpha(wallAlpha)
+      view.setFolds(amounts.fx, amounts.panels, slide)
       view.setFrontAlpha(frontAlpha)
-      x += TRACK_PITCH + wallAlpha * (this.wallExtent(track) + OPEN_GAP)
+      x += TRACK_PITCH + this.openWidth(track, amounts.fx, amounts.panels, view.faceAmount(), shownLen)
     }
-    // Draw the view so the anchor stays still (see anchorTo), until the walls settle or another layout is asked for.
-    const anchor = this.switchAnchor
-    if (anchor) {
-      if (anchor.focus !== focus || anchor.allOpen !== this.allWallsOpen) this.releaseAnchor()
-      else {
-        this.shownShiftX = this.frontX(anchor.track) - this.frontXWith(anchor.track, focus, turn)
-        if (Math.abs(this.shownShiftX) < 1e-4) this.releaseAnchor()
-      }
+    // The thick links of the selection go with the details or the panels they join.
+    if (this.selectedLinks && this.selection) {
+      const view                 = this.trackViews[selectionTrack(this.selection)]
+      this.selectedLinks.visible = !!view && view.panelsAlpha > 0.05
     }
-    // The rules between song rows cross every track: they leave with the other tracks, or they would cut across the view along the wall.
-    const rules = this.bandRules?.material as LineBasicMaterial | undefined
-    if (rules && Math.abs(rules.opacity - BAND_RULE_OPACITY * staying) > 1e-4) {
-      rules.opacity = BAND_RULE_OPACITY * staying
-      busy          = true
+    // The rules between song rows cross every track, to the end of the last: they leave with the folded tracks, or they would cut across the view along the wall.
+    const rules = this.bandRules
+    if (rules) {
+      const material = rules.material as LineBasicMaterial
+      const width    = x + 4
+      if (Math.abs(material.opacity - BAND_RULE_OPACITY * staying) > 1e-4 || Math.abs(rules.scale.x - width) > 1e-3) busy = true
+      material.opacity = BAND_RULE_OPACITY * staying
+      rules.position.x = -4
+      rules.scale.x    = width
     }
     return busy
   }
@@ -1540,6 +2280,7 @@ export class World implements PointerTarget {
     const now       = performance.now()
     const dt        = Math.min(0.05, (now - this.lastTickAt) / 1000)
     this.lastTickAt = now
+    this.noteSettledColumns()
     this.limitPan()
     let busy       = this.rig.update(dt)
     const pxPerRow = (ROW_H / (2 * this.visibleHalfHeight())) * this.container.clientHeight
@@ -1549,10 +2290,6 @@ export class World implements PointerTarget {
     const playing = this.updatePlayheads(dt)
 
     this.rig.apply(this.camera)
-    if (this.shownShiftX) {
-      this.camera.position.x += this.shownShiftX
-      this.camera.updateMatrixWorld()
-    }
     const camera    = this.rig.current
     const half      = this.visibleHalfHeight()
     const barsAlpha = 0.08 + 0.82 * (1 - smoothstep(5, 10, pxPerRow))
@@ -1564,7 +2301,7 @@ export class World implements PointerTarget {
     const reach       = half * (1.25 + Math.abs(Math.sin(camera.pitch)) * 2)
     const textChanged = this.pool.update(camera.target.y + reach, camera.target.y - reach, camera.target.y, (block) => {
       if (!textOn && block.layer !== 'static') return 0
-      if (block.layer === 'wall') return this.trackViews[block.track]?.wallAlpha ?? 0
+      if (block.layer === 'wall') return this.trackViews[block.track]?.sideAlpha ?? 0
       return block.track < 0 ? 1 : (this.trackViews[block.track]?.frontAlpha ?? 1)
     })
 

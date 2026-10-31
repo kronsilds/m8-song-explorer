@@ -78,6 +78,16 @@ interface LiveBlock {
   block: TextBlock
   text : Text
   alpha: number
+  /** A text with new content being laid out: it takes the place of `text` once ready. */
+  next : Text | null
+}
+
+/** True when a text shows what `rich` holds. */
+export function showsRich(text: Text, rich: RichText): boolean {
+  if (text.text !== rich.text) return false
+  const shown  = (text.colorRanges ?? {}) as Record<number, number>
+  const wanted = Object.keys(rich.colorRanges)
+  return wanted.length === Object.keys(shown).length && wanted.every((key) => shown[Number(key)] === rich.colorRanges[Number(key)])
 }
 
 /** An object pool of text meshes: blocks get a mesh while near the view, and lose it after. */
@@ -87,9 +97,68 @@ export class TextPool {
   /** Called when a text finished laying out (to redraw). */
   onReady               : () => void = () => {}
 
-  setBlocks(blocks: TextBlock[]): void {
-    this.clear()
+  /**
+   * Takes a new set of blocks. With `keepLive` (the same song, redrawn after an edit), a live text
+   * whose block is still there moves to it as it is when it shows the same, and is laid out again
+   * otherwise, showing until the new one is ready: nothing blinks. A block passed again as the same
+   * object is taken to show the same.
+   */
+  setBlocks(blocks: TextBlock[], keepLive = false): void {
+    if (!keepLive) this.clear()
+    else {
+      const byKey = new Map(blocks.map((block) => [block.key, block]))
+      for (const [key, entry] of this.live) {
+        const block = byKey.get(key)
+        // The same block (its view was kept): the same text.
+        if (block === entry.block) continue
+        if (!block || (block.scale ?? 1) !== (entry.block.scale ?? 1)) {
+          this.drop(key, entry)
+          continue
+        }
+        entry.block = block
+        place(entry.text, block)
+        if (entry.next) place(entry.next, block)
+        this.renew(entry)
+      }
+    }
     this.blocks = blocks
+  }
+
+  /** Lays out again the live blocks `which` picks whose content changed (see setBlocks); true when any did. */
+  refresh(which: (block: TextBlock) => boolean): boolean {
+    let changed = false
+    for (const entry of this.live.values()) if (which(entry.block) && this.renew(entry)) changed = true
+    return changed
+  }
+
+  /** Starts laying out a block's text again when its content changed; the shown one stays until it is ready. */
+  private renew(entry: LiveBlock): boolean {
+    const rich = entry.block.build()
+    if (entry.next && showsRich(entry.next, rich)) return true
+    if (entry.next) disposeText(entry.next)
+    entry.next = null
+    if (showsRich(entry.text, rich)) return false
+    const text   = makeText(rich, entry.block.scale)
+    place(text, entry.block)
+    text.fillOpacity = entry.alpha
+    text.renderOrder = entry.text.renderOrder
+    text.visible     = false
+    entry.next       = text
+    text.sync(() => {
+      if (entry.next !== text) return
+      disposeText(entry.text)
+      text.visible = true
+      entry.text   = text
+      entry.next   = null
+      this.onReady()
+    })
+    return true
+  }
+
+  private drop(key: string, entry: LiveBlock): void {
+    disposeText(entry.text)
+    if (entry.next) disposeText(entry.next)
+    this.live.delete(key)
   }
 
   get size(): number {
@@ -97,7 +166,10 @@ export class TextPool {
   }
 
   clear(): void {
-    for (const { text } of this.live.values()) disposeText(text)
+    for (const { text, next } of this.live.values()) {
+      disposeText(text)
+      if (next) disposeText(next)
+    }
     this.live.clear()
   }
 
@@ -123,12 +195,16 @@ export class TextPool {
     wanted.sort((a, b) => a.distance - b.distance)
     for (const { block, alpha } of wanted.slice(0, budget)) {
       const text = makeText(block.build(), block.scale)
-      text.position.set(block.x, block.y, block.z ?? 0.01)
+      place(text, block)
       text.fillOpacity = alpha
       text.renderOrder = 2
-      block.parent.add(text)
       text.sync(() => this.onReady())
-      this.live.set(block.key, { block, text, alpha })
+      this.live.set(block.key, {
+        block,
+        text,
+        alpha,
+        next: null
+      })
       changed = true
     }
     return changed || wanted.length > budget
@@ -143,17 +219,23 @@ export class TextPool {
       const alpha     = alphaOf(block)
       const inRange   = block.y - block.height < yTop + margin && block.y > yBottom - margin
       if (!inRange || alpha <= INVISIBLE_ALPHA) {
-        disposeText(entry.text)
-        this.live.delete(key)
+        this.drop(key, entry)
         changed = true
       } else if (Math.abs(alpha - entry.alpha) > 0.005) {
         entry.alpha            = alpha
         entry.text.fillOpacity = alpha
+        if (entry.next) entry.next.fillOpacity = alpha
         changed                = true
       }
     }
     return changed
   }
+}
+
+/** Puts a text where its block goes, under the block's parent. */
+function place(text: Text, block: TextBlock): void {
+  block.parent.add(text)
+  text.position.set(block.x, block.y, block.z ?? 0.01)
 }
 
 export function disposeText(text: Text): void {

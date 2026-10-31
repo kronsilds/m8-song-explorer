@@ -50,3 +50,9 @@ export const isWallCell     = (selection: Selection): boolean =>
   selection.kind === 'instrument' ||
   selection.kind === 'instParam' ||
   (selection.kind === 'step' && selection.column !== 'note')
+
+/** A cell of a panel on a track's wall: a table row cell, a panel's header or an instrument value. */
+export type PanelSelection = Extract<Selection, { kind: 'table' | 'instrument' | 'instParam' }>
+
+export const isPanelSelection = (selection: Selection): selection is PanelSelection =>
+  selection.kind === 'table' || selection.kind === 'instrument' || selection.kind === 'instParam'

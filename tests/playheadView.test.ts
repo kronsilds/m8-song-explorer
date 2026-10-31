@@ -14,8 +14,8 @@ const layout  = {
 const palette = { device: '#4af' } as Palette
 const views   = Array.from({ length: 8 }, () => ({
   front     : new Group(),
-  wall      : new Group(),
-  wallAlpha : 0,
+  side      : new Group(),
+  sideAlpha : 0,
   frontAlpha: 1
 })) as unknown as TrackView[]
 const head    = (row: number): TrackPlayhead => ({

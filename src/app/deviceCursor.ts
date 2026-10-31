@@ -7,7 +7,7 @@ import { viewChainPosition } from '../m8/screen/screenReader'
 import { isPhraseColumn, isTableColumn } from '../model/columns'
 import { cellAt, instrumentPage } from '../model/instrumentPage'
 import { TITLE_ROW } from '../model/screens'
-import type { Selection } from '../model/selection'
+import { type Selection, selectionTrack } from '../model/selection'
 import { TRACKS } from '../model/song'
 import type { SongLayout } from '../scene/layout'
 
@@ -17,6 +17,12 @@ type ChainPlace = Extract<Selection, { kind: 'chain' | 'step' }>
 export class DeviceCursor {
   /** Song row and track the M8 is on: set on the Song view, then moved along with it on the Chain and Phrase views. */
   songContext      : { songRow: number; track: number } | null = null
+  /**
+   * Until a Song view gives the song context: the song cell of the place followed last, a guess
+   * that keeps the next places near it (else a chain or phrase used in several song cells would
+   * jump to its first one at every view).
+   */
+  private guess    : { songRow: number; track: number } | null = null
   /** Chain row the M8 is on: the Chain view's cursor row, the Phrase view's chain position. */
   private chainRow : number | null = null
   /** The Phrase view's '<' marks last seen. */
@@ -117,14 +123,20 @@ export class DeviceCursor {
    * The place to follow, at the chain row the M8 is on: in the song cell it came from; else in
    * the same song row on the nearest track (Option+Left/Right on the Chain and Phrase views);
    * else on its track at the nearest song row (Option+Up/Down on the Chain view); else the
-   * first. The context follows the first two moves.
+   * first. The context follows the first two moves. A table or an instrument (each track that
+   * uses it has its panel) is followed on the track the M8 came from, else the nearest.
    */
   preferred(places: Selection[]): Selection | null {
     const inChains = places.filter((place): place is ChainPlace => place.kind === 'chain' || place.kind === 'step')
     const atRow    = inChains.filter((place) => place.instance.chainRow === this.chainRow)
     const choices  = atRow.length > 0 ? atRow : inChains
-    const context  = this.songContext
-    if (!context) {
+    const known    = this.songContext != null
+    const context  = this.songContext ?? this.guess
+    if (inChains.length === 0 && context && places.length > 1) {
+      const away = (place: Selection) => Math.abs(selectionTrack(place) - context.track)
+      return places.reduce((chosen, place) => (away(place) < away(chosen) ? place : chosen))
+    }
+    if (!known) {
       // No Song view seen yet (a reload on a Chain or Phrase view): one song cell holding them all is the one.
       const cell = choices[0]?.instance
       if (cell && choices.every(({ instance }) => instance.songRow === cell.songRow && instance.track === cell.track)) {
@@ -133,7 +145,14 @@ export class DeviceCursor {
           track  : cell.track
         }
       }
-      return choices[0] ?? places[0] ?? null
+    }
+    if (!context) {
+      const chosen = choices[0] ?? null
+      if (chosen) this.guess = {
+        songRow: chosen.instance.songRow,
+        track  : chosen.instance.track
+      }
+      return chosen ?? places[0] ?? null
     }
     if (choices.length === 0) return places[0] ?? null
     const distance           = ({ instance }: ChainPlace): number => {
@@ -142,7 +161,8 @@ export class DeviceCursor {
     }
     const best               = choices.reduce((chosen, place) => (distance(place) < distance(chosen) ? place : chosen))
     const { songRow, track } = best.instance
-    if (Number.isFinite(distance(best)) && (songRow !== context.songRow || track !== context.track)) this.songContext = { songRow, track }
+    if (!this.songContext) this.guess = { songRow, track }
+    else if (Number.isFinite(distance(best)) && (songRow !== context.songRow || track !== context.track)) this.songContext = { songRow, track }
     return best
   }
 }

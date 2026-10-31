@@ -126,14 +126,14 @@ export class PlayheadView {
         h     : ROW_H
       }
       const wallRow      : CellRect = {
-        parent: view.wall,
+        parent: view.side,
         x     : WALL_STEPS_U - 0.05,
         y,
         w     : WALL_STEPS_W + 0.1,
         h     : ROW_H
       }
       front.show(frontRow, palette.device, fill, outline)
-      if (view.wallAlpha > 0.05) wall.show(wallRow, palette.device, fill, outline)
+      if (view.sideAlpha > 0.05) wall.show(wallRow, palette.device, fill, outline)
       else wall.hide()
       // Out of sight (the middle of its row past an edge): a halo on that edge, beating with it.
       const edge   = edges(track)

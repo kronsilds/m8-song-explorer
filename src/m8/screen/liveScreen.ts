@@ -194,15 +194,30 @@ function absorbProject(model: SongModel, project: NonNullable<ReturnType<typeof 
   return changed
 }
 
+/** What an edit made on the M8 changed: the item of a view (its number; null for the Song view), or the project's settings. */
+export interface ScreenEdit {
+  kind: ScreenView['kind'] | 'project'
+  id  : number | null
+}
+
 /**
  * Folds a fully drawn song / chain / phrase / table / instrument / modulators / groove / scale screen, or the
- * Project view's TRANSPOSE, GROOVE and SCALE, into the model. Returns true when the model changed (the M8 was
- * edited since the exploration).
+ * Project view's TRANSPOSE, GROOVE and SCALE, into the model. Returns what changed (the M8 was edited since the
+ * exploration), null when nothing did.
  */
-export function absorbScreen(model: SongModel, screen: M8Screen): boolean {
+export function absorbEdit(model: SongModel, screen: M8Screen): ScreenEdit | null {
   const project = readProject(screen)
-  if (project) return absorbProject(model, project)
+  if (project) return absorbProject(model, project) ? {
+    kind: 'project',
+    id  : null
+  } : null
   const view = viewOf(screen)
-  if (!isPage(view, view.kind)) return false
-  return ABSORBERS[view.kind]?.(model, view) ?? false
+  if (!isPage(view, view.kind) || !ABSORBERS[view.kind]?.(model, view)) return null
+  return {
+    kind: view.kind,
+    id  : view.id
+  }
 }
+
+/** As absorbEdit: true when the model changed. */
+export const absorbScreen = (model: SongModel, screen: M8Screen): boolean => absorbEdit(model, screen) != null

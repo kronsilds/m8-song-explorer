@@ -1,9 +1,9 @@
 // The camera framing maths: sideways shifts that leave no empty room, fitting distances, rays.
 
 import { describe, expect, test } from 'bun:test'
-import { Vector3 } from 'three'
-import { fitDistance, type Lens, rayMeets, rayThrough, screenX, shiftTarget, sideShift } from '../src/scene/camera/framing'
-import type { RigPose } from '../src/scene/camera/rig'
+import { PerspectiveCamera, Vector3 } from 'three'
+import { fitDistance, type Lens, rayMeets, rayThrough, type Slide, screenX, shiftTarget, sideShift, trackSlide } from '../src/scene/camera/framing'
+import { placeCamera, type RigPose } from '../src/scene/camera/rig'
 
 const lens      : Lens = {
   tanHalfFov: Math.tan((34 * Math.PI) / 360),
@@ -24,9 +24,20 @@ const pose = (x: number, distance: number, yaw = 0): RigPose => ({
 })
 
 /** Screen x of the points once the pose is shifted. */
-function placed(start: RigPose, points: Vector3[], shift: number): number[] {
-  shiftTarget(start, shift)
+function placed(start: RigPose, points: Vector3[], shift: number, slide: Slide = 'view'): number[] {
+  shiftTarget(start, shift, slide)
   return points.map((point) => screenX(start, lens, point))
+}
+
+/** How far the camera stands in front of the tracks' plane (z = 0). */
+const cameraZ = (view: RigPose) => view.target.z + Math.cos(view.yaw) * Math.cos(view.pitch) * view.distance
+
+/** Screen x of a point as three.js projects it, through a camera placed as the rig places it. */
+function projectedX(view: RigPose, point: Vector3): number {
+  const camera = new PerspectiveCamera(34, lens.aspect, 0.5, 4000)
+  placeCamera(view, camera)
+  camera.updateMatrixWorld()
+  return point.clone().project(camera).x
 }
 
 describe('sideShift', () => {
@@ -75,6 +86,54 @@ describe('sideShift', () => {
     const view   = pose(60, 60, yaw)
     const shown  = placed(view, points, sideShift(view, lens, points, margins))
     for (const x of shown) expect(Math.abs(x)).toBeLessThanOrEqual(1 - margins.left + 1e-9)
+  })
+
+  test('turned, a slide along the tracks frames a point and keeps the distance from the tracks', () => {
+    const yaw = (37 * Math.PI) / 180
+    // Cells far right and far left of the view, on the tracks' plane and deep on a wall.
+    for (const point of [new Vector3(160, -20, 0), new Vector3(-90, 5, 0), new Vector3(120, 0, -30)]) {
+      const view   = pose(40, 110, yaw)
+      view.pitch   = 0.09
+      const before = cameraZ(view)
+      expect(Math.abs(screenX(view, lens, point))).toBeGreaterThan(1)
+      placed(view, [point], sideShift(view, lens, [point], margins, [], 'least', 'tracks'), 'tracks')
+      expect(Math.abs(projectedX(view, point))).toBeCloseTo(1 - margins.left, 6)
+      expect(cameraZ(view)).toBeCloseTo(before, 9)
+      expect(view.target.z).toBe(0)
+    }
+  })
+
+  test('a slide along the view brings the camera nearer the tracks when turned', () => {
+    const view   = pose(40, 110, (37 * Math.PI) / 180)
+    const before = cameraZ(view)
+    const point  = new Vector3(200, 0, 0)
+    placed(view, [point], sideShift(view, lens, [point], margins))
+    expect(cameraZ(view)).toBeLessThan(before - 50)
+  })
+
+  test('the roll is counted: a low cell in a tilted view lands on the margin', () => {
+    const view = pose(40, 110, 0.6)
+    view.roll  = 0.07
+    // A cell far down the left side: the tilt pushes it further out than a level framing thinks.
+    const cell = new Vector3(-60, -30, 0)
+    expect(projectedX(view, cell)).toBeLessThan(-1)
+    expect(screenX(view, lens, cell)).toBeCloseTo(projectedX(view, cell), 9)
+    for (const slide of ['view', 'tracks'] as const) {
+      const start = {
+        ...view,
+        target: view.target.clone()
+      }
+      placed(start, [cell], sideShift(start, lens, [cell], margins, [], 'least', slide), slide)
+      expect(projectedX(start, cell)).toBeCloseTo(-(1 - margins.left), 6)
+    }
+  })
+})
+
+describe('trackSlide', () => {
+  test('slides along the tracks unless the view looks almost along them', () => {
+    expect(trackSlide(pose(0, 100, 0), lens, margins)).toBe('tracks')
+    expect(trackSlide(pose(0, 100, (44 * Math.PI) / 180), lens, margins)).toBe('tracks')
+    expect(trackSlide(pose(0, 100, (80 * Math.PI) / 180), lens, margins)).toBe('view')
   })
 })
 

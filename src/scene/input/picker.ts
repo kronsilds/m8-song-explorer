@@ -1,6 +1,6 @@
 // Turns a pointer position into what is under it: a cell of a track (front column, wall step
-// details, panel header, table row or instrument value) or a button (a track's mute / solo, a
-// panel's tab that turns it over).
+// details, panel header, table row or instrument value) or a button (a track's mute / solo and
+// fold buttons, a panel's tab that turns it over).
 
 import { Matrix4, type Object3D, type PerspectiveCamera, type Ray, Raycaster, Vector2, type Vector3 } from 'three'
 import type { TrackToggle } from '../../m8/midiControl'
@@ -20,15 +20,20 @@ import {
   SIDE_U0,
   type SongLayout,
 } from '../layout'
+import type { FoldSection } from '../track/trackHeader'
 import type { TrackView } from '../track/trackView'
 
-/** Walls fainter than this cannot be picked. */
+/** Parts of the wall that are fainter than this cannot be picked. */
 const MIN_WALL_ALPHA         = 0.35
 const MIN_PANEL_ALPHA        = 0.5
 const MIN_BUTTON_FRONT_ALPHA = 0.5
 
-/** A button of the scene: a track's mute or solo, or the tab that turns a panel over. */
-export type SceneButton = { track: number; kind: TrackToggle } | { track: number; kind: 'flip'; table: number }
+/** A button of the scene: a track's mute or solo, the fold button of a part of its wall, or the tab that turns a panel over. */
+export type SceneButton =
+  | { track: number; kind: TrackToggle }
+  | { track: number; kind: 'fold'; section: FoldSection }
+  | { track: number; kind: 'cols' }
+  | { track: number; kind: 'flip'; table: number }
 
 interface Hit<T> {
   value   : T
@@ -86,9 +91,11 @@ export class ScenePicker {
     for (const view of views) {
       const front = this.hitPlane(view.front, ray)
       if (front) consider(this.frontCell(layout, view, front.point), front.distance, view.frontAlpha < 0.99)
-      if (view.wallAlpha < MIN_WALL_ALPHA) continue
-      const wall = this.hitPlane(view.wall, ray)
-      if (wall) consider(this.wallCell(layout, view, wall.point), wall.distance)
+      if (view.sideAlpha >= MIN_WALL_ALPHA) {
+        const wall = this.hitPlane(view.wall, ray)
+        if (wall) consider(this.wallCell(layout, view, wall.point), wall.distance)
+      }
+      if (view.panelsAlpha < MIN_WALL_ALPHA) continue
       // Panels turn out of the wall: each is met in its own plane.
       for (const panel of layout.tracks[view.track.track].panels) {
         if (panel.alpha <= MIN_PANEL_ALPHA) continue
@@ -193,12 +200,16 @@ export class ScenePicker {
       if (view.frontAlpha >= MIN_BUTTON_FRONT_ALPHA) {
         const hit  = this.hitPlane(view.front, ray)
         const kind = hit && view.buttonAt(hit.point.x, hit.point.y)
-        if (hit && kind) consider({
+        if (hit && kind) consider(kind === 'fx' || kind === 'panels' ? {
+          track,
+          kind   : 'fold',
+          section: kind
+        } : {
           track,
           kind
         }, hit.distance)
       }
-      if (view.wallAlpha < MIN_WALL_ALPHA) continue
+      if (view.panelsAlpha < MIN_WALL_ALPHA) continue
       for (const panel of view.track.panels) {
         const hit = this.hitPlane(view.panelGroup(panel), ray)
         if (hit && view.onTab(panel, hit.point.x, hit.point.y)) consider({

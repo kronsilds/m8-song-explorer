@@ -2,12 +2,15 @@ import { describe, expect, test } from 'bun:test'
 import { demoSong } from '../src/model/demo'
 import { emptyModel, emptyStep, type SongModel, TRACKS } from '../src/model/song'
 import { FACE_CHARS } from '../src/scene/instrumentFace'
-import { MAX_PANEL_COLS, PANEL_ROWS, PANEL_SPAN, type Panel, panelSpan, ROW_H, SongLayout, shownPanelRows, TITLE_ROWS } from '../src/scene/layout'
+import { DEFAULT_PANEL_COLS, MAX_PANEL_COLS, PANEL_ROWS, PANEL_SPAN, type Panel, panelSpan, ROW_H, SongLayout, shownPanelRows, TITLE_ROWS } from '../src/scene/layout'
+
+/** A layout whose walls may have as many columns as their panels want (the usual limit is DEFAULT_PANEL_COLS). */
+const newLayout = (song: SongModel, trimTables = true) => new SongLayout(song, trimTables, Array.from({ length: TRACKS }, () => MAX_PANEL_COLS))
 
 /** The demo song with track 0's first phrase using `n` different instruments, one per step. */
 function crowded(n: number): SongModel {
   const model  = demoSong()
-  const layout = new SongLayout(model)
+  const layout = newLayout(model)
   const first  = layout.tracks[0].instances[0]
   const phrase = model.phrases[first.phrase]
   phrase.steps.forEach((step, s) => {
@@ -76,7 +79,7 @@ const phraseRow = (phrase: number) => phrase * 16
 
 describe('panel columns', () => {
   test('more panels in view than fit one column spread over columns without overlapping', () => {
-    const layout = new SongLayout(crowded(8))
+    const layout = newLayout(crowded(8))
     const track  = layout.tracks[0]
     expect(track.cols).toBeGreaterThan(1)
     expect(track.cols).toBeLessThanOrEqual(MAX_PANEL_COLS)
@@ -95,8 +98,17 @@ describe('panel columns', () => {
     }
   })
 
+  test('a wall has two columns at most until its limit is raised', () => {
+    const usual = new SongLayout(crowded(14)).tracks[0]
+    const wide  = newLayout(crowded(14)).tracks[0]
+    expect(usual.wanted).toBeGreaterThan(2)
+    expect(usual.cols).toBe(DEFAULT_PANEL_COLS)
+    expect(wide.cols).toBe(wide.wanted)
+    expect(wide.wallLen).toBeGreaterThan(usual.wallLen)
+  })
+
   test('a panel keeps its column while the view scrolls a little', () => {
-    const layout = new SongLayout(crowded(8))
+    const layout = newLayout(crowded(8))
     const yTop   = layout.rowY(0)
     layout.stick(0, yTop, yTop - PANEL_SPAN * 3)
     const before = layout.tracks[0].panels.map((p) => p.col)
@@ -104,19 +116,20 @@ describe('panel columns', () => {
     expect(layout.tracks[0].panels.map((p) => p.col)).toEqual(before)
   })
 
-  test('a track with few panels keeps one column, two when an instrument face may span them', () => {
-    const layout = new SongLayout(demoSong())
+  test('a track with few panels keeps one column, even when an instrument face may turn out of it', () => {
+    const layout = newLayout(demoSong())
     for (const t of layout.tracks) {
-      const faces = t.panels.some((p) => layout.instrumentFace(p.instrument))
-      if (t.panels.length <= 2) expect(t.cols).toBe(faces ? 2 : 1)
+      if (t.panels.length <= 2) expect(t.cols).toBe(1)
     }
   })
 
   test('a panel turned to its instrument face never takes the last column', () => {
-    const layout = new SongLayout(demoSong())
+    const layout = newLayout(demoSong())
     const track  = layout.tracks.find((t) => t.panels.some((p) => layout.instrumentFace(p.instrument)))
     if (!track) throw new Error('the demo song has no instrument panel')
     const panel = track.panels.find((p) => layout.instrumentFace(p.instrument)) as Panel
+    // A wall of two columns: a turned face takes two of them.
+    track.cols  = 2
     panel.chars = FACE_CHARS
     panel.col   = track.cols - 1
     const yTop  = layout.rowY(panel.row)
@@ -144,7 +157,7 @@ describe('panel sizes and folding', () => {
         transpose: 0
       }))
     }
-    const panels    = new SongLayout(model).tracks[0].panels
+    const panels    = newLayout(model).tracks[0].panels
     const rows      = (table: number) => panels.find((p) => p.table === table)?.rows
     expect(rows(0)).toBe(PANEL_ROWS)
     expect(rows(1)).toBe(TITLE_ROWS + 5)
@@ -154,12 +167,12 @@ describe('panel sizes and folding', () => {
   test('with trimming off, every table shows its 16 rows', () => {
     const model = crowded(3)
     fullTables(model, 1)
-    const layout = new SongLayout(model, false)
+    const layout = newLayout(model, false)
     for (const panel of layout.tracks[0].panels) expect(layout.tableFaceRows(panel)).toBe(PANEL_ROWS)
   })
 
   test('when panels used on screen do not fit, the lowest fold, none hides and none is pushed off the bottom', () => {
-    const layout  = new SongLayout(fullTables(crowded(14), 14))
+    const layout  = newLayout(fullTables(crowded(14), 14))
     const track   = layout.tracks[0]
     const yTop    = layout.rowY(0)
     const yBottom = yTop - PANEL_SPAN * 2
@@ -180,7 +193,7 @@ describe('panel sizes and folding', () => {
   test('panels not used on screen fold before the ones that are', () => {
     // Instruments 0-5 play in the first and last phrases, only 0-2 in between.
     const all    = [0, 1, 2, 3, 4, 5].map((inst): [number, number] => [inst, inst])
-    const layout = new SongLayout(fullTables(songOf([all, ...Array.from({ length: 5 }, () => all.slice(0, 3)), all]), 6))
+    const layout = newLayout(fullTables(songOf([all, ...Array.from({ length: 5 }, () => all.slice(0, 3)), all]), 6))
     const track  = layout.tracks[0]
     const panel  = (table: number) => track.panels.find((p) => p.table === table) as Panel
     const yTop   = layout.rowY(phraseRow(2))
@@ -199,7 +212,7 @@ describe('panel sizes and folding', () => {
     model.tables[1].rows.forEach((row, r) => {
       row.transpose = r === 0 ? 1 : 0
     })
-    const layout = new SongLayout(model, false)
+    const layout = newLayout(model, false)
     const panel  = (table: number) => layout.tracks[0].panels.find((p) => p.table === table) as Panel
     const yTop   = layout.rowY(phraseRow(1))
     layout.stick(0, yTop, yTop - PANEL_SPAN * 1.2)
@@ -211,7 +224,7 @@ describe('panel sizes and folding', () => {
   test('tables of one row do not fold for one another: the ones with no room show at least their title line', () => {
     const model   = crowded(14)
     model.tables  = {}
-    const layout  = new SongLayout(model)
+    const layout  = newLayout(model)
     const yTop    = layout.rowY(0)
     const yBottom = yTop - PANEL_SPAN * 0.8
     layout.stick(0, yTop, yBottom)
@@ -231,7 +244,7 @@ describe('panel sizes and folding', () => {
       [0, 1],
       [2, 2]
     ]
-    const layout = new SongLayout(fullTables(songOf(Array.from({ length: 4 }, () => both)), 3), false)
+    const layout = newLayout(fullTables(songOf(Array.from({ length: 4 }, () => both)), 3), false)
     const panel  = (table: number) => layout.tracks[0].panels.find((p) => p.table === table) as Panel
     const yTop   = layout.rowY(phraseRow(1))
     const bottom = yTop - PANEL_SPAN - ROW_H * 1.2
@@ -254,7 +267,7 @@ describe('panel sizes and folding', () => {
         }))
       }
     }
-    const layout  = new SongLayout(model, false)
+    const layout  = newLayout(model, false)
     const track   = layout.tracks[0]
     const yTop    = layout.rowY(0)
     const yBottom = yTop - PANEL_SPAN * 2
@@ -266,7 +279,7 @@ describe('panel sizes and folding', () => {
   })
 
   test('a pinned panel never folds and comes whole on screen, even from low in a crowded view', () => {
-    const layout  = new SongLayout(fullTables(crowded(14), 14))
+    const layout  = newLayout(fullTables(crowded(14), 14))
     const track   = layout.tracks[0]
     const yTop    = layout.rowY(0)
     const yBottom = yTop - PANEL_SPAN * 2
@@ -282,7 +295,7 @@ describe('panel sizes and folding', () => {
   })
 
   test('a panel the selected step links to never folds', () => {
-    const layout  = new SongLayout(fullTables(crowded(14), 14))
+    const layout  = newLayout(fullTables(crowded(14), 14))
     const track   = layout.tracks[0]
     const yTop    = layout.rowY(0)
     const yBottom = yTop - PANEL_SPAN * 2
@@ -304,7 +317,7 @@ describe('which panels show, and in which column', () => {
       [6, 4],
       [8, 5]
     ]
-    const layout = new SongLayout(songOf([[[0, 0x20]], ...Array.from({ length: 29 }, () => busy), [[0, 0x20]]]))
+    const layout = newLayout(songOf([[[0, 0x20]], ...Array.from({ length: 29 }, () => busy), [[0, 0x20]]]))
     const track  = layout.tracks[0]
     const panel  = (table: number) => track.panels.find((p) => p.table === table) as Panel
     const view   = (phrase: number) => layout.stick(0, layout.rowY(phraseRow(phrase)), layout.rowY(phraseRow(phrase)) - 32 * ROW_H)
@@ -324,7 +337,7 @@ describe('which panels show, and in which column', () => {
   })
 
   test('a panel used further than four reaches away shows its title lines only', () => {
-    const layout = new SongLayout(fullTables(songOf([[[0, 0]], ...Array.from({ length: 62 }, (): [number, number][] => [[0, 1]]), [[0, 0]]]), 1))
+    const layout = newLayout(fullTables(songOf([[[0, 0]], ...Array.from({ length: 62 }, (): [number, number][] => [[0, 1]]), [[0, 0]]]), 1))
     const panel  = layout.tracks[0].panels.find((p) => p.table === 0) as Panel
     const view   = (phrase: number) => layout.stick(0, layout.rowY(phraseRow(phrase)), layout.rowY(phraseRow(phrase)) - 32 * ROW_H)
     view(31)
@@ -340,7 +353,7 @@ describe('which panels show, and in which column', () => {
       [2, 1],
       [4, 2]
     ]
-    const layout = new SongLayout(songOf(Array.from({ length: 8 }, () => busy)))
+    const layout = newLayout(songOf(Array.from({ length: 8 }, () => busy)))
     const track  = layout.tracks[0]
     layout.stick(0, layout.rowY(16), layout.rowY(48))
     const ys = [3, 1, 2].map((table) => (track.panels.find((p) => p.table === table) as Panel).y)
@@ -355,7 +368,7 @@ describe('which panels show, and in which column', () => {
       [2, 1],
       [4, 2]
     ]
-    const layout = new SongLayout(songOf(Array.from({ length: 8 }, () => busy)))
+    const layout = newLayout(songOf(Array.from({ length: 8 }, () => busy)))
     const track  = layout.tracks[0]
     const places = () => track.panels.map((p) => [p.table, p.col, Math.round(p.y * 1000)])
     layout.stick(0, layout.rowY(16), layout.rowY(48))
@@ -373,7 +386,7 @@ describe('which panels show, and in which column', () => {
       [0, 0],
       [2, 1]
     ]
-    const layout = new SongLayout(songOf([[...both, [4, 4]], ...Array.from({ length: 8 }, () => both), [[0, 4]]]))
+    const layout = newLayout(songOf([[...both, [4, 4]], ...Array.from({ length: 8 }, () => both), [[0, 4]]]))
     const track  = layout.tracks[0]
     const panel  = (table: number) => track.panels.find((p) => p.table === table) as Panel
     const view   = (phrase: number) => layout.stick(0, layout.rowY(phraseRow(phrase)), layout.rowY(phraseRow(phrase)) - 16 * ROW_H)
@@ -393,7 +406,7 @@ describe('which panels show, and in which column', () => {
       [0, 1],
       [2, 2]
     ]
-    const layout = new SongLayout(songOf([...Array.from({ length: 12 }, () => pair), [...pair, [4, 0]]]))
+    const layout = newLayout(songOf([...Array.from({ length: 12 }, () => pair), [...pair, [4, 0]]]))
     const track  = layout.tracks[0]
     const panel  = (table: number) => track.panels.find((p) => p.table === table) as Panel
     let came     = false
@@ -411,7 +424,7 @@ describe('which panels show, and in which column', () => {
 
   test('after a zoom out, the grid is laid out afresh: panels come back to the first column, in the order they had', () => {
     const six    : [number, number][] = [0, 1, 2, 3, 4, 5].map((inst) => [inst * 2, inst])
-    const layout = new SongLayout(fullTables(songOf(Array.from({ length: 8 }, () => six)), 6))
+    const layout = newLayout(fullTables(songOf(Array.from({ length: 8 }, () => six)), 6))
     const track  = layout.tracks[0]
     const yTop   = layout.rowY(phraseRow(2))
     layout.stick(0, yTop, yTop - PANEL_SPAN * 1.2)
@@ -424,7 +437,7 @@ describe('which panels show, and in which column', () => {
 
   test('a small zoom moves no panel to another column', () => {
     const six    : [number, number][] = [0, 1, 2, 3, 4, 5].map((inst) => [inst * 2, inst])
-    const layout = new SongLayout(fullTables(songOf(Array.from({ length: 8 }, () => six)), 6))
+    const layout = newLayout(fullTables(songOf(Array.from({ length: 8 }, () => six)), 6))
     const track  = layout.tracks[0]
     const yTop   = layout.rowY(phraseRow(2))
     layout.stick(0, yTop, yTop - PANEL_SPAN * 2)
@@ -439,7 +452,7 @@ describe('which panels show, and in which column', () => {
       [2, 2],
       [4, 3]
     ]
-    const layout = new SongLayout(songOf(Array.from({ length: 8 }, () => three)))
+    const layout = newLayout(songOf(Array.from({ length: 8 }, () => three)))
     const track  = layout.tracks[0]
     const yTop   = layout.rowY(phraseRow(1))
     const view   = PANEL_SPAN * 2
@@ -453,7 +466,7 @@ describe('which panels show, and in which column', () => {
   })
 
   test('one call settles the grid: a second on the same view moves nothing', () => {
-    const layout = new SongLayout(fullTables(crowded(14), 14))
+    const layout = newLayout(fullTables(crowded(14), 14))
     const yTop   = layout.rowY(0)
     for (let row = 0; row < 64; row += 1) {
       const top = yTop - row * ROW_H
@@ -466,7 +479,7 @@ describe('which panels show, and in which column', () => {
 describe('note instrument links', () => {
   test('a note with no instrument of its own links to the one the track played last', () => {
     const model  = demoSong()
-    const layout = new SongLayout(model)
+    const layout = newLayout(model)
     const first  = layout.tracks[0].instances[0]
     const steps  = model.phrases[first.phrase].steps
     Object.assign(steps[0], {
@@ -489,7 +502,7 @@ describe('note instrument links', () => {
       inst: null,
       fx  : []
     })
-    const links = new SongLayout(model).noteInstrumentLinks(first)
+    const links = newLayout(model).noteInstrumentLinks(first)
     const rows  = links.filter((link) => link.step < 4)
     expect(rows.map((link) => [link.step, link.panel.table])).toEqual([[0, 5], [1, 5]])
     expect(rows[1].row).toBe(first.row + 1)

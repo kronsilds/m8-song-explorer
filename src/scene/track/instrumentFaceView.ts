@@ -39,6 +39,7 @@ interface Fading {
 export class InstrumentFaceView {
   readonly group           = new Group()
   private text             : Text | null = null
+  private textReady        = false
   private readonly fading  : Fading[] = []
   /** The background (and the modulator cards' tints), faded on its own while faces crossfade. */
   private background!      : Fading
@@ -247,13 +248,22 @@ export class InstrumentFaceView {
       text.position.z  = 0.04
       text.renderOrder = 2
       this.group.add(text)
-      text.sync(onTextReady)
+      this.textReady   = false
+      text.sync(() => {
+        if (this.text === text) this.textReady = true
+        onTextReady()
+      })
       this.text = text
     } else if (!wanted && this.text) {
       disposeText(this.text)
       this.text = null
     }
     if (this.text) this.text.fillOpacity = alpha
+  }
+
+  /** Its text is laid out (it can take the place of an older face). */
+  get ready(): boolean {
+    return this.text != null && this.textReady
   }
 
   dispose(): void {

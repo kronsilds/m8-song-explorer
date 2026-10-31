@@ -2,6 +2,7 @@
 
 import { DEFAULT_CHANNEL } from '../m8/midiControl'
 import { readItem, writeItem } from '../model/storage'
+import { DEFAULT_WALL_DEGREES, WALL_DEGREES_RANGE } from '../scene/layout'
 
 export interface Preference<T> {
   get(): T
@@ -28,9 +29,21 @@ const ccMapChannel       : Preference<number> = {
   set: (channel) => writeItem('cc-map-channel', String(channel))
 }
 
+/** How far a track's wall is turned from the front, in degrees. */
+const wallDegrees        : Preference<number> = {
+  get: () => {
+    const stored  = readItem('wall-degrees')
+    const degrees = stored == null ? Number.NaN : Number(stored)
+    return degrees >= WALL_DEGREES_RANGE.min && degrees <= WALL_DEGREES_RANGE.max ? degrees : DEFAULT_WALL_DEGREES
+  },
+  set: (degrees) => writeItem('wall-degrees', String(degrees))
+}
+
 export const preferences = {
   /** Skewed, tilted camera angles. */
   dramatic   : flag('dramatic', false),
+  /** How far the wall is turned from the front (the step details and panels of an unfolded track). */
+  wallDegrees,
   /** Transposed phrases show the notes they play. */
   playedNotes: flag('played-notes', true),
   /** Tables show only their rows with content; an empty one only its title. */

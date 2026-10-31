@@ -232,8 +232,20 @@ export function modCells(rawLines: string[]): InstrumentCell[] {
 }
 
 /** The TBL.TIC of an instrument (how fast its table runs), null when its Instrument view was not read. */
-export const tableTicOf = (instrument: Instrument | undefined): number | null =>
-  instrumentCells(instrument?.lines ?? []).find((c) => c.label === 'TBL.TIC')?.value ?? null
+/** TBL.TIC read from each instrument's lines (the song asks for it at every step it walks). */
+const tableTics = new WeakMap<Instrument, { lines: Instrument['lines']; tic: number | null }>()
+
+export function tableTicOf(instrument: Instrument | undefined): number | null {
+  if (!instrument) return null
+  const known = tableTics.get(instrument)
+  if (known && known.lines === instrument.lines) return known.tic
+  const tic = instrumentCells(instrument.lines ?? []).find((c) => c.label === 'TBL.TIC')?.value ?? null
+  tableTics.set(instrument, {
+    lines: instrument.lines,
+    tic
+  })
+  return tic
+}
 
 export const modKindOf =(type: string | null): ModKind | null => MOD_KINDS.find(([prefix]) => type?.startsWith(prefix))?.[1] ?? null
 

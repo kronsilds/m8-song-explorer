@@ -99,6 +99,11 @@ export class ScaleMap {
     this.globalCommands.sort(byRow)
   }
 
+  /** What the scales of a track's rows come from: two maps with the same signature give its rows the same scales. */
+  signature(track: number): string {
+    return JSON.stringify([this.projectChoice, this.trackCommands[track] ?? [], this.globalCommands])
+  }
+
   at(track: number, row: number): ScaleChoice {
     const ownTrack = lastCommandAt(this.trackCommands[track] ?? [], row)
     const anyTrack = lastCommandAt(this.globalCommands, row)

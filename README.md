@@ -6,10 +6,23 @@ instruments → tables) and shows it as a 3D tracker:
 - **Front**: the eight tracks side by side, every step of the song from top to bottom (note and
   instrument), with the chain and phrase numbers as a tree in each track's gutter. Song rows are
   aligned across tracks, the way they start together on the device.
-- **Turn the view** (drag, or key `2`): the focused track opens a wall hinged on its right edge.
-  First the rest of each step (velocity, instrument, FX1–FX3) row for row, then the panels of the
-  instruments and tables the track uses, linked to the steps that use them (`I` column, `INS`,
-  `TBL`, `TBX`).
+- **Fold buttons** (`FX` and `INS` on the line under each track's title, beside `+`): a track
+  unfolds a wall hinged on its right edge, from any camera angle, and as many tracks as you like
+  can be open at once. `FX` unfolds the rest of each step (velocity, instrument, FX1–FX3) row for
+  row; `INS` the panels of the instruments and tables the track uses, linked to the steps that use
+  them (`I` column, `INS`, `TBL`, `TBX`). With only the panels open the wall slides back by the
+  width of the step details, so the panels keep the same room from the front column as from the FX
+  columns, and the links leave from the right edge of the front column instead. A part a navigation
+  reaches (a click, the arrows, `I`, or the followed M8 cursor going to an FX cell or a panel)
+  unfolds by itself, its button showing only a lit label, and folds again once the navigation
+  leaves the track; pressing its button then keeps it unfolded. The tracks to its right make room
+  as it opens: the wall's reach along x at its angle and the instrument faces turned out of it, then
+  the same gap for every track (not the camera, so tracks never slide while you turn the view;
+  perspective still pulls a deep wall's far end toward the middle of the screen). **Wall angle** (Options
+  panel, 40° by default) turns the wall from the front: low reads best from the front, high leaves
+  more room beside the next track. *UNFOLD* `FX` / `INS` in the top bar do what the header
+  buttons do, for every track at once (lit: every track keeps that part; only the label: some
+  tracks have it unfolded); `E` unfolds both on every track, again folds them.
 - **Instrument and table panels** are sticky: a panel stays on screen (held near the top of the
   view) while the rows that use it are on screen, and leaves when they scroll away. A track has
   one panel per instrument (`I` column, `INS`) and per table (`TBL`, `TBX`) it uses; links are
@@ -27,7 +40,12 @@ instruments → tables) and shows it as a 3D tracker:
   back when it leaves; the `INST ›` / `‹ TABLE` tab above the panel, or key `I`, turns it by
   hand. Every value is a cell: the Selection panel explains it as the SDK reads it on the device,
   with what modulates it, or the whole modulator for a modulator value. With Auto select the M8
-  cursor's value is selected as it moves.
+  cursor's value is selected as it moves, on the panel of the track the M8 came from (else the
+  nearest track using it). Going to a panel cell (Auto select, Follow M8, the arrows) brings its
+  whole card into view as it settles, as large as the face it turns to: the view slides along the
+  tracks, and scrolls only when no row using the panel is near (panels stick under the headers)
+  or when the card would be cut at the bottom (at the start of the song, where the headers rest
+  lower).
 - **Table cells** in the Selection panel also say how the table plays (`src/model/music/tableWalk.ts`):
   its speed (the `TIC` the song starts it at most often, in rows per step and in ms at the
   project tempo), what starts it (notes, `TBX` steps, which tracks), where the selected cell's
@@ -37,7 +55,8 @@ instruments → tables) and shows it as a 3D tracker:
   first note that starts it (only on a scale that lets every note through, since the N column
   may count scale steps on other scales). It follows the table playback rules below.
 - **Many instruments at once**: panels that would overlap tile into extra columns deeper along the
-  wall (up to four, the wall grows only for tracks that need them) and then stack downward. A
+  wall (a wall has two columns at most; a track that wants more shows a `+` beside its `INS`
+  button that adds a column, up to four, and `-` takes them away again) and then stack downward. A
   panel's column says how far away it is used: on screen or close in the first column, further
   uses deeper along the wall, and panels used far away show only their title lines while there is
   room. A panel keeps its column while you scroll (a margin stops it changing band at every
@@ -48,23 +67,33 @@ instruments → tables) and shows it as a 3D tracker:
 - **Trim tables** (Options panel, on by default): a table shows its rows down to the last one with
   a transpose, volume or FX command (down to the selected or M8 cursor row), and an empty table
   only its title lines. Off shows all 16 rows.
-- **Moving the selection** with the arrows onto a velocity / instrument / FX cell or a table turns the view and
-  opens the wall; back on a note it turns back (the same rule as Follow M8).
-- **Camera**: Turn and Side centre the open track's column and wall (the panel columns in use)
-  and stand back as far as they need, within readable distances: the same framing for every
-  track. Front centres on all the tracks and slides only as far as it takes to show the open
-  one; Follow M8 and the arrows do the same when the cell leaves the screen, landing the cell just
-  under the track headers (which stay clear of the top bar, even when it wraps onto more rows in
-  a narrow window). A drag that turns
-  the view opens the track it starts on and turns around it, bringing it to the middle. Panning
-  moves parallel to the tracks, so the zoom never changes, and a pan drag keeps what it grabbed
-  under the pointer (sideways; nearer things move faster). Turned, a pan opens the track it
-  starts on, as a turn does: the track pressed (right or Shift drag), or the one under the
-  pointer when a wheel or trackpad gesture starts sideways (a gesture that starts vertical
-  scrolls the rows and opens nothing). That track stays still on screen while the walls move,
-  and stays open for the whole pan, whatever the pan brings to the middle; to read another
-  track, start a pan on it. Facing the front, the track in the middle is the one a turn opens.
-  Ctrl+wheel zooms toward the pointer.
+- **Moving the selection** with the arrows onto a velocity / FX cell or a table unfolds the part
+  of the wall it is on (it never folds anything, and the camera does not turn). The view then
+  shows the whole phrase the cell is in (a Song view cell: its chain), across the front column and
+  the step details when they are unfolded, clear of the pinned Selection panel at the heights it
+  covers (measured after the panel took its new content). Nothing moves while it shows. Else the
+  view scrolls (a page at a time; following the M8, the phrase lands just under the headers) and
+  slides along the tracks, keeping its distance from them (as a pan does), to bring that track,
+  with as much of its unfolded wall as fits, to the middle of the free room. A phrase taller or
+  wider than the screen shows its cell first. A panel cell shows its whole card with its track's
+  column beside it (the card first when both do not fit). A move to another track first pans by
+  the distance between the two tracks (as they settled before the move), so the new track shows
+  where the old one was and a cell at the same place in it (row, column) lands exactly where the
+  old one was; the rules above then move the view only if something is still cut. With Dramatic
+  on and a preset chosen (Front, Turn, Side), a navigation that moved the view also takes a new
+  dramatic angle, the camera swinging around the cell, which stays where it was put on screen
+  (a panel cell nearly: panels stick under the headers). The same rules apply to Follow M8 and
+  Auto select.
+- **Camera**: the angle presets (Turn, Side, Front) only set the angle; the walls open by the
+  buttons. Turn and Side centre the focused track's column and what it has unfolded and stand
+  back as far as they need, within readable distances. Front centres on all the tracks and
+  slides only as far as it takes to show the focused one; facing the front, Follow M8 and the
+  arrows frame all the tracks the same way while they fit the screen (the track headers stay
+  clear of the top bar, even when it wraps onto more rows in a narrow window). A drag that
+  turns the view goes around the track it starts on, which stays where it is on screen. Panning moves
+  parallel to the tracks, so the zoom never changes, and a pan drag keeps what it grabbed under
+  the pointer (sideways; nearer things move faster). With nothing selected, the track in the
+  middle of the view is the focused one. Ctrl+wheel zooms toward the pointer.
 - **Chain transpose and scales**: a phrase a chain row transposes shows the transpose under its
   number in the tree (`+5`, `-12`), and its notes as played in the transpose colour: the written
   note moved by the chain and project TRANSPOSE, then brought up into the track's scale (the M8
@@ -106,13 +135,22 @@ instruments → tables) and shows it as a 3D tracker:
   along). It moves along with Option+Left/Right on a Chain or Phrase view (the same song row on
   the other track) and Option+Up/Down on a Chain view (the track's next chain in the song).
   The cursor is read 30 ms after the M8 stops drawing, and at least every 100 ms while it keeps
-  drawing (a held key, notes on the cursor row while the song plays). Edits are folded in only
-  once the screen has been quiet for 140 ms, so a half-drawn screen never reaches the saved song
-  (`src/app/syncScheduler.ts`).
+  drawing (a held key, notes on the cursor row while the song plays) (`src/app/syncScheduler.ts`).
+  Before any Song view, the song cell of the place followed last is kept as a guess, so a chain
+  or phrase used in several song cells stays near it rather than jumping to its first use.
+- **Edits made on the M8** show at once on the item edited: a cursor read reads them once the
+  screen has shown that item for 150 ms (drawn whole). A phrase's text, a table's panels and an
+  instrument's panels and face are laid out again, the old text showing until the new one is
+  ready; a song, chain, project, scale or groove edit updates the whole scene at once. The rest
+  (bars, links, panels coming or going) follows, and the song is saved, once the screen has been
+  quiet for 140 ms. That update is incremental (`World.updateModel`): the new layout takes over
+  where the panels were and how they showed, a track whose content did not change keeps its view
+  (`SongLayout.trackSignature`), a rebuilt one takes over the old one's header, panel texts and
+  faces, and texts that show the same stay; nothing blinks or fades in again, and the camera stays.
 - **Auto select** (`A`) makes the selection follow the M8 cursor, so the Selection panel explains
   what the cursor is on. Reaching the velocity / instrument / FX columns of a phrase, a table or an instrument
-  turns the view to the wall; back on a note, chain or song cell it turns back (also while the
-  song plays). A click wins until the M8 cursor moves again.
+  unfolds that part of the wall (also while the song plays); it stays open until you fold it.
+  A click wins until the M8 cursor moves again.
 
 ## Keys and buttons
 
@@ -120,10 +158,13 @@ instruments → tables) and shows it as a 3D tracker:
 |---|---|---|
 | `0`, Home | All | Whole song, all tracks |
 | `1` | Front | Tracker view |
-| `2` | Turn | Turn to see FX and tables |
-| `3` | Side | Face the open wall square |
-| `E` | Open all | Open the walls of every track |
-| `X` | Dramatic | Skewed, tilted camera angles for front, turn, side and the turns toward a wall |
+| `2` | Turn | Turn the view to the right |
+| `3` | Side | Look square at the walls |
+| `E` | | Unfold the FX, instruments and tables of every track (again: fold them) |
+| | UNFOLD `FX`, `INS` | Top bar: unfold one part of every track (again: fold it) |
+| | `FX`, `INS` | In a track header: unfold its step details, its instrument and table panels (until pressed again) |
+| | Wall angle | How far the wall is turned from the front (Options panel) |
+| `X` | Dramatic | Skewed, tilted camera angles for front, turn and side; a new take each time a navigation moves the view (the cell stays put on screen) |
 | `T` | Played notes | Notes show what they play (transpose colour; scale colour when only the scale moved them) |
 | `I` | `INST ›` tab | Turn the selected instrument panel over (table / instrument) |
 | | Trim tables | Tables show only rows with content (Options panel) |

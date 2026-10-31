@@ -428,12 +428,13 @@ export function demoSong(seed = 8): SongModel {
   const cMute      = addChain([silence])
 
   // --- Song: intro, verse, build, drop, break, outro ------------------------
+  // Every track plays from the first row, so the view at the start shows each one's wall.
   const rows     : (number | null)[][] = [
-    [cKickIntro, null, cHats, null, cPad, null, null, cImpact],
-    [cKickIntro, null, cHats, null, cPad, null, null, cMute],
-    [cKick, cSnare, cHats, cBass, cPad, null, null, null],
-    [cKick, cSnare, cHats, cBass, cPad, cLead, null, null],
-    [cKick, cSnare, cHats, cBass, cPad, cLead, cArp, null],
+    [cKickIntro, cSnare, cHats, cBass, cPad, cLead, cArp, cImpact],
+    [cKickIntro, cSnare, cHats, cBass, cPad, cLead, cArp, cMute],
+    [cKick, cSnare, cHats, cBass, cPad, cLead, cArp, cRiser],
+    [cKick, cSnare, cHats, cBass, cPad, cLead, cArp, cImpact],
+    [cKick, cSnare, cHats, cBass, cPad, cLead, cArp, cRiser],
     [cKick, cSnare, cHats, cBassUp, cPad, cLead, cArp, cRiser],
     [cKick, cSnare, cHats, cBass, cPad, cLead, cArp, cImpact],
     [cKick, cSnare, cHats, cBassUp, cPad, cLead, cArp, null],

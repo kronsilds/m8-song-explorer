@@ -4,7 +4,9 @@
 
 import type { CellDescription } from '../m8/semantics'
 import { debugLog } from '../model/debugLog'
+import { WALL_DEGREES_RANGE } from '../scene/layout'
 import type { Palette } from '../scene/palette'
+import type { CoveredArea } from '../scene/world'
 
 export type Action =
   | 'device'
@@ -18,6 +20,8 @@ export type Action =
   | 'side'
   | 'overview'
   | 'expand'
+  | 'allfx'
+  | 'allpanels'
   | 'dramatic'
   | 'played'
   | 'trim'
@@ -40,14 +44,16 @@ const element           = <K extends keyof HTMLElementTagNameMap>(tag: K, classN
 const HELP_HTML         = `
   <div class="help-title">NAVIGATE</div>
   <dl>
-    <dt>Drag</dt><dd>turn around the song: the track under the pointer opens (FX and tables)</dd>
-    <dt>Right drag · Shift drag</dt><dd>pan; turned, the track the pan starts on opens and stays open</dd>
+    <dt>Drag</dt><dd>turn around the track under the pointer</dd>
+    <dt>Right drag · Shift drag</dt><dd>pan</dd>
+    <dt>FX · INS</dt><dd>buttons in a track header: unfold the step details (velocity, instrument, FX) · the instrument and table panels, from any angle; as many tracks as you like. A part the selection or the M8 cursor goes to unfolds by itself (only the label lights) and folds again when it leaves the track; its button keeps it. UNFOLD FX · INS in the top bar do it for every track</dd>
+    <dt>+ · -</dt><dd>beside INS when a track's panels want more than two columns: add a column (up to four) · back to two</dd>
     <dt>Wheel</dt><dd>scroll the song · Ctrl/pinch zooms</dd>
     <dt>Click · Double click</dt><dd>select · focus</dd>
     <dt>Arrows · PgUp/PgDn</dt><dd>move the selection · scroll 16 rows</dd>
     <dt>Shift+Arrows</dt><dd>a whole phrase up / down · the same cell in the next / previous track</dd>
     <dt>0 1 2 3</dt><dd>all · front · turn · side</dd>
-    <dt>E · F</dt><dd>open every wall · focus selection</dd>
+    <dt>E · F</dt><dd>unfold (or fold) every track · focus selection</dd>
     <dt>I</dt><dd>turn the selected instrument panel over: its table or its instrument (parameters and modulators). It turns by itself while the M8 shows that instrument</dd>
     <dt>X</dt><dd>dramatic angles: each cut to front, turn or side takes a skewed angle</dd>
     <dt>T</dt><dd>played notes: transposed phrases show the notes they play instead of the notes written</dd>
@@ -80,16 +86,22 @@ export class Hud {
   onAction       : (action: Action) => void = () => {}
   /** The mute / solo MIDI channel was changed (1..16). */
   onChannel      : (channel: number) => void = () => {}
+  /** The wall angle slider moved (degrees). */
+  onWallDegrees  : (degrees: number) => void = () => {}
   /** The selection panel was pinned open or unpinned. */
   onInfoPinned   : (pinned: boolean) => void = () => {}
   /** The ? button was double clicked: save the debug log. */
   onDebugExport  : () => void = () => {}
   /** Called with the bottom edge of the top bar (pixels) when its size changes. */
   onTopBarResize : (bottom: number) => void = () => {}
+  /** Called with what the selection panel covers of the view (see coveredAreas) when it changes. */
+  onCoveredAreas : (areas: CoveredArea[]) => void = () => {}
   private topBar!: HTMLElement
   private root!  : HTMLElement
 
   private readonly channelSelect = element('select', 'channel-select')
+  private readonly wallSlider    = element('input', 'wall-slider')
+  private readonly wallValue     = element('span', 'wall-value')
   private readonly status        = element('div', 'status')
   private readonly summary       = element('div', 'summary')
   private readonly buttons       = new Map<Action, HTMLButtonElement>()
@@ -137,6 +149,9 @@ export class Hud {
     this.topBar = topBar
     this.root   = root
     new ResizeObserver(() => this.onTopBarResize(this.topBarBottom())).observe(topBar)
+    // The selection panel changes size with what it shows, and moves with the window.
+    const covered = new ResizeObserver(() => this.onCoveredAreas(this.coveredAreas()))
+    for (const target of [root, this.info, this.infoTab]) covered.observe(target)
   }
 
   /** Pixels from the top of the page to the bottom edge of the top bar. */
@@ -173,14 +188,29 @@ export class Hud {
     group(
       ['overview', 'All', 'Whole song, all tracks (0)'],
       ['front', 'Front', 'Tracker view (1)'],
-      ['angle', 'Turn', 'Turn to see FX and tables (2)'],
-      ['side', 'Side', 'Face the open wall (3)'],
-      ['expand', 'Open all', 'Open the walls of every track (E)'],
+      ['angle', 'Turn', 'Turn the view to the right (2)'],
+      ['side', 'Side', 'Look square at the walls (3)'],
     )
+    tools.append(this.buildFoldGroup())
     group(['help', '?', 'Keys and mouse · double click: save the debug log'])
     this.buttons.get('help')?.addEventListener('dblclick', () => this.onDebugExport())
     this.setButton('device', { hidden: true })
     return tools
+  }
+
+  /**
+   * The fold buttons of every track, the way each track header has them: lit when every track
+   * keeps that part unfolded, only the label when some tracks have it unfolded. E does both.
+   */
+  private buildFoldGroup(): HTMLElement {
+    const group = element('div', 'tool-group folds')
+    group.title = 'Every track at once, like the FX and INS buttons of a track header · E: both'
+    const fx    = this.button(['allfx', 'FX', 'Unfold the step details (velocity, instrument, FX) of every track; again folds them'])
+    const ins   = this.button(['allpanels', 'INS', 'Unfold the instrument and table panels of every track; again folds them'])
+    fx.classList.add('fold-fx')
+    ins.classList.add('fold-ins')
+    group.append(element('span', 'tool-label', 'UNFOLD'), fx, ins)
+    return group
   }
 
   /** The options panel: a tab on the left edge with the settings used less often. */
@@ -193,9 +223,10 @@ export class Hud {
     }
     section(
       'VIEW',
-      ['dramatic', 'Dramatic', 'Skewed, tilted camera angles for front, turn, side and the turns toward a wall (X)'],
+      ['dramatic', 'Dramatic', 'Skewed, tilted camera angles for front, turn and side (X)'],
       ['played', 'Played notes', 'Notes show what they play instead of what is written: moved by a transpose in the transpose colour, moved only by the scale in the scale colour (T)'],
       ['trim', 'Trim tables', 'Tables show their rows down to the last one with something in it; an empty table shows only its title'],
+      this.buildWallSlider(),
     )
     section('M8', ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'], this.buildChannelPicker())
     section(
@@ -209,6 +240,45 @@ export class Hud {
     tab.title = 'Hover to open · click to keep open'
     tab.addEventListener('click', () => this.menu.classList.toggle('pinned'))
     this.menu.append(body, tab)
+  }
+
+  /**
+   * The part of the view the selection panel covers once it has slid where it goes, in the view's
+   * pixels: the whole panel while pinned open, else its tab on the right edge (a hover opens it
+   * only for a moment). Measured on the layout boxes, so a slide under way does not count.
+   */
+  coveredAreas(): CoveredArea[] {
+    const { info, infoTab } = this
+    const pinned            = info.classList.contains('pinned')
+    const area              : CoveredArea = {
+      left  : pinned ? info.offsetLeft : this.root.clientWidth - infoTab.offsetWidth,
+      top   : pinned ? info.offsetTop : info.offsetTop + infoTab.offsetTop,
+      width : pinned ? info.offsetWidth : infoTab.offsetWidth,
+      height: pinned ? info.offsetHeight : infoTab.offsetHeight
+    }
+    return area.width > 0 && area.height > 0 ? [area] : []
+  }
+
+  /** How far a track's wall (FX, instruments and tables) is turned from the front: 20° is nearly flat to the tracker view, 80° nearly edge on. */
+  private buildWallSlider(): HTMLElement {
+    const label          = element('label', 'tool wall-angle', 'WALL ANGLE ')
+    label.title          = 'How far the FX, instrument and table wall of an unfolded track is turned from the front: low reads best from the front, high leaves more room beside the next track'
+    this.wallSlider.type = 'range'
+    this.wallSlider.min  = String(WALL_DEGREES_RANGE.min)
+    this.wallSlider.max  = String(WALL_DEGREES_RANGE.max)
+    this.wallSlider.step = '1'
+    this.wallSlider.addEventListener('input', () => {
+      const degrees              = Number(this.wallSlider.value)
+      this.wallValue.textContent = `${degrees}°`
+      this.onWallDegrees(degrees)
+    })
+    label.append(this.wallSlider, this.wallValue)
+    return label
+  }
+
+  setWallDegrees(degrees: number): void {
+    this.wallSlider.value      = String(degrees)
+    this.wallValue.textContent = `${degrees}°`
   }
 
   /** The MIDI channel the track mute / solo buttons send on: the M8's CC MAP CHAN. */
@@ -266,6 +336,13 @@ export class Hud {
 
   setActive(action: Action, active: boolean): void {
     this.buttons.get(action)?.classList.toggle('active', active)
+  }
+
+  /** Lights a fold button of the top bar: all (every track keeps the part unfolded), some, or off. */
+  setFoldCoverage(action: Action, coverage: 'off' | 'some' | 'all'): void {
+    const button = this.buttons.get(action)
+    button?.classList.toggle('active', coverage === 'all')
+    button?.classList.toggle('some', coverage === 'some')
   }
 
   /** Shows the progress bar; a null fraction shows it running without a measure. */
@@ -331,6 +408,7 @@ export class Hud {
     const button = this.info.querySelector('.info-pin')
     if (button) button.textContent = pinned ? 'Unpin' : 'Pin'
     this.onInfoPinned(pinned)
+    this.onCoveredAreas(this.coveredAreas())
   }
 
   /** The selection panel: path, title, the SDK's reading, facts and the Show on M8 button. */
@@ -351,7 +429,7 @@ export class Hud {
     head.append(element('div', 'info-kicker', 'SELECTION'), pin)
     if (!description) {
       const placeholder =
-        'Click a note, an FX cell, a table row or an instrument value. Turn the view (drag, or key 2) to reveal the FX columns and the instrument panels of the track; INST › on a panel (or key I) turns it over to its instrument.'
+        'Click a note, an FX cell, a table row or an instrument value. The FX and INS buttons in a track header unfold its FX columns and its instrument panels; INST › on a panel (or key I) turns it over to its instrument.'
       body.append(head, element('div', 'info-placeholder', placeholder))
       return
     }

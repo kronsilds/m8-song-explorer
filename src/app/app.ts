@@ -5,7 +5,7 @@
 import { createM8ClientSync, type M8Client, type M8Screen, observeThemeColors } from '@yam8d/m8-sdk'
 import { ExploreCancelled } from '../m8/driver'
 import { clientPort, type M8Port, withTimeout } from '../m8/port'
-import { absorbScreen, deviceFocus, isOtherSong, matchesSong } from '../m8/screen/liveScreen'
+import { absorbEdit, deviceFocus, isOtherSong, matchesSong } from '../m8/screen/liveScreen'
 import { viewOf } from '../m8/screen/screenReader'
 import { describeSelection } from '../m8/semantics'
 import { exploreSong, moveToSongTop } from '../m8/tasks/explorer'
@@ -38,6 +38,8 @@ import { TrackMixer } from './trackMixer'
 type DeviceTask = 'explore' | 'theme' | 'sync' | 'show'
 
 const HANDSHAKE_TIMEOUT_MS = 6000
+/** A cursor read reads edits from a screen once it has shown the same item this long: the M8 has drawn it whole by then. */
+const EDIT_READ_AFTER_MS   = 150
 /** While exploring, the view is redrawn at most this often. */
 const EXPLORE_REDRAW_MS    = 1200
 
@@ -102,6 +104,14 @@ export class ExplorerApp {
   private readonly syncs  = new SyncScheduler((kind) => this.sync(kind))
   /** The view the M8 was last seen on ('phrase:3'), to log its changes. */
   private deviceView      : string | null = null
+  /** The item the M8 screen shows ('phrase:3') and since when (performance.now()): edits are read once it has been drawn whole. */
+  private screenItem      = {
+    key  : '',
+    since: 0
+  }
+  /** Edits shown on their item but not yet in the whole scene, and edits not yet saved (see absorbEdits). */
+  private sceneBehind     = false
+  private unsaved         = false
 
   /** Shows the HUD at once, and the 3D view once the text font is loaded. */
   static async start(root: HTMLElement): Promise<ExplorerApp> {
@@ -124,7 +134,15 @@ export class ExplorerApp {
     this.hud.onInfoPinned   = (pinned) => preferences.infoPinned.set(pinned)
     this.hud.onDebugExport  = () => void this.exportDebugLog()
     this.hud.onTopBarResize = (bottom) => this.world.setTopInset(bottom)
+    this.hud.onCoveredAreas = (areas) => this.world.setCoveredAreas(areas)
+    this.world.coverage     = () => this.hud.coveredAreas()
+    this.hud.onWallDegrees  = (degrees) => {
+      preferences.wallDegrees.set(degrees)
+      this.world.setWallDegrees(degrees)
+    }
+    this.world.onFolds      = () => this.showFolds()
     this.world.setTopInset(this.hud.topBarBottom())
+    this.world.setCoveredAreas(this.hud.coveredAreas())
     this.world.setModel(this.model)
     this.playback          = new PlaybackFeed(
       this.world,
@@ -156,6 +174,13 @@ export class ExplorerApp {
   // ---------------------------------------------------------------------------
   // Commands
 
+  /** Lights the top bar's fold buttons for how far each part is unfolded across the tracks. */
+  private showFolds(): void {
+    const { world, hud } = this
+    hud.setFoldCoverage('allfx', world.foldCoverage('fx'))
+    hud.setFoldCoverage('allpanels', world.foldCoverage('panels'))
+  }
+
   private commands(): Record<Action, () => void> {
     const { world, hud } = this
     return {
@@ -169,7 +194,9 @@ export class ExplorerApp {
       angle     : () => world.view('angle'),
       side      : () => world.view('side'),
       overview  : () => world.view('overview'),
-      expand    : () => hud.setActive('expand', world.toggleAllWalls()),
+      expand    : () => world.toggleAllFolds(),
+      allfx     : () => world.toggleAllFolds('fx'),
+      allpanels : () => world.toggleAllFolds('panels'),
       dramatic  : () => this.toggleDramatic(),
       played    : () => this.togglePlayedNotes(),
       trim      : () => this.toggleTrimTables(),
@@ -286,6 +313,9 @@ export class ExplorerApp {
     const trimTables = preferences.trimTables.get()
     this.world.setTrimTables(trimTables)
     this.hud.setActive('trim', trimTables)
+    const wallDegrees = preferences.wallDegrees.get()
+    this.world.setWallDegrees(wallDegrees)
+    this.hud.setWallDegrees(wallDegrees)
   }
 
   private toggleDramatic(): void {
@@ -514,19 +544,7 @@ export class ExplorerApp {
         this.world.setDeviceInstrument(null)
         return
       }
-      if (settled && absorbScreen(this.model, screen)) {
-        const seen = viewOf(screen)
-        debugLog.event('device-edit', {
-          view   : seen.kind,
-          id     : seen.id,
-          title  : seen.title,
-          playing: this.playback.tracker.playing
-        })
-        this.world.setModel(this.model, true)
-        saveModel(this.model)
-        rememberSong(this.model)
-        this.updateSummary()
-      }
+      this.absorbEdits(screen, settled)
       const focus  = deviceFocus(state, screen)
       this.noteDeviceView(focus, state.viewTitle)
       const layout = this.world.layout
@@ -543,6 +561,43 @@ export class ExplorerApp {
       // The next event tries again.
       debugLog.problem('sync', messageOf(error))
     }
+  }
+
+  /**
+   * Edits made on the M8. The item edited shows its new values at the first read that can trust
+   * the screen: a settled one, or a cursor read once the screen has shown that item for a while (a
+   * screen just switched to may still be half drawn; a half-drawn edit is read again later). The
+   * rest of the scene follows, and the song is saved, once the screen is quiet (a settled read).
+   */
+  private absorbEdits(screen: M8Screen, settled: boolean): void {
+    const seen = viewOf(screen)
+    const key  = `${seen.kind}:${seen.id ?? ''}`
+    const now  = performance.now()
+    if (key !== this.screenItem.key) this.screenItem = {
+      key,
+      since: now
+    }
+    const edit = settled || now - this.screenItem.since >= EDIT_READ_AFTER_MS ? absorbEdit(this.model, screen) : null
+    if (edit) {
+      debugLog.event('device-edit', {
+        view   : seen.kind,
+        id     : seen.id,
+        title  : seen.title,
+        settled,
+        playing: this.playback.tracker.playing
+      })
+      this.sceneBehind = !this.world.showEdit(edit)
+      this.unsaved     = true
+      this.renderSelection(this.world.getSelection())
+    }
+    if (!settled) return
+    if (this.sceneBehind) this.world.updateModel(this.model)
+    this.sceneBehind = false
+    if (!this.unsaved) return
+    this.unsaved = false
+    saveModel(this.model)
+    rememberSong(this.model)
+    this.updateSummary()
   }
 
   /** The view the M8 is on changed: one event per view (not per cursor move). */
@@ -586,7 +641,9 @@ export class ExplorerApp {
   private followCursor(place: Selection | null): void {
     if (this.autoSelect && place && !sameSelection(place, this.autoSelected)) {
       this.autoSelected = place
-      // Following turns and scrolls by itself; alone, the selection turns the view for wall cells.
+      // The HUD first, so a framing keeps clear of its selection panel at its new size.
+      if (this.following) this.renderSelection(place)
+      // Following scrolls by itself; alone, the selection unfolds the wall for wall cells and scrolls to them.
       this.world.select(place, this.following ? {
         silent: true,
         reveal: false
@@ -594,7 +651,6 @@ export class ExplorerApp {
         turn   : true,
         landTop: true
       })
-      if (this.following) this.renderSelection(place)
     }
     // While the song plays, following scrolls with the playheads; the cursor still picks the open track.
     if (this.following && place) this.world.follow(place, { scroll: !this.playback.tracker.playing })

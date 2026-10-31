@@ -4,6 +4,7 @@ import { DeviceCursor } from '../src/app/deviceCursor'
 import { type DeviceFocus, deviceFocus } from '../src/m8/screen/liveScreen'
 import { readChainMarks, viewChainPosition, viewOf } from '../src/m8/screen/screenReader'
 import { phraseScreen } from '../src/model/screens'
+import type { Selection } from '../src/model/selection'
 import { emptyModel, emptyStep, ROWS_PER_PHRASE } from '../src/model/song'
 import { SongLayout } from '../src/scene/layout'
 import { FakeM8 } from './fakeM8'
@@ -117,6 +118,40 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
     expect(other.songContext).toBeNull()
   })
 
+  test('before any Song view, stays near the place followed last rather than jumping to the first use', () => {
+    // Track 1 plays chain 0D (phrase 03) on song rows 1 and 2; track 2 plays phrase 02 on song rows 0 and 1.
+    const other   = emptyModel('guess')
+    other.phrases = {
+      2: phrase(2),
+      3: phrase(3)
+    }
+    other.chains  = {
+      11: chain(0x0b, [2]),
+      12: chain(0x0c, [2]),
+      13: chain(0x0d, [3])
+    }
+    other.song    = [
+      [null, 0x0b, null, null, null, null, null, null],
+      [0x0d, 0x0c, null, null, null, null, null, null],
+      [0x0d, null, null, null, null, null, null, null],
+    ]
+    const layout  = new SongLayout(other)
+    const at      = (cursor: DeviceCursor, where: DeviceFocus) => cursor.preferred(cursor.placesOf(layout, where))
+    // Alone, phrase 02 is shown at its first use, song row 0.
+    expect(at(new DeviceCursor(), focus('phrase', 2, 0, 'note', [0]))).toMatchObject({ instance: { songRow: 0 } })
+    // Chain 0D is on two song rows: no context, the first (row 1) is shown and kept as a guess.
+    const cursor  = new DeviceCursor()
+    expect(at(cursor, focus('chain', 0x0d, 0, 'phrase'))).toMatchObject({ instance: { songRow: 1 } })
+    expect(cursor.songContext).toBeNull()
+    // Option+Right on the Phrase view: track 2 beside it on song row 1, not the first use on row 0.
+    expect(at(cursor, focus('phrase', 2, 0, 'note', [0]))).toMatchObject({
+      instance: {
+        songRow: 1,
+        track  : 1
+      }
+    })
+  })
+
   test("follows the repeat the '<' marks, in the song cell the M8 came from", () => {
     const cursor = new DeviceCursor()
     placed(cursor, focus('song', null, 1, 'track1'))
@@ -163,6 +198,30 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
         track   : 0,
         chainRow: 2
       }
+    })
+  })
+
+  test('follows a table or an instrument on the track the M8 came from, else the nearest', () => {
+    const cursor = new DeviceCursor()
+    const panel  = (track: number): Selection => ({
+      kind      : 'instrument',
+      instrument: 3,
+      table     : 3,
+      track
+    })
+    const places = [panel(0), panel(2), panel(5)]
+    // No Song view seen yet: the first.
+    expect(cursor.preferred(places)).toBe(places[0])
+    placed(cursor, focus('song', null, 0, 'track6'))
+    expect(cursor.preferred(places)).toBe(places[2])
+    placed(cursor, focus('song', null, 0, 'track2'))
+    expect(cursor.preferred(places)).toBe(places[0])
+    placed(cursor, focus('song', null, 0, 'track4'))
+    expect(cursor.preferred(places)).toBe(places[1])
+    // Following an instrument leaves the song context alone.
+    expect(cursor.songContext).toEqual({
+      songRow: 0,
+      track  : 3
     })
   })
 

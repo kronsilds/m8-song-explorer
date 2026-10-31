@@ -1,6 +1,7 @@
 // Screen-space framing for the orbit camera: how far to slide the view sideways, and how far
 // back to stand, for some world points to fill the screen without empty room beside them.
-// Only the horizontal is framed: rows scroll on their own.
+// Only the horizontal is framed: rows scroll on their own. A slide goes along the camera's right
+// (everything keeps its depth) or along the tracks (the camera keeps its distance from them).
 
 import { Vector3 } from 'three'
 import type { RigPose } from './rig'
@@ -17,33 +18,83 @@ export interface Margins {
   right: number
 }
 
-/** The camera's right and back axes for a yaw and pitch (the roll is left out). */
-export function cameraAxes(yaw: number, pitch: number): { right: Vector3; back: Vector3 } {
+/**
+ * Which way a sideways slide moves the target: 'view' along the camera's right, level (the roll
+ * left out), so everything keeps its depth; 'tracks' along x, parallel to the tracks, so the
+ * camera keeps its distance from their plane, as a pan by hand does (turned, things then get
+ * nearer or further as they cross the screen).
+ */
+export type Slide = 'view' | 'tracks'
+
+/** Looking this close to along the tracks, a slide along them would move the view more in depth than across: it slides along the view instead. */
+const MIN_ACROSS = 0.25
+
+/** The camera's right and back axes for a yaw and pitch; with `roll`, the right axis leans with the roll (it is then the screen's x). */
+export function cameraAxes(yaw: number, pitch: number, roll = 0): { right: Vector3; back: Vector3 } {
+  const right = new Vector3(Math.cos(yaw), 0, -Math.sin(yaw))
+  const back  = new Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch))
+  if (roll) {
+    const up = new Vector3().crossVectors(back, right)
+    right.multiplyScalar(Math.cos(roll)).addScaledVector(up, Math.sin(roll))
+  }
   return {
-    right: new Vector3(Math.cos(yaw), 0, -Math.sin(yaw)),
-    back : new Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch))
+    right,
+    back
+  }
+}
+
+/** The direction a slide moves the target in. */
+function slideAxis(pose: RigPose, slide: Slide): Vector3 {
+  return slide === 'tracks' ? new Vector3(1, 0, 0) : cameraAxes(pose.yaw, pose.pitch).right
+}
+
+/** How far a unit slide moves things along the screen's x (`across`, as a distance at their depth) and how much deeper it puts them. */
+function slideRates(pose: RigPose, slide: Slide): { across: number; deeper: number } {
+  const { right, back } = cameraAxes(pose.yaw, pose.pitch, pose.roll)
+  const axis            = slideAxis(pose, slide)
+  return {
+    across: axis.dot(right),
+    deeper: axis.dot(back)
   }
 }
 
 /**
- * The range of sideways target shifts (along the camera's right) between "the leftmost point
- * sits on the left margin" and "the rightmost point sits on the right margin". A point at
- * `side` (target-relative, along right) and `depth` lands on the left margin for a shift of
- * side + (1 - left) * depth * tanH, on the right margin for side - (1 - right) * depth * tanH.
+ * The slide that keeps the camera's distance from the tracks ('tracks'), unless the view looks
+ * so far along them that it would move a point at a margin more in depth than across the screen.
  */
-function shiftRange(pose: RigPose, lens: Lens, points: Vector3[], margins: Margins): { toLeft: number; toRight: number } {
-  const { right, back } = cameraAxes(pose.yaw, pose.pitch)
-  const tanH            = lens.tanHalfFov * lens.aspect
-  const relative        = new Vector3()
+export function trackSlide(pose: RigPose, lens: Lens, margins: Margins): Slide {
+  const { across, deeper } = slideRates(pose, 'tracks')
+  const tanH               = lens.tanHalfFov * lens.aspect
+  const atLeft             = across - (1 - margins.left) * tanH * deeper
+  const atRight            = across + (1 - margins.right) * tanH * deeper
+  return Math.min(atLeft, atRight) >= MIN_ACROSS ? 'tracks' : 'view'
+}
+
+/**
+ * The range of sideways target shifts (along `slide`) between "the leftmost point sits on the
+ * left margin" and "the rightmost point sits on the right margin". After a shift s, a point at
+ * `side` (target-relative, along the screen's x) and `depth` is at side - s * across, depth +
+ * s * deeper: on the left margin (screen x -(1 - left)) for
+ * s = (side + (1 - left) * tanH * depth) / (across - (1 - left) * tanH * deeper), on the right
+ * one for s = (side - (1 - right) * tanH * depth) / (across + (1 - right) * tanH * deeper). Along
+ * the view without roll (across 1, deeper 0) that is the side gap itself.
+ */
+function shiftRange(pose: RigPose, lens: Lens, points: Vector3[], margins: Margins, slide: Slide): { toLeft: number; toRight: number } {
+  const { right, back }    = cameraAxes(pose.yaw, pose.pitch, pose.roll)
+  const { across, deeper } = slideRates(pose, slide)
+  const tanH               = lens.tanHalfFov * lens.aspect
+  const leftEdge           = (1 - margins.left) * tanH
+  const rightEdge          = (1 - margins.right) * tanH
+  const relative           = new Vector3()
   // toLeft: the largest shift that keeps every point right of the left margin; toRight: the smallest that keeps every point left of the right one.
-  let toLeft            = Number.POSITIVE_INFINITY
-  let toRight           = Number.NEGATIVE_INFINITY
+  let toLeft               = Number.POSITIVE_INFINITY
+  let toRight              = Number.NEGATIVE_INFINITY
   for (const point of points) {
     relative.subVectors(point, pose.target)
     const side  = relative.dot(right)
     const depth = Math.max(1e-3, pose.distance - relative.dot(back))
-    toLeft      = Math.min(toLeft, side + (1 - margins.left) * depth * tanH)
-    toRight     = Math.max(toRight, side - (1 - margins.right) * depth * tanH)
+    toLeft      = Math.min(toLeft, (side + leftEdge * depth) / Math.max(1e-6, across - leftEdge * deeper))
+    toRight     = Math.max(toRight, (side - rightEdge * depth) / Math.max(1e-6, across + rightEdge * deeper))
   }
   return {
     toLeft,
@@ -55,18 +106,27 @@ function shiftRange(pose: RigPose, lens: Lens, points: Vector3[], margins: Margi
 export type Align = 'least' | 'center'
 
 /**
- * The sideways shift that frames `points`: when they fit across the screen, it moves them
- * inside the margins (placed by `align`); when they do not, it leaves no empty room on either
- * side. `mustSee` (a part of them) is then kept in view first, so the view never slides off it.
+ * The sideways shift (along `slide`, see shiftTarget) that frames `points`: when they fit across
+ * the screen, it moves them inside the margins (placed by `align`); when they do not, it leaves
+ * no empty room on either side. `mustSee` (a part of them) is then kept in view first, so the
+ * view never slides off it.
  */
-export function sideShift(pose: RigPose, lens: Lens, points: Vector3[], margins: Margins, mustSee: Vector3[] = [], align: Align = 'least'): number {
+export function sideShift(
+  pose: RigPose,
+  lens: Lens,
+  points: Vector3[],
+  margins: Margins,
+  mustSee: Vector3[] = [],
+  align: Align = 'least',
+  slide: Slide = 'view',
+): number {
   if (!points.length) return 0
-  const all = shiftRange(pose, lens, points, margins)
+  const all = shiftRange(pose, lens, points, margins, slide)
   // Fits: shift into [toRight, toLeft]. Too wide: into [toLeft, toRight], so both sides are full.
   let low   = Math.min(all.toLeft, all.toRight)
   let high  = Math.max(all.toLeft, all.toRight)
   if (mustSee.length) {
-    const must     = shiftRange(pose, lens, mustSee, margins)
+    const must     = shiftRange(pose, lens, mustSee, margins, slide)
     const mustLow  = Math.min(must.toLeft, must.toRight)
     const mustHigh = Math.max(must.toLeft, must.toRight)
     // Where the two disagree, the part that must be seen wins.
@@ -78,11 +138,13 @@ export function sideShift(pose: RigPose, lens: Lens, points: Vector3[], margins:
   return Math.min(Math.max(wanted, low), high)
 }
 
-/** True when `points` fit between the margins at the pose's distance (after a sideways shift). */
-function fits(pose: RigPose, lens: Lens, points: Vector3[], margins: Margins): boolean {
-  const { toLeft, toRight } = shiftRange(pose, lens, points, margins)
+/** True when `points` fit between the margins at the pose's distance, after a sideways shift along `slide`. */
+export function fitsAcross(pose: RigPose, lens: Lens, points: Vector3[], margins: Margins, slide: Slide = 'view'): boolean {
+  const { toLeft, toRight } = shiftRange(pose, lens, points, margins, slide)
   return toRight <= toLeft
 }
+
+const fits = (pose: RigPose, lens: Lens, points: Vector3[], margins: Margins): boolean => fitsAcross(pose, lens, points, margins)
 
 /**
  * The nearest distance, within [near, far], at which `points` fit across the screen at the
@@ -107,10 +169,10 @@ export function fitDistance(pose: RigPose, lens: Lens, points: Vector3[], margin
   return high
 }
 
-/** Moves a pose's target sideways (along the camera's right) by `shift`. */
-export function shiftTarget(pose: RigPose, shift: number): void {
+/** Moves a pose's target sideways by `shift`: along the camera's right, or with 'tracks' along x. */
+export function shiftTarget(pose: RigPose, shift: number, slide: Slide = 'view'): void {
   if (!shift) return
-  pose.target.addScaledVector(cameraAxes(pose.yaw, pose.pitch).right, shift)
+  pose.target.addScaledVector(slideAxis(pose, slide), shift)
 }
 
 /** The ray from the camera through a point of the screen (normalized device coordinates, -1..1). */
@@ -127,9 +189,9 @@ export function rayThrough(pose: RigPose, lens: Lens, ndcX: number, ndcY: number
   }
 }
 
-/** Where a world point shows across the screen, in normalized device x (-1 left .. 1 right). */
+/** Where a world point shows across the screen, in normalized device x (-1 left .. 1 right), the roll included. */
 export function screenX(pose: RigPose, lens: Lens, point: Vector3): number {
-  const { right, back } = cameraAxes(pose.yaw, pose.pitch)
+  const { right, back } = cameraAxes(pose.yaw, pose.pitch, pose.roll)
   const relative        = new Vector3().subVectors(point, pose.target)
   const depth           = Math.max(1e-3, pose.distance - relative.dot(back))
   return relative.dot(right) / (depth * lens.tanHalfFov * lens.aspect)

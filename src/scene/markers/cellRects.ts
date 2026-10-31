@@ -21,8 +21,12 @@ const fieldRect = (parent: CellRect['parent'], left: number, y: number, chars: n
   h: ROW_H
 })
 
-/** Rectangles a selection covers: [row highlight..., cell]. The last one is the cell itself. */
-export function cellRects(layout: SongLayout, view: TrackView, selection: Selection, panelOf: (table: number) => Panel | undefined): CellRect[] {
+/**
+ * The rectangles a selection covers: [row highlight..., cell], the last one the cell itself. With
+ * `settled`, a panel cell is placed on the face its panel turns to rather than the one it shows
+ * now (for framing a panel that is still turning).
+ */
+export function cellRects(layout: SongLayout, view: TrackView, selection: Selection, panelOf: (table: number) => Panel | undefined, settled = false): CellRect[] {
   switch (selection.kind) {
     case 'chain': {
       const y = layout.rowY(selection.instance.row)
@@ -69,20 +73,20 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
         w     : FRONT_NOTES_W,
         h     : ROW_H
       }
-      // The instrument column is on the front too: it is marked there while the wall is closed.
-      if (selection.column === 'note' || (selection.column === 'inst' && view.wallAlpha < 0.5)) {
+      // The instrument column is on the front too: it is marked there while the step details are folded.
+      if (selection.column === 'note' || (selection.column === 'inst' && view.sideAlpha < 0.5)) {
         const isNote = selection.column === 'note'
         return [row, fieldRect(view.front, (isNote ? NOTE_COL : INST_COL) * CHAR_W, y, isNote ? 3 : 2)]
       }
       const [start, width] = SIDE_FIELDS[selection.column as Exclude<PhraseColumn, 'note'>]
       const wallRow        : CellRect = {
-        parent: view.wall,
+        parent: view.side,
         x     : WALL_STEPS_U,
         y,
         w     : WALL_STEPS_W,
         h     : ROW_H
       }
-      return [row, wallRow, fieldRect(view.wall, SIDE_U0 + start * CHAR_W, y, width)]
+      return [row, wallRow, fieldRect(view.side, SIDE_U0 + start * CHAR_W, y, width)]
     }
     // Panel cells are in the frame of the panel's face (x from its first character, y from its
     // title line): they turn and scale with it.
@@ -105,17 +109,18 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
     case 'instParam': {
       const panel = panelOf(selection.table)
       if (!panel) return []
-      const frame  = view.faceFrame(panel)
+      const shows  = settled ? view.settledFace(panel) : view.shownFace(panel)
+      const frame  = view.faceFrame(panel, shows)
       const header : CellRect = {
         parent: frame,
         x     : -0.45,
         y     : 0.25,
-        w     : view.shownFace(panel) === 'inst' ? FACE_HEADER_WIDTH : view.panelWidth(panel),
+        w     : shows === 'inst' ? FACE_HEADER_WIDTH : settled ? view.settledWidth(panel) : view.panelWidth(panel),
         h     : ROW_H * 2 + 0.35
       }
       if (selection.kind === 'instrument') return [header]
       // A value is marked on the instrument face; while the table shows, the header stands for it.
-      const face  = view.shownFace(panel) === 'inst' ? layout.instrumentFace(selection.instrument) : null
+      const face  = shows === 'inst' ? layout.instrumentFace(selection.instrument) : null
       const place = face ? placeOf(face, selection.screen, selection.line, selection.x) : null
       if (!place) return [header]
       const y    = -place.row * ROW_H

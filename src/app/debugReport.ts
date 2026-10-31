@@ -246,6 +246,7 @@ export function registerDebugProviders(log: DebugLog, sources: DebugSources): vo
   log.provide('settings', () => ({
     ...sources.settings(),
     dramatic    : preferences.dramatic.get(),
+    wallDegrees : preferences.wallDegrees.get(),
     playedNotes : preferences.playedNotes.get(),
     infoPinned  : preferences.infoPinned.get(),
     ccMapChannel: preferences.ccMapChannel.get()

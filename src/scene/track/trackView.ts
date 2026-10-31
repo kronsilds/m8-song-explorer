@@ -4,7 +4,6 @@
 
 import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, Matrix4, type MeshBasicMaterial, type Object3D, Vector3 } from 'three'
 import type { Text } from 'troika-three-text'
-import type { TrackToggle } from '../../m8/midiControl'
 import { fxColumn } from '../../model/columns'
 import { transposeSemitones } from '../../model/music/harmony'
 import { ROWS_PER_PHRASE, type SongModel } from '../../model/song'
@@ -13,6 +12,7 @@ import { FACE_CHARS, type InstrumentFace } from '../instrumentFace'
 import {
   CHAIN_COL,
   CHAR_W,
+  DEFAULT_WALL_ANGLE,
   FRONT_W,
   NOTE_COL,
   PANEL_CHARS,
@@ -29,15 +29,14 @@ import {
   shownPanelRows,
   TITLE_ROWS,
   type TrackLayout,
-  WALL_ANGLE,
   WALL_HINGE,
 } from '../layout'
 import { mix, type Palette } from '../palette'
 import { type ColoredRect, easeFactor, lineSegments, rectangles, smoothstep } from '../shapes'
-import { disposeText, makeText, RichText, type TextBlock } from '../text'
+import { disposeText, makeText, RichText, showsRich, type TextBlock } from '../text'
 import { FACE_WIDTH, InstrumentFaceView } from './instrumentFaceView'
-import { LinkLines } from './linkLines'
-import { TrackHeader } from './trackHeader'
+import { LinkLines, linkStart, slideFor } from './linkLines'
+import { type ButtonState, type HeaderButtonKind, TrackHeader } from './trackHeader'
 import { TrackTextBuilder } from './trackText'
 
 const PHRASE_HEIGHT            = ROWS_PER_PHRASE * ROW_H
@@ -60,8 +59,8 @@ const FADE_START               = 0.0
 const TAB_CHARS                = 8
 const TAB_HEIGHT               = ROW_H * 0.95
 /** A face's background reaches this far left of its first character and above its title line. */
-const FACE_PAD_LEFT            = 0.45
-const FACE_PAD_TOP             = 0.25
+export const FACE_PAD_LEFT     = 0.45
+export const FACE_PAD_TOP      = 0.25
 /** How far a panel's tab reaches above its title line: panels stick that much lower under the header. */
 export const PANEL_TAB_ROOM    = FACE_PAD_TOP + TAB_HEIGHT
 const TABLE_WIDTH              = PANEL_CHARS * CHAR_W + 0.9
@@ -155,6 +154,10 @@ interface PanelView {
   /** The instrument face's layout (null for an aux table or an instrument not read) and its 3D view, made when first shown. */
   face      : InstrumentFace | null
   faceView  : InstrumentFaceView | null
+  /** The instrument's values `faceView` was made from: it is made again when they change. */
+  faceKey   : string
+  /** A face made from older values: it shows until `faceView`'s text is laid out. */
+  staleFace : InstrumentFaceView | null
   tab       : PanelTab | null
   /** The glow laid over the header when a playhead passes a note that plays the panel. */
   flash     : InstancedMesh
@@ -172,20 +175,51 @@ interface PanelTab {
 
 export type PanelFace = 'table' | 'inst'
 
-/** A material whose opacity follows the front's or the wall's fade. */
+/** What a panel's view hands over to the next view of the same panel (see TrackView.handOver). */
+interface CarriedPanel {
+  text    : Text | null
+  textRows: number
+  tabText : Text | null
+  tabLabel: string
+  faceView: InstrumentFaceView | null
+  faceKey : string
+}
+
+/** What a track's view hands over to the view that replaces it after an edit: its header, and its panels' texts and faces by table. */
+export interface CarriedParts {
+  header: TrackHeader
+  panels: Map<number, CarriedPanel>
+}
+
+/** The values an instrument face is drawn from. */
+const faceKeyOf = (layout: SongLayout, instrument: number | null): string =>
+  instrument == null ? '' : JSON.stringify(layout.model.instruments[instrument] ?? null)
+
+/** What a material's opacity follows: the front, the step details, the panels, or the links (between the step details and the panels). */
+type FadeKind = 'front' | 'side' | 'panels' | 'links'
+
+/** A material whose opacity follows a fade. */
 interface FadingMaterial {
   material: { opacity: number }
   base    : number
+  kind    : FadeKind
 }
 
 export class TrackView {
   readonly group  = new Group()
   readonly front  = new Group()
+  /** The wall, hinged on the right edge of the front column and turned `wallAngle` from it. */
   readonly wall   = new Group()
+  /** The step details of the wall (velocity, instrument, FX): they fold apart from the panels. */
+  readonly side   = new Group()
   readonly header : TrackHeader
   readonly blocks : TextBlock[] = []
   readonly panels : PanelView[] = []
-  wallAlpha       = 0
+  /** How unfolded the step details and the panels are (0..1). */
+  sideAlpha       = 0
+  panelsAlpha     = 0
+  /** How far the wall slid back along itself to bring the panels to the hinge (while the step details are folded). */
+  slide           = 0
   frontAlpha      = 1
   /** Highest y a visible panel is shown at while gliding: just under the stuck header. */
   panelCeiling    = Number.POSITIVE_INFINITY
@@ -193,8 +227,10 @@ export class TrackView {
   onTextReady     : () => void = () => {}
   /** The face each panel should show (the world decides: the M8 view, a turn by hand). */
   faceGoal        : (panel: Panel) => PanelFace = () => 'table'
+  /** What the view was drawn from (see SongLayout.trackSignature). */
+  signature       = ''
 
-  private readonly text           : TrackTextBuilder
+  private text                    : TrackTextBuilder
   private readonly panelViews     = new Map<Panel, PanelView>()
   private readonly links          : LinkLines
   private readonly frontMaterials : FadingMaterial[] = []
@@ -202,32 +238,76 @@ export class TrackView {
   private frontBars!              : InstancedMesh
   private wallBars!               : InstancedMesh
   private barsAlpha               = 0
+  /** How far the wall is turned from the front (radians). */
+  private wallAngle               : number
+  /** The floor line under the panels, one unit long, stretched to the wall's length. */
+  private readonly panelsFloor    : LineSegments
+  /** The header went to the view that replaced this one. */
+  private headerHandedOver        = false
 
+  /** `carried`: what the view this one replaces handed over (see handOver). */
   constructor(
-    readonly layout: SongLayout,
-    readonly track: TrackLayout,
+    public layout: SongLayout,
+    public track: TrackLayout,
     readonly palette: Palette,
-    playedNotes = true,
+    private readonly playedNotes = true,
+    wallAngle = DEFAULT_WALL_ANGLE,
+    carried: CarriedParts | null = null,
   ) {
-    this.text = new TrackTextBuilder(layout, palette, playedNotes)
+    this.text      = new TrackTextBuilder(layout, palette, playedNotes)
+    this.wallAngle = wallAngle
     this.group.add(this.front, this.wall)
-    this.wall.position.set(WALL_HINGE, 0, 0)
-    this.wall.rotation.y = WALL_ANGLE
+    this.wall.add(this.side)
+    this.placeWall()
 
     this.buildPhrases()
     for (const panel of track.panels) this.buildPanel(panel)
+    if (carried) this.takePanels(carried.panels)
 
     // Links are drawn near the view only, fading with their panel and toward the edges (updateLinks).
     this.links = new LinkLines(layout, track, palette)
-    this.wall.add(this.fadesWith(this.links.lines, true))
+    this.wall.add(this.fadesWith(this.links.lines, 'links'))
 
     const headerY           = layout.headerRestY
-    this.header             = new TrackHeader(palette, track.track, headerY, track.wallLen)
+    this.header             = carried?.header ?? new TrackHeader(palette, track.track, headerY, track.wallLen)
     this.header.onTextReady = () => this.onTextReady()
+    this.header.setColumns(track.wanted, track.cols)
     this.front.add(this.header.front)
     this.wall.add(this.header.wall)
-    // A faint floor line along the hinge shows where the wall is when nothing is on it.
-    this.wall.add(this.fadesWith(lineSegments([0, headerY, 0, track.wallLen, headerY, 0], palette.rule, 0.8), true))
+    // A faint floor line along the hinge shows where each part of the wall is when nothing is on it.
+    this.wall.add(this.fadesWith(lineSegments([0, headerY, 0, PANEL_U0 - 0.35, headerY, 0], palette.rule, 0.8), 'side'))
+    this.panelsFloor            = this.fadesWith(lineSegments([0, headerY, 0, 1, headerY, 0], palette.rule, 0.8), 'panels')
+    this.panelsFloor.position.x = PANEL_U0 - 0.35
+    this.wall.add(this.panelsFloor)
+    this.setWallLength(track.wallLen)
+  }
+
+  /** Draws the wall `length` long: the header and the floor line of its panels (it eases to a new length when its columns change). */
+  setWallLength(length: number): void {
+    this.header.setWallLength(length)
+    this.panelsFloor.scale.x = Math.max(0.01, length - (PANEL_U0 - 0.35))
+  }
+
+  /** The wall's columns changed (see SongLayout.setColumnLimit): the header's `+` / `-` follows. */
+  refreshColumns(): void {
+    this.header.setColumns(this.track.wanted, this.track.cols)
+  }
+
+  /** Something of the wall shows: its step details or its panels. */
+  get wallAlpha(): number {
+    return Math.max(this.sideAlpha, this.panelsAlpha)
+  }
+
+  /** The wall's place: hinged on the front's right edge, turned `wallAngle`, and slid back along itself by `slide`. */
+  private placeWall(): void {
+    this.wall.position.set(WALL_HINGE - this.slide * Math.cos(this.wallAngle), 0, this.slide * Math.sin(this.wallAngle))
+    this.wall.rotation.y = this.wallAngle
+  }
+
+  /** Turns the wall `angle` radians from the front. */
+  setWallAngle(angle: number): void {
+    this.wallAngle = angle
+    this.placeWall()
   }
 
   /** Shaded phrase backgrounds, beat rows, the chain / phrase tree, note and FX bars, and the text blocks. */
@@ -323,20 +403,20 @@ export class TrackView {
       }, {
         ...block,
         key   : `w:${instance.key}`,
-        parent: this.wall,
+        parent: this.side,
         x     : SIDE_U0,
         layer : 'wall',
-        build : () => this.text.sideText(steps)
+        build : () => this.text.sideText(this.layout.model.phrases[instance.phrase]?.steps)
       })
     })
 
-    this.front.add(this.fadesWith(rectangles(frontShades, SHADE_OPACITY), false))
-    this.front.add(this.fadesWith(lineSegments(tree, palette.bracket, SHADE_OPACITY), false))
-    this.wall.add(this.fadesWith(rectangles(wallShades, SHADE_OPACITY), true))
+    this.front.add(this.fadesWith(rectangles(frontShades, SHADE_OPACITY), 'front'))
+    this.front.add(this.fadesWith(lineSegments(tree, palette.bracket, SHADE_OPACITY), 'front'))
+    this.side.add(this.fadesWith(rectangles(wallShades, SHADE_OPACITY), 'side'))
     this.frontBars = rectangles(noteBars, 0)
     this.wallBars  = rectangles(fxBars, 0)
     this.front.add(this.frontBars)
-    this.wall.add(this.fadesWith(this.wallBars, true))
+    this.side.add(this.fadesWith(this.wallBars, 'side'))
   }
 
   /**
@@ -457,6 +537,8 @@ export class TrackView {
       bars      : barMesh.material as MeshBasicMaterial,
       face,
       faceView  : null,
+      faceKey   : '',
+      staleFace : null,
       tab       : face ? this.buildTab(group) : null,
       flash,
       width     : TABLE_WIDTH
@@ -502,6 +584,24 @@ export class TrackView {
     return flipPose(panel.flip).fade >= 0.5 ? 'inst' : 'table'
   }
 
+  /** The face a panel turns to (and then shows): its instrument face when the world wants it and it has one. */
+  settledFace(panel: Panel): PanelFace {
+    return this.panelViews.get(panel)?.face && this.faceGoal(panel) === 'inst' ? 'inst' : 'table'
+  }
+
+  /** Width of a panel's card once it has turned to the face it goes to, in its frame's units. */
+  settledWidth(panel: Panel): number {
+    return this.settledFace(panel) === 'inst' ? FACE_WIDTH : TABLE_WIDTH
+  }
+
+  /**
+   * Gives the layout the size of the face each panel turns to, at once (the turn itself takes a
+   * few frames): a framing done right after the world changed its mind sees where panels settle.
+   */
+  applyFaceGoals(): void {
+    for (const view of this.panels) this.sizeForFace(view)
+  }
+
   /**
    * The frame a panel's face is drawn in (the shown face by default): x from its first
    * character, y from its title line. It turns with the panel and scales while the faces crossfade.
@@ -526,29 +626,44 @@ export class TrackView {
     return x >= left && x <= left + TAB_CHARS * CHAR_W && y <= top && y >= top - TAB_HEIGHT
   }
 
-  /** Registers an object's material so its opacity follows the front's or the wall's fade. */
-  private fadesWith<T extends LineSegments | InstancedMesh>(object: T, onWall: boolean): T {
+  /** Registers an object's material so its opacity follows a fade. */
+  private fadesWith<T extends LineSegments | InstancedMesh>(object: T, kind: FadeKind): T {
     const material = object.material as LineBasicMaterial
-    ;(onWall ? this.wallMaterials : this.frontMaterials).push({
+    ;(kind === 'front' ? this.frontMaterials : this.wallMaterials).push({
       material,
-      base: material.opacity
+      base: material.opacity,
+      kind
     })
     return object
   }
 
   /** Start (step cell) and end (panel title) of a link, in wall coordinates. */
-  linkEnds(row: number, col: number, panelY: number, panelU: number): [Vector3, Vector3] {
-    const y = this.layout.rowY(row) - ROW_H / 2
-    return [new Vector3(SIDE_U0 + (col + 2) * CHAR_W, y, 0.05), new Vector3(panelU - 0.5, panelY - ROW_H * 0.5, 0.05)]
+  linkEnds(row: number, col: number, panelY: number, panelU: number, fx: number): [Vector3, Vector3] {
+    const y        = this.layout.rowY(row) - ROW_H / 2
+    const [u, out] = linkStart(col, fx, slideFor(fx), this.wallAngle)
+    return [new Vector3(u, y, out + 0.05), new Vector3(panelU - 0.5, panelY - ROW_H * 0.5, 0.05)]
   }
 
   // ---------------------------------------------------------------------------
   // Fades
 
-  setWallAlpha(alpha: number): void {
-    this.wallAlpha    = alpha
-    this.wall.visible = alpha > 0.01
-    for (const { material, base } of this.wallMaterials) material.opacity = base * alpha
+  /** Sets how unfolded the step details and the panels are (0..1) and how far the wall slid back (see PANELS_SLIDE). */
+  setFolds(side: number, panels: number, slide: number): void {
+    this.sideAlpha    = side
+    this.panelsAlpha  = panels
+    this.wall.visible = this.wallAlpha > 0.01
+    this.side.visible = side > 0.01
+    if (slide !== this.slide) {
+      this.slide = slide
+      this.placeWall()
+    }
+    const alphas: Record<FadeKind, number> = {
+      front: this.frontAlpha,
+      side,
+      panels,
+      links: panels
+    }
+    for (const { material, base, kind } of this.wallMaterials) material.opacity = base * alphas[kind]
     this.applyFades()
   }
 
@@ -568,9 +683,9 @@ export class TrackView {
 
   private applyFades(): void {
     ;(this.frontBars.material as MeshBasicMaterial).opacity = this.barsAlpha * this.frontAlpha
-    ;(this.wallBars.material as MeshBasicMaterial).opacity  = this.barsAlpha * this.wallAlpha
-    for (const view of this.panels) view.bars.opacity = this.barsAlpha * this.wallAlpha * tableContentAlpha(view.panel) * barsShown(view)
-    this.header?.setFade(this.frontAlpha, this.wallAlpha)
+    ;(this.wallBars.material as MeshBasicMaterial).opacity  = this.barsAlpha * this.sideAlpha
+    for (const view of this.panels) view.bars.opacity = this.barsAlpha * this.panelsAlpha * tableContentAlpha(view.panel) * barsShown(view)
+    this.header?.setFade(this.frontAlpha, this.sideAlpha, this.panelsAlpha)
   }
 
   // ---------------------------------------------------------------------------
@@ -590,7 +705,12 @@ export class TrackView {
     this.header.setTrackModes(muted, soloed)
   }
 
-  buttonAt(x: number, y: number): TrackToggle | null {
+  /** Lights the fold buttons of the header. */
+  setFoldButtons(fx: ButtonState, panels: ButtonState): void {
+    this.header.setFolds(fx, panels)
+  }
+
+  buttonAt(x: number, y: number): HeaderButtonKind | null {
     return this.header.buttonAt(x, y)
   }
 
@@ -600,18 +720,17 @@ export class TrackView {
   }
 
   /**
-   * The far right ends of the panels turned out of the wall (an instrument face sticks out
-   * past the wall's end), in the track group's coordinates.
+   * How far the panels are turned out of the wall to show an instrument face (0..1, the most
+   * turned one): as drawn now, or with `settled` where it goes (for the panels in view).
    */
-  turnedPanelEnds(): Vector3[] {
-    const ends: Vector3[] = []
-    this.wall.updateMatrix()
+  faceAmount(settled = false): number {
+    let amount = 0
     for (const view of this.panels) {
-      if (!view.group.visible || view.panel.flip < 0.05) continue
-      view.group.updateMatrix()
-      ends.push(new Vector3(view.width, 0, 0).applyMatrix4(view.group.matrix).applyMatrix4(this.wall.matrix))
+      if (!view.face) continue
+      const turned = settled ? (view.panel.visible && this.faceGoal(view.panel) === 'inst' ? 1 : 0) : view.panel.flip
+      amount       = Math.max(amount, turned)
     }
-    return ends
+    return amount
   }
 
   // ---------------------------------------------------------------------------
@@ -633,11 +752,11 @@ export class TrackView {
     this.keepPanelGaps()
     for (const view of this.panels) {
       const { panel } = view
-      const alpha     = panel.alpha * this.wallAlpha
+      const alpha     = panel.alpha * this.panelsAlpha
       const pose      = flipPose(panel.flip)
       view.group.position.set(panel.shownU - FACE_PAD_LEFT, panel.shownY, 0)
-      // The wall is turned WALL_ANGLE from the front: turning back as much faces the front.
-      view.group.rotation.y = -pose.turn * WALL_ANGLE
+      // The wall is turned wallAngle from the front: turning back as much faces the front.
+      view.group.rotation.y = -pose.turn * this.wallAngle
       view.group.visible    = alpha > 0.01
       const width           = this.cardSize(view, pose.fade)
       view.width            = width
@@ -710,21 +829,37 @@ export class TrackView {
    */
   private updateTable(view: PanelView, textOn: boolean, alpha: number, fade: number): void {
     const back              = alpha * (1 - smoothstep(0.5, 1, fade))
-    const content           = this.wallAlpha * tableContentAlpha(view.panel)
+    const content           = this.panelsAlpha * tableContentAlpha(view.panel)
     view.tableFrame.visible = back > 0.01
     view.background.opacity = PANEL_BACKGROUND_OPACITY * back
     view.bars.opacity       = this.barsAlpha * content * barsShown(view)
     this.updatePanelText(view, textOn && content > 0.01, content)
   }
 
-  /** The instrument face, made when first shown: its background comes in first, its content last. */
+  /**
+   * The instrument face, made when first shown: its background comes in first, its content last.
+   * A face made again for new values stays hidden until its text is laid out, the old one showing
+   * meanwhile.
+   */
   private updateInstrument(view: PanelView, textOn: boolean, alpha: number, fade: number): void {
     const back = alpha * smoothstep(0, 0.5, fade)
     if (back > 0.01 && view.face && !view.faceView) {
       view.faceView = new InstrumentFaceView(view.face, this.palette)
+      view.faceKey  = faceKeyOf(this.layout, view.panel.instrument)
       view.instFrame.add(view.faceView.group)
     }
-    view.faceView?.setAlpha(alpha * smoothstep(0.4, 1, fade), back, textOn, () => this.onTextReady())
+    const content = alpha * smoothstep(0.4, 1, fade)
+    view.faceView?.setAlpha(content, back, textOn, () => this.onTextReady())
+    const stale   = view.staleFace
+    if (!stale) return
+    if (!view.faceView || view.faceView.ready || !textOn || content <= 0.01) {
+      stale.dispose()
+      stale.group.removeFromParent()
+      view.staleFace = null
+      return
+    }
+    view.faceView.group.visible = false
+    stale.setAlpha(content, back, textOn, () => this.onTextReady())
   }
 
   /**
@@ -734,16 +869,22 @@ export class TrackView {
    */
   private turnPanel(view: PanelView, dt: number): boolean {
     const { panel } = view
-    const goal      = view.face && this.faceGoal(panel) === 'inst' ? 1 : 0
-    // The layout makes room for the face it turns to at once.
-    panel.rows      = goal ? (view.face?.rows ?? this.layout.tableFaceRows(panel)) : this.layout.tableFaceRows(panel)
-    panel.chars     = goal ? FACE_CHARS : PANEL_CHARS
+    const goal      = this.sizeForFace(view)
     if (panel.flip === goal) return false
     const step = dt / FLIP_SECONDS
     panel.flip = goal > panel.flip ? Math.min(goal, panel.flip + step) : Math.max(goal, panel.flip - step)
     // A panel coming back from hidden shows its face at once.
     if (panel.alpha < 0.02) panel.flip = goal
     return panel.flip !== goal
+  }
+
+  /** The layout makes room for the face a panel turns to at once: its rows and characters. Returns the flip it goes to (1 the instrument face). */
+  private sizeForFace(view: PanelView): number {
+    const { panel } = view
+    const goal      = this.settledFace(panel) === 'inst' ? 1 : 0
+    panel.rows      = goal ? (view.face?.rows ?? this.layout.tableFaceRows(panel)) : this.layout.tableFaceRows(panel)
+    panel.chars     = goal ? FACE_CHARS : PANEL_CHARS
+    return goal
   }
 
   /** The tab over the card's top-right corner (`width` wide), named after the face a click turns to. */
@@ -867,9 +1008,128 @@ export class TrackView {
     view.text.clipRect = view.textRows > drawn + 1e-6 ? [-1, -drawn * ROW_H, PANEL_CHARS * CHAR_W + 1, 1] : null
   }
 
+  // ---------------------------------------------------------------------------
+  // Edits
+
+  /**
+   * Draws the same track from a new layout of the song (after an edit that did not change it,
+   * see SongLayout.trackSignature): its panels are the new layout's, nothing is built again.
+   */
+  relink(layout: SongLayout, track: TrackLayout): void {
+    this.layout   = layout
+    this.track    = track
+    this.text     = new TrackTextBuilder(layout, this.palette, this.playedNotes)
+    const byTable = new Map(track.panels.map((panel) => [panel.table, panel]))
+    this.panelViews.clear()
+    for (const view of this.panels) {
+      const panel = byTable.get(view.panel.table)
+      if (!panel) continue
+      view.panel = panel
+      this.panelViews.set(panel, view)
+    }
+    this.links.relink(layout, track)
+  }
+
+  /**
+   * Gives up what a new view of the track (after an edit) takes over, so it does not lay its text
+   * out again: the header, and each panel's texts and instrument face. Dispose this view after.
+   */
+  handOver(): CarriedParts {
+    const panels = new Map<number, CarriedPanel>()
+    for (const view of this.panels) {
+      panels.set(view.panel.table, {
+        text    : view.text,
+        textRows: view.textRows,
+        tabText : view.tab?.text ?? null,
+        tabLabel: view.tab?.label ?? '',
+        faceView: view.faceView,
+        faceKey : view.faceKey
+      })
+      if (view.nextText) disposeText(view.nextText)
+      view.nextText = null
+      view.text     = null
+      if (view.tab) view.tab.text = null
+      view.faceView = null
+    }
+    this.headerHandedOver = true
+    return {
+      header: this.header,
+      panels
+    }
+  }
+
+  /**
+   * Takes the texts and faces the view this one replaces handed over: a table text that no longer
+   * shows the same is laid out again (it shows until then), a face drawn from older values is made
+   * again (likewise). What no panel takes is disposed.
+   */
+  private takePanels(carried: Map<number, CarriedPanel>): void {
+    for (const view of this.panels) {
+      const old = carried.get(view.panel.table)
+      if (!old) continue
+      carried.delete(view.panel.table)
+      if (old.text) {
+        const rows    = old.textRows
+        view.tableFace.add(old.text)
+        view.text     = old.text
+        view.textRows = showsRich(old.text, this.text.panelText(view.panel, rows - TITLE_ROWS)) ? rows : -1
+      }
+      if (old.tabText && view.tab) {
+        view.tab.group.add(old.tabText)
+        view.tab.text  = old.tabText
+        view.tab.label = old.tabLabel
+      } else if (old.tabText) disposeText(old.tabText)
+      if (old.faceView) {
+        view.instFrame.add(old.faceView.group)
+        if (view.face && old.faceKey === faceKeyOf(this.layout, view.panel.instrument)) {
+          view.faceView = old.faceView
+          view.faceKey  = old.faceKey
+        } else view.staleFace = old.faceView
+      }
+    }
+    for (const old of carried.values()) {
+      if (old.text) disposeText(old.text)
+      if (old.tabText) disposeText(old.tabText)
+      old.faceView?.dispose()
+      old.faceView?.group.removeFromParent()
+    }
+  }
+
+  /** A table changed (edited on the M8): its panels lay their text out again, the old one showing until then. */
+  refreshTable(table: number): boolean {
+    let any = false
+    for (const view of this.panels) {
+      if (view.panel.table !== table) continue
+      view.textRows = -1
+      any           = true
+    }
+    return any
+  }
+
+  /**
+   * An instrument changed (edited on the M8; the layout forgot its face): its panels lay their
+   * title out again and make their instrument face again from its new values, each old one showing
+   * until the new one is ready.
+   */
+  refreshInstrument(instrument: number): boolean {
+    let any = false
+    for (const view of this.panels) {
+      if (view.panel.instrument !== instrument) continue
+      any           = true
+      view.textRows = -1
+      view.face     = this.layout.instrumentFace(instrument)
+      if (!view.faceView) continue
+      view.staleFace?.dispose()
+      view.staleFace?.group.removeFromParent()
+      view.staleFace = view.faceView
+      view.faceView  = null
+    }
+    return any
+  }
+
   /** Redraws the thin links for the view [yBottom, yTop]; returns true when redrawn. */
   updateLinks(yTop: number, yBottom: number): boolean {
-    return this.links.update(yTop, yBottom)
+    return this.links.update(yTop, yBottom, this.sideAlpha, this.slide, this.wallAngle)
   }
 
   dispose(): void {
@@ -879,8 +1139,9 @@ export class TrackView {
       view.nextText = null
       view.tab?.text?.dispose()
       view.faceView?.dispose()
+      view.staleFace?.dispose()
     }
-    this.header.dispose()
+    if (!this.headerHandedOver) this.header.dispose()
     this.group.traverse((object) => {
       const mesh  = object as InstancedMesh
       const lines = object as LineSegments

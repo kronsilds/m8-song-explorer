@@ -6,7 +6,7 @@
 
 import { fxColumn, type PhraseColumn, type TableColumn } from '../model/columns'
 import { ScaleMap } from '../model/music/harmony'
-import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, type Table, TRACKS } from '../model/song'
+import { allFxCells, fxValues, ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, type Table, TRACKS } from '../model/song'
 import { buildTimeline, effectiveInstruments, instanceAt, type PhraseInstance, type Timeline } from '../model/timeline'
 import { type InstrumentFace, layoutInstrumentFace } from './instrumentFace'
 
@@ -14,8 +14,8 @@ export const FONT     = 1
 export const CHAR_W   = 0.6 * FONT
 export const ROW_H    = 1.34 * FONT
 export const BAND_GAP = 1.6
-/** Rows above the first song row, for the headers. */
-export const HEADER_H = 5.5
+/** Rows above the first song row, for the headers (three lines: fold buttons, track title, column names). */
+export const HEADER_H = 5.5 + ROW_H
 
 // Front column: "cc pp C-4 03" (chain label, phrase label, note, instrument)
 export const FRONT_CHARS = 12
@@ -28,52 +28,70 @@ export const TRACK_GAP   = 2.4
 export const TRACK_PITCH = FRONT_W + TRACK_GAP
 
 // Wall: step details "VV II CCCvv CCCvv CCCvv", then the panels. u runs along the wall.
-export const WALL_ANGLE     = (56 * Math.PI) / 180
-export const WALL_HINGE     = FRONT_W + 0.35
-export const SIDE_U0        = 0.5
-export const SIDE_CHARS     = 23
-export const PANEL_U0       = SIDE_U0 + SIDE_CHARS * CHAR_W + 2.5
-export const PANEL_CHARS    = 25
+/** How far the wall is turned from the front by default, in degrees (the Options panel changes it). */
+export const WALL_DEGREES_RANGE   = {
+  min: 20,
+  max: 80
+} as const
+export const DEFAULT_WALL_DEGREES = 40
+export const DEFAULT_WALL_ANGLE   = (DEFAULT_WALL_DEGREES * Math.PI) / 180
+export const WALL_HINGE           = FRONT_W + 0.35
+export const SIDE_U0              = 0.5
+export const SIDE_CHARS           = 23
+/** Where the step details end along the wall. */
+export const SIDE_END             = SIDE_U0 + SIDE_CHARS * CHAR_W + 0.35
+export const PANEL_U0             = SIDE_U0 + SIDE_CHARS * CHAR_W + 2.5
+/**
+ * How far the wall slides back along itself while the step details are folded: by their width,
+ * so the panels keep the room they have after the FX columns (for the links) from the front column.
+ */
+export const PANELS_SLIDE         = SIDE_U0 + SIDE_CHARS * CHAR_W
+export const PANEL_CHARS          = 25
 /** Panel rows: title, subtitle, 16 table rows. */
-export const PANEL_ROWS     = 18
+export const PANEL_ROWS           = 18
 /** The title lines of a panel (title, subtitle): all a folded panel or an empty table shows. */
-export const TITLE_ROWS     = 2
+export const TITLE_ROWS           = 2
 /** Panels that do not fit one column below each other tile into more columns, deeper along the wall. */
-export const MAX_PANEL_COLS = 4
-export const PANEL_COL_W    = PANEL_CHARS * CHAR_W + 2
+export const MAX_PANEL_COLS       = 4
+/** Columns a wall has room for until its `+` button extends it (up to MAX_PANEL_COLS). */
+export const DEFAULT_PANEL_COLS   = 2
+export const PANEL_COL_W          = PANEL_CHARS * CHAR_W + 2
 /** Panels a column is expected to show at once, to size the wall from how many are in use together. */
-const PANELS_PER_COL        = 2
+const PANELS_PER_COL              = 2
 /** Rows around a panel's uses counted as "in view together" when sizing the wall. */
-const PANEL_VIEW_PAD_ROWS   = 24
+const PANEL_VIEW_PAD_ROWS         = 24
 /** Rows between panels stacked in a column: room for the tab over the lower one's corner. */
-const PANEL_GAP_ROWS        = 1.75
+const PANEL_GAP_ROWS              = 1.75
 /** Height of a phrase on the wall. */
-const PHRASE_HEIGHT         = ROWS_PER_PHRASE * ROW_H
+const PHRASE_HEIGHT               = ROWS_PER_PHRASE * ROW_H
 /**
  * The reach panels are placed for: the view height, and at least this many phrases, so that when
  * zoomed in panels do not change band, or come and go, at every phrase of a fast song.
  */
-const MIN_REACH_PHRASES     = 6
+const MIN_REACH_PHRASES           = 6
 /**
  * Distance bands, in reaches between the view and a panel's nearest use: on screen or within half
  * a reach, within one and a half, within four, further. A panel's band is the first column it may
  * take, so how far along the wall it is tells how far away it is used.
  */
-const DISTANCE_BANDS        = [0.5, 1.5, 4]
+const DISTANCE_BANDS              = [0.5, 1.5, 4]
 /** How far (in reaches) a panel may go past the edge of its band before it changes band, so panels do not change columns while a song plays or scrolls a little. */
-const BAND_HYSTERESIS       = 0.5
+const BAND_HYSTERESIS             = 0.5
 /** The band of panels used further than the last DISTANCE_BANDS edge: they show their title lines only, while there is room. */
-const FAR_BAND              = DISTANCE_BANDS.length
+const FAR_BAND                    = DISTANCE_BANDS.length
 /** How far (in view heights, and at least a phrase) the uses of a panel may scroll off screen before it stops counting as used on screen (it then folds before those that are). */
-const NOW_HYSTERESIS        = 0.25
+const NOW_HYSTERESIS              = 0.25
 /** Fewest table rows a fold must hide to make room: a smaller table is nearly its title lines, and folding it would mostly move the panels below (it still folds for a fuller table used on screen, or a title). */
-const MIN_FOLD_ROWS         = 2
+const MIN_FOLD_ROWS               = 2
 /** How much the view height may change (a zoom) before a track's grid is laid out afresh for it, in the order its panels had. */
-const REPACK_ZOOM           = 0.15
+const REPACK_ZOOM                 = 0.15
 /** Room a panel takes on the wall, gap included. */
-export const PANEL_SPAN     = (PANEL_ROWS + PANEL_GAP_ROWS) * ROW_H
+export const PANEL_SPAN           = (PANEL_ROWS + PANEL_GAP_ROWS) * ROW_H
 /** Room a panel of `rows` rows takes on the wall, gap included. */
-export const panelSpan      = (rows: number): number => (rows + PANEL_GAP_ROWS) * ROW_H
+export const panelSpan            = (rows: number): number => (rows + PANEL_GAP_ROWS) * ROW_H
+
+/** Columns a wall has for panels that want `wanted` of them, with at most `limit`. */
+const columnsWithin = (wanted: number, limit: number): number => Math.max(1, Math.min(wanted, limit))
 
 /** Length of a wall that has `cols` columns of panels. */
 export const wallLength = (cols: number): number => PANEL_U0 + PANEL_CHARS * CHAR_W + 1 + (cols - 1) * PANEL_COL_W
@@ -183,6 +201,16 @@ export function tableContentRows(table: Table | undefined): number {
   return rows
 }
 
+/** What a panel keeps from an earlier layout of the same song (see SongLayout.adoptState); the rest follows from the song. */
+const CARRIED_PANEL_STATE = ['visible', 'y', 'col', 'u', 'shownY', 'shownU', 'alpha', 'rows', 'chars', 'flip', 'flash', 'band', 'now', 'seq', 'folded', 'promoted'] as const satisfies readonly (keyof Panel)[]
+
+/** Tables a TBX anywhere in the song starts as aux tables. */
+function auxTables(model: SongModel): number[] {
+  const tables = new Set<number>()
+  for (const fx of allFxCells(model)) for (const table of fxValues(fx, 'TBX')) tables.add(table)
+  return [...tables].sort((a, b) => a - b)
+}
+
 /** A panel being placed by stick(): the columns it may take, where it goes and how it shows. */
 interface Placing {
   panel   : Panel
@@ -243,14 +271,17 @@ interface PanelReference {
 }
 
 export interface TrackLayout {
-  track     : number
-  instances : PhraseInstance[]
-  panels    : Panel[]
-  links     : Link[]
-  /** Columns of panels its wall has room for, and the wall's length and x extent for them. */
-  cols      : number
-  wallLen   : number
-  wallExtent: number
+  track    : number
+  instances: PhraseInstance[]
+  panels   : Panel[]
+  links    : Link[]
+  /** Columns of panels its wall has room for (at most the limit asked for), and the wall's length for them (see SongLayout.setColumnLimit). */
+  cols     : number
+  /** Columns the panels would want, whatever the limit (at most MAX_PANEL_COLS). */
+  wanted   : number
+  wallLen  : number
+  /** An instrument face can turn out of its wall (and stick out past its end). */
+  hasFaces : boolean
 }
 
 export class SongLayout {
@@ -273,7 +304,8 @@ export class SongLayout {
   /** View height each track's grid was last laid out afresh for (see REPACK_ZOOM). */
   private packedFor = new Map<number, number>()
 
-  constructor(model: SongModel, trimTables = true) {
+  /** `columnLimits[track]`: the columns that track's wall may have (DEFAULT_PANEL_COLS when not given). */
+  constructor(model: SongModel, trimTables = true, private readonly columnLimits: readonly number[] = []) {
     this.trimTables = trimTables
     this.model      = model
     this.timeline   = buildTimeline(model)
@@ -288,6 +320,83 @@ export class SongLayout {
       for (const panel of track.panels) bottomY = Math.min(bottomY, panel.naturalY - PANEL_ROWS * ROW_H - PANEL_SPAN * 0.5)
     }
     this.bottomY = bottomY
+  }
+
+  /**
+   * Gives a track's wall room for up to `limit` columns, in place: the next stick() lays its
+   * panels out afresh over them (they glide to their new places). True when it changed.
+   */
+  setColumnLimit(track: number, limit: number): boolean {
+    const lanes = this.tracks[track]
+    if (!lanes) return false
+    const cols = columnsWithin(lanes.wanted, limit)
+    if (cols === lanes.cols) return false
+    lanes.cols    = cols
+    lanes.wallLen = wallLength(cols)
+    this.packedFor.delete(track)
+    return true
+  }
+
+  /**
+   * Takes over the panels of an earlier layout of the same song (after an edit): where each one is
+   * and is drawn, its fade, turn, column and place in it, and how each grid was packed, so nothing
+   * that did not change moves or fades in again.
+   */
+  adoptState(previous: SongLayout): void {
+    this.arrivals  = previous.arrivals
+    this.packedFor = new Map(previous.packedFor)
+    for (const lanes of this.tracks) {
+      const before = new Map((previous.tracks[lanes.track]?.panels ?? []).map((panel) => [panel.table, panel]))
+      for (const panel of lanes.panels) {
+        const old = before.get(panel.table)
+        if (!old) continue
+        for (const key of CARRIED_PANEL_STATE) (panel as unknown as Record<string, unknown>)[key] = old[key]
+      }
+    }
+  }
+
+  /**
+   * What a track's view is drawn from: its phrase instances and where they are, the phrases,
+   * chains, instruments, tables and scales they use, its panels and its wall. Two layouts with
+   * the same signature for a track draw it alike.
+   */
+  trackSignature(track: number): string {
+    const lanes = this.tracks[track]
+    if (!lanes) return ''
+    const { model }   = this
+    const phrases     = new Set<number>()
+    const chains      = new Set<number>()
+    const instruments = new Set<number>()
+    const instances   = lanes.instances.map((instance) => {
+      phrases.add(instance.phrase)
+      chains.add(instance.chain)
+      const effective = this.effective.get(instance.key) ?? []
+      for (const id of effective) if (id != null) instruments.add(id)
+      return [instance.key, instance.row, this.rowY(instance.row), instance.phrase, instance.chain, instance.chainRow, instance.songRow, effective]
+    })
+    for (const panel of lanes.panels) if (panel.instrument != null) instruments.add(panel.instrument)
+    const panels = lanes.panels.map((panel) => [panel.table, panel.instrument, panel.row, panel.lastRow, panel.contentRows, panel.spans, model.tables[panel.table] ?? null])
+    return JSON.stringify([
+      instances,
+      [...phrases].map((id) => model.phrases[id] ?? null),
+      [...chains].map((id) => model.chains[id] ?? null),
+      [...instruments].map((id) => model.instruments[id] ?? null),
+      panels,
+      lanes.links.length,
+      lanes.cols,
+      lanes.wanted,
+      lanes.hasFaces,
+      this.scales.signature(track),
+      model.scales ?? null,
+      model.projectTranspose ?? null,
+      auxTables(model),
+      this.headerRestY,
+    ])
+  }
+
+  /** Lays an instrument's face out again (its values changed). */
+  forgetFace(id: number): void {
+    this.faces.delete(id)
   }
 
   /** The instrument face of an instrument (laid out once), null when the instrument was not read. */
@@ -382,9 +491,10 @@ export class SongLayout {
       panel.spans.sort((a, b) => a[0] - b[0])
     }
 
-    // An instrument face takes two columns, so a wall with one has room for two.
+    // An instrument face turned out of a one-column wall sticks out past it: the world makes room for it while it shows.
     const faces   = panels.some((panel) => this.instrumentFace(panel.instrument))
-    const cols    = Math.max(faces ? 2 : 1, this.columnsFor(panels))
+    const wanted  = this.columnsFor(panels)
+    const cols    = columnsWithin(wanted, this.columnLimits[track] ?? DEFAULT_PANEL_COLS)
     const wallLen = wallLength(cols)
     return {
       track,
@@ -392,8 +502,9 @@ export class SongLayout {
       panels,
       links,
       cols,
+      wanted,
       wallLen,
-      wallExtent: wallLen * Math.cos(WALL_ANGLE)
+      hasFaces: faces
     }
   }
 
@@ -739,9 +850,10 @@ export class SongLayout {
 
   /**
    * The panels stick() would show for the view [yBottom, yTop], with the wall u of their column,
-   * without moving any: for framing a view the camera is not at yet.
+   * their top y and the rows they would show, without moving any: for framing a view the camera
+   * is not at yet.
    */
-  probe(track: number, yTop: number, yBottom: number, viewHeight = yTop - yBottom): { panel: Panel; u: number }[] {
+  probe(track: number, yTop: number, yBottom: number, viewHeight = yTop - yBottom): { panel: Panel; u: number; y: number; rows: number }[] {
     const panels   = this.tracks[track]?.panels ?? []
     const arrivals = this.arrivals
     const packed   = this.packedFor.get(track)
@@ -759,7 +871,9 @@ export class SongLayout {
     this.stick(track, yTop, yBottom, viewHeight)
     const shown = panels.filter((panel) => panel.visible).map((panel) => ({
       panel,
-      u: panel.u
+      u   : panel.u,
+      y   : panel.y,
+      rows: shownPanelRows(panel)
     }))
     panels.forEach((panel, i) => {
       Object.assign(panel, saved[i])
@@ -768,6 +882,11 @@ export class SongLayout {
     if (packed == null) this.packedFor.delete(track)
     else this.packedFor.set(track, packed)
     return shown
+  }
+
+  /** Top y of the stretch that uses a panel nearest to the view [yBottom, yTop]. */
+  nearestUseY(panel: Panel, yTop: number, yBottom: number): number {
+    return this.viewDistance(panel, yTop, yBottom)[1]
   }
 
   /** Top y of a use stretch, and the y of its bottom edge. */

@@ -15,24 +15,30 @@ export interface CameraAngles {
 
 const degrees                 = MathUtils.degToRad
 
-/** Yaw and pitch of each preset, in degrees. Side faces the open wall square (it is turned 56° from the front, see WALL_ANGLE). */
-const PRESET_ANGLES           : Record<TurnPreset, [yaw: number, pitch: number]> = {
-  front: [0, 0],
-  angle: [30, 5],
-  side : [60, 3]
+/** Yaw and pitch of each preset, in degrees. Side looks square at an open wall: a few degrees past its turn from the front (`wallDegrees`). */
+const presetDegrees           = (preset: TurnPreset, wallDegrees: number): [yaw: number, pitch: number] => {
+  switch (preset) {
+    case 'front':
+      return [0, 0]
+    case 'angle':
+      return [30, 5]
+    case 'side':
+      return [wallDegrees + 4, 3]
+  }
 }
 
-/** Below this yaw the view counts as facing the front (the walls closed). */
+/** Below this yaw the view counts as facing the front. */
 export const FACING_FRONT_YAW = degrees(25)
 
 const between                 = (low: number, high: number): number => low + (high - low) * Math.random()
 
 /**
  * The angles of a preset. `cut` numbers the dramatic takes: odd and even ones alternate low
- * and high. The front take swings left only (a positive yaw would open the walls).
+ * and high. The front take swings left only, away from the walls. `wallDegrees` is how far the
+ * wall is turned from the front.
  */
-export function presetAngles(preset: TurnPreset, dramatic: boolean, cut: number): CameraAngles {
-  const [yaw, pitch] = PRESET_ANGLES[preset]
+export function presetAngles(preset: TurnPreset, dramatic: boolean, cut: number, wallDegrees: number): CameraAngles {
+  const [yaw, pitch] = presetDegrees(preset, wallDegrees)
   if (!dramatic) return {
     yaw  : degrees(yaw),
     pitch: degrees(pitch),
