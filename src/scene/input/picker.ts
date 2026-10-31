@@ -99,7 +99,7 @@ export class ScenePicker {
       // Panels turn out of the wall: each is met in its own plane.
       for (const panel of layout.tracks[view.track.track].panels) {
         if (panel.alpha <= MIN_PANEL_ALPHA) continue
-        const hit = this.hitPlane(view.faceFrame(panel), ray)
+        const hit = this.hitPlane(view.cards.faceFrame(panel), ray)
         if (hit) consider(this.panelCell(layout, view, panel, hit.point), hit.distance)
       }
     }
@@ -145,9 +145,9 @@ export class ScenePicker {
   private panelCell(layout: SongLayout, view: TrackView, panel: Panel, point: Vector3): Selection | null {
     const { x, y } = point
     const track    = view.track.track
-    if (x < -0.5 || x > view.panelWidth(panel) || y > 0.3 || y <= -view.shownRows(panel) * ROW_H) return null
+    if (x < -0.5 || x > view.cards.panelWidth(panel) || y > 0.3 || y <= -view.cards.shownRows(panel) * ROW_H) return null
     const line = Math.floor(-y / ROW_H)
-    const face = view.shownFace(panel) === 'inst' && panel.instrument != null ? layout.instrumentFace(panel.instrument) : null
+    const face = view.cards.shownFace(panel) === 'inst' && panel.instrument != null ? layout.instrumentFace(panel.instrument) : null
     if (face && panel.instrument != null) {
       const place = placeAt(face, x / CHAR_W, line)
       // Its title is the panel header.
@@ -211,8 +211,8 @@ export class ScenePicker {
       }
       if (view.panelsAlpha < MIN_WALL_ALPHA) continue
       for (const panel of view.track.panels) {
-        const hit = this.hitPlane(view.panelGroup(panel), ray)
-        if (hit && view.onTab(panel, hit.point.x, hit.point.y)) consider({
+        const hit = this.hitPlane(view.cards.panelGroup(panel), ray)
+        if (hit && view.cards.onTab(panel, hit.point.x, hit.point.y)) consider({
           track,
           kind : 'flip',
           table: panel.table

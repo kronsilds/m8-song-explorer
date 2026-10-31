@@ -48,12 +48,12 @@ export class TablePlayheadView {
         const panel = trackPanels.find((p) => p.table === cursors.table)
         // The table face only: a panel turned to its instrument face has no rows to mark.
         // A table a random THO sent somewhere nothing says has no row to mark (the Table view shows it again).
-        if (!panel || panel.alpha < 0.05 || view.shownFace(panel) !== 'table' || !cursors.known) continue
-        const frame = view.faceFrame(panel, 'table')
+        if (!panel || panel.alpha < 0.05 || view.cards.shownFace(panel) !== 'table' || !cursors.known) continue
+        const frame = view.cards.faceFrame(panel, 'table')
         // A row left unknown by chance or a random THO is drawn fainter until the M8 tells.
         const alpha = panel.alpha * view.panelsAlpha * (cursors.aux ? 0.7 : 1) * (cursors.sure ? 1 : UNSURE_ALPHA)
         // Only rows the panel shows whole: a trimmed, empty or folded table hides the rest, and an opening one shows them as it grows.
-        const shown = (tableRow: number) => tableRow + TITLE_ROWS + 1 <= view.shownRows(panel) + 1e-6
+        const shown = (tableRow: number) => tableRow + TITLE_ROWS + 1 <= view.cards.shownRows(panel) + 1e-6
         if (shown(cursors.main)) {
           markers[used++].show({
             parent: frame,

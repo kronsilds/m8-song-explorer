@@ -1,25 +1,16 @@
-// The app: connects the song model, the 3D view, the HUD and the M8. It owns the shared state
-// (the song shown, the device connection, what runs on the device) and turns HUD actions and
-// keys into commands.
+// The app: wires the song shown, the 3D view, the HUD and the M8 together, and turns HUD actions
+// and keys into commands. Its parts do the work: the song shown (shownSong), the connection
+// (deviceLink), what the M8 shows now (liveSync), the tasks run on it (deviceTasks), the view
+// options (viewToggles), the playheads (playbackFeed) and the mute / solo buttons (trackMixer).
 
-import { createM8ClientSync, type M8Client, type M8Screen, observeThemeColors } from '@yam8d/m8-sdk'
-import { ExploreCancelled } from '../m8/driver'
-import { clientPort, type M8Port, withTimeout } from '../m8/port'
-import { absorbEdit, deviceFocus, isOtherSong, matchesSong } from '../m8/screen/liveScreen'
-import { viewOf } from '../m8/screen/screenReader'
 import { describeSelection } from '../m8/semantics'
-import { exploreSong, moveToSongTop } from '../m8/tasks/explorer'
-import { type ChannelPlan, planChannel, readMidiSync, SYNC_OUT_TARGET, setCcMapChannel, setMidiSyncOut } from '../m8/tasks/midiSync'
-import { deviceTargetOf, showOnDevice } from '../m8/tasks/showOnDevice'
-import { readDeviceTheme } from '../m8/tasks/themeReader'
-import { debugLog, type RunHandle } from '../model/debugLog'
+import { debugLog } from '../model/debugLog'
 import { demoSong } from '../model/demo'
 import { hex2 } from '../model/hex'
 import type { ThemeColors } from '../model/palette'
-import { type Selection, sameSelection } from '../model/selection'
-import { lastSongRow, type MidiSync, type SongModel, usedItems } from '../model/song'
-import { buildSongContext, type SongContext } from '../model/songContext'
-import { loadModel, loadTheme, rememberedSongs, rememberSong, saveModel, saveTheme } from '../model/storage'
+import type { Selection } from '../model/selection'
+import type { SongModel } from '../model/song'
+import { loadModel, loadTheme, rememberSong, saveModel } from '../model/storage'
 import { preloadText } from '../scene/text'
 import { World } from '../scene/world'
 import { downloadDebugReport, openInAnalyzer } from '../ui/debugFile'
@@ -27,93 +18,35 @@ import { type Action, Hud } from '../ui/hud'
 import { downloadSong, pickSongFile } from '../ui/songFile'
 import { registerDebugProviders, watchPage } from './debugReport'
 import { DeviceCursor } from './deviceCursor'
+import { DeviceLink } from './deviceLink'
+import { DeviceSession } from './deviceSession'
+import { DeviceTasks } from './deviceTasks'
 import { dumpScreen } from './diagnostics'
 import { bindKeyboard, type KeyCommands } from './keyboard'
+import { LiveSync } from './liveSync'
 import { PlaybackFeed } from './playbackFeed'
 import { preferences } from './preferences'
-import { type SyncKind, SyncScheduler } from './syncScheduler'
+import { ShownSong } from './shownSong'
 import { ThemeColorsSource } from './themeColors'
 import { TrackMixer } from './trackMixer'
+import { ViewToggles } from './viewToggles'
 
-/** What runs on the device: one thing at a time. */
-type DeviceTask = 'explore' | 'theme' | 'sync' | 'show'
-
-const HANDSHAKE_TIMEOUT_MS = 6000
-/** A cursor read reads edits from a screen once it has shown the same item this long: the M8 has drawn it whole by then. */
-const EDIT_READ_AFTER_MS   = 150
-/** While exploring, the view is redrawn at most this often. */
-const EXPLORE_REDRAW_MS    = 1200
-
-const messageOf      = (error: unknown): string => (error instanceof Error ? error.message : String(error))
-/** A message of a device task: to the console, and to the run it belongs to in the debug log. */
-const logTo          = (tag: string, run?: RunHandle) => (message: string) => {
-  console.info(tag, message)
-  run?.message(`${tag} ${message}`)
-}
 /** Actions whose own events say more than "the button was pressed". */
 const SILENT_ACTIONS : Action[] = ['help', 'follow', 'autoselect', 'explore', 'theme']
-
-const CONFIRM_EXPLORE =
-  'The M8 will walk through the Song, Chain, Phrase, Instrument, Table, Scale and Groove views to read the whole song. It only presses arrows, Shift+arrows and Option+arrows, so nothing is edited; at the end it opens Project › MIDI SETTINGS (Edit on that entry) to check the sync setting, then puts the cursor on the first cell of the Song view. Keep your hands off the M8 until it finishes; Cancel stops it and keeps what was read.'
-const CONFIRM_THEME   =
-  'The M8 will open Project › System Settings › Theme (Edit is pressed on SYSTEM SETTINGS and on EDIT THEME, after checking the cursor is on them), read the 13 colours, then leave with Option and go back to the current view.'
-
-/** The MIDI Settings changes the explorer asks for: SYNC OUT (when `syncOut` is set) and CC MAP CHAN (when the plan sets it). */
-function confirmMidiSettings(syncOut: string | null, plan: ChannelPlan, sync: MidiSync, explorerChannel: number): string {
-  const parts: string[] = []
-  if (syncOut != null) {
-    parts.push(
-      `SYNC OUT is ${syncOut} in this song. It would be set to ${SYNC_OUT_TARGET}: with clock, transport and song position the explorer places every track the moment Play is pressed and follows it exactly.`,
-    )
-  }
-  if (plan.kind === 'set') {
-    const cue = sync.songRowCueChan ?? 'unknown'
-    parts.push(
-      plan.reason === 'all'
-        ? `CC MAP CHAN is ALL on the M8, so the mute / solo notes cannot reach a single track. It would be set to channel ${plan.channel}, the channel of the explorer's mute / solo buttons${plan.moved ? ` (not ${explorerChannel}: SONG ROW CUE CHAN already uses it, and is left as it is)` : ''}.`
-        : `CC MAP CHAN and SONG ROW CUE CHAN are both ${cue}, so the mute / solo notes would cue song rows. SONG ROW CUE CHAN is left as it is; CC MAP CHAN would be set to channel ${plan.channel}.`,
-    )
-    if (plan.channel !== explorerChannel) parts.push(`The explorer's mute / solo channel changes from ${explorerChannel} to ${plan.channel}.`)
-  }
-  parts.push("This changes the song's MIDI Settings (Edit held + Right / Left on the value); the changes are kept only if you save the song on the M8.")
-  return parts.join(' ')
-}
 
 export class ExplorerApp {
   private readonly hud      : Hud
   private readonly world    : World
   private readonly theme    : ThemeColorsSource
-  private readonly playback : PlaybackFeed
-  private readonly mixer    : TrackMixer
+  private readonly song     : ShownSong
+  private readonly session  = new DeviceSession()
   private readonly cursor   = new DeviceCursor()
-  /** The song shown, and what is worked out from it: a new one for each version of the model (see setModel, updateSong). */
-  private song              : SongContext
-
-  private client          : M8Client | null = null
-  private port            : M8Port | null = null
-  private task            : DeviceTask | null = null
-  private exploration     : AbortController | null = null
-  private following       = false
-  /** The selection (and its meaning) follows the M8 cursor. */
-  private autoSelect      = false
-  /** The device place auto select chose last: a click wins until the M8 cursor moves on. */
-  private autoSelected    : Selection | null = null
-  /** The M8 has another song loaded than the one explored: nothing from the screen is merged. */
-  private otherSongLoaded = false
-  /** A song was imported by hand: remembered songs are not swapped in until the next exploration. */
-  private recallPaused    = false
-  /** Reads the M8 after its events: the cursor soon, edits once the screen is quiet. */
-  private readonly syncs  = new SyncScheduler((kind) => this.sync(kind))
-  /** The view the M8 was last seen on ('phrase:3'), to log its changes. */
-  private deviceView      : string | null = null
-  /** The item the M8 screen shows ('phrase:3') and since when (performance.now()): edits are read once it has been drawn whole. */
-  private screenItem      = {
-    key  : '',
-    since: 0
-  }
-  /** Edits shown on their item but not yet in the whole scene, and edits not yet saved (see absorbEdits). */
-  private sceneBehind     = false
-  private unsaved         = false
+  private readonly playback : PlaybackFeed
+  private readonly live     : LiveSync
+  private readonly mixer    : TrackMixer
+  private readonly tasks    : DeviceTasks
+  private readonly link     : DeviceLink
+  private readonly toggles  : ViewToggles
 
   /** Shows the HUD at once, and the 3D view once the text font is loaded. */
   static async start(root: HTMLElement): Promise<ExplorerApp> {
@@ -129,40 +62,57 @@ export class ExplorerApp {
   }
 
   private constructor(hud: Hud, world: World, theme: ThemeColorsSource, model: SongModel) {
-    this.hud                = hud
-    this.world              = world
-    this.theme              = theme
-    this.song               = buildSongContext(model)
-    this.hud.onInfoPinned   = (pinned) => preferences.infoPinned.set(pinned)
-    this.hud.onDebugExport  = () => void this.exportDebugLog()
-    this.hud.onTopBarResize = (bottom) => this.world.setTopInset(bottom)
-    this.hud.onCoveredAreas = (areas) => this.world.setCoveredAreas(areas)
-    this.world.coverage     = () => this.hud.coveredAreas()
-    this.hud.onWallDegrees  = (degrees) => {
-      preferences.wallDegrees.set(degrees)
-      this.world.setWallDegrees(degrees)
-    }
-    this.world.onFolds      = () => this.showFolds()
-    this.world.setTopInset(this.hud.topBarBottom())
-    this.world.setCoveredAreas(this.hud.coveredAreas())
-    this.world.setSong(this.song)
+    this.hud           = hud
+    this.world         = world
+    this.theme         = theme
+    this.toggles       = new ViewToggles(world, hud)
+    const { session }  = this
+    hud.onInfoPinned   = (pinned) => preferences.infoPinned.set(pinned)
+    hud.onDebugExport  = () => void this.exportDebugLog()
+    hud.onTopBarResize = (bottom) => world.setTopInset(bottom)
+    hud.onCoveredAreas = (areas) => world.setCoveredAreas(areas)
+    world.coverage     = () => hud.coveredAreas()
+    hud.onWallDegrees  = (degrees) => this.toggles.setWallDegrees(degrees)
+    world.onFolds      = () => this.showFolds()
+    world.setTopInset(hud.topBarBottom())
+    world.setCoveredAreas(hud.coveredAreas())
+    this.song              = new ShownSong(model, world, hud, theme)
     this.playback          = new PlaybackFeed(
-      this.world,
-      () => this.song,
-      () => (this.client?.isConnected && !this.task && !this.otherSongLoaded ? this.client : null),
-      () => this.otherSongLoaded,
+      world,
+      () => this.song.context,
+      () => session.readableClient(),
+      () => session.otherSongLoaded,
     )
-    this.playback.appState = () => ({
-      following : this.following,
-      autoSelect: this.autoSelect,
-      task      : this.task
+    this.live              = new LiveSync(session, this.song, world, hud, theme, this.playback, this.cursor, {
+      buttons        : () => this.updateButtons(),
+      renderSelection: (selection) => this.renderSelection(selection)
     })
-    this.updateSummary()
+    this.playback.appState = () => ({
+      following : this.live.following,
+      autoSelect: this.live.autoSelect,
+      task      : session.task
+    })
+    this.song.updateSummary()
     this.updateButtons()
-    this.refreshPalette()
+    this.song.refreshPalette()
     this.bindSelection()
-    this.applyViewPreferences()
-    this.mixer        = new TrackMixer(this.world, this.hud)
+    this.toggles.apply()
+    this.mixer        = new TrackMixer(world, hud)
+    this.tasks        = new DeviceTasks(session, this.song, world, hud, theme, this.mixer, this.live, {
+      buttons : () => this.updateButtons(),
+      schedule: () => this.live.schedule()
+    })
+    this.link         = new DeviceLink(session, hud, this.playback, {
+      activity: () => this.live.schedule(),
+      up      : () => {
+        this.updateButtons()
+        this.live.schedule()
+      },
+      down    : () => {
+        this.live.deviceGone()
+        this.updateButtons()
+      }
+    })
     const commands    = this.commands()
     this.hud.onAction = (action) => {
       if (!SILENT_ACTIONS.includes(action)) debugLog.event('action', { action })
@@ -173,25 +123,23 @@ export class ExplorerApp {
     this.setUpDebugLog()
   }
 
+  /** Connects to the M8 (through yam8d, or straight to a device granted before). */
+  connect(): Promise<void> {
+    return this.link.connect()
+  }
+
   // ---------------------------------------------------------------------------
   // Commands
 
-  /** Lights the top bar's fold buttons for how far each part is unfolded across the tracks. */
-  private showFolds(): void {
-    const { world, hud } = this
-    hud.setFoldCoverage('allfx', world.foldCoverage('fx'))
-    hud.setFoldCoverage('allpanels', world.foldCoverage('panels'))
-  }
-
   private commands(): Record<Action, () => void> {
-    const { world, hud } = this
+    const { world, hud, live, tasks, toggles } = this
     return {
-      device    : () => void this.toggleDevice(),
-      explore   : () => void this.explore(),
-      cancel    : () => this.exploration?.abort(),
-      theme     : () => void this.readTheme(),
-      follow    : () => this.toggleFollow(),
-      autoselect: () => this.toggleAutoSelect(),
+      device    : () => void this.link.toggleDevice(),
+      explore   : () => void tasks.explore(),
+      cancel    : () => tasks.cancel(),
+      theme     : () => void tasks.readTheme(),
+      follow    : () => live.toggleFollow(),
+      autoselect: () => live.toggleAutoSelect(),
       front     : () => world.view('front'),
       angle     : () => world.view('angle'),
       side      : () => world.view('side'),
@@ -199,19 +147,19 @@ export class ExplorerApp {
       expand    : () => world.toggleAllFolds(),
       allfx     : () => world.toggleAllFolds('fx'),
       allpanels : () => world.toggleAllFolds('panels'),
-      dramatic  : () => this.toggleDramatic(),
-      played    : () => this.togglePlayedNotes(),
-      trim      : () => this.toggleTrimTables(),
-      export    : () => downloadSong(this.model),
+      dramatic  : () => toggles.toggleDramatic(),
+      played    : () => toggles.togglePlayedNotes(),
+      trim      : () => toggles.toggleTrimTables(),
+      export    : () => downloadSong(this.song.model),
       import    : () => void this.importSong(),
-      demo      : () => this.setModel(demoSong(), false),
-      show      : () => void this.showSelection(),
+      demo      : () => this.song.show(demoSong(), false),
+      show      : () => void tasks.showSelection(),
       help      : () => hud.toggleHelp()
     }
   }
 
   private keyCommands(command: Record<Action, () => void>): KeyCommands {
-    const { world } = this
+    const { world, session } = this
     return {
       ArrowUp           : () => world.moveSelection(-1, 0),
       ArrowDown         : () => world.moveSelection(1, 0),
@@ -243,115 +191,25 @@ export class ExplorerApp {
       '='               : () => world.zoom(0.8),
       '-'               : () => world.zoom(1.25),
       '?'               : command.help,
-      d                 : () => void dumpScreen(this.client, this.port),
-      m                 : () => void this.checkSyncNow()
+      d                 : () => void dumpScreen(session.client, session.port),
+      m                 : () => void this.tasks.checkSyncNow()
     }
   }
 
   /** Space: play / stop the M8; Shift+Space continues from the cursor. */
   private play(fromCursor: boolean): void {
+    const { client, task } = this.session
     debugLog.event('play-key', {
       fromCursor,
-      connected: this.client?.isConnected ?? false,
+      connected: client?.isConnected ?? false,
       playing  : this.playback.tracker.playing,
       cursor   : this.playback.tracker.context,
-      task     : this.task
+      task
     })
-    if (this.client?.isConnected) void this.client.sendKeyPress(fromCursor ? ['shift', 'play'] : ['play'])
+    if (client?.isConnected) void client.sendKeyPress(fromCursor ? ['shift', 'play'] : ['play'])
   }
 
-  // ---------------------------------------------------------------------------
-  // Song and view state
-
-  private get model(): SongModel {
-    return this.song.model
-  }
-
-  /** Shows another song model (or the same one read again). */
-  private setModel(model: SongModel, keepView: boolean): void {
-    this.song = buildSongContext(model)
-    this.world.setSong(this.song, keepView)
-    this.refreshPalette()
-    this.updateSummary()
-  }
-
-  /** The model changed in place (edits made on the M8): what is worked out from it is worked out again, and the scene follows. */
-  private updateSong(): void {
-    this.song = buildSongContext(this.model)
-    this.world.updateSong(this.song)
-  }
-
-  private refreshPalette(): void {
-    const palette = this.theme.refresh(this.model)
-    if (!palette) return
-    this.hud.applyPalette(palette)
-    this.world.setPalette(palette)
-  }
-
-  private updateSummary(): void {
-    const { model } = this
-    const source    =
-      model.source === 'demo' ? 'demo song' : model.source === 'file' ? 'from file' : `read ${new Date(model.capturedAt).toLocaleString()}`
-    const parts     = [
-      `${model.name ?? 'UNTITLED'}${model.tempo ? ` · ${model.tempo} BPM` : ''}${model.midiSync?.syncOut ? ` · sync ${model.midiSync.syncOut}` : ''}`,
-      `${lastSongRow(model) + 1} rows`,
-      `${Object.keys(model.chains).length} chains`,
-      `${Object.keys(model.phrases).length} phrases`,
-      `${usedItems(model).instruments.length} instruments`,
-      source,
-    ]
-    this.hud.setSummary(parts.join(' · '))
-    if (model.warnings.length) this.hud.notify(`${model.warnings.length} warning(s): ${model.warnings[0]}`, 'warn', 7000, false)
-  }
-
-  private updateButtons(): void {
-    const { hud }   = this
-    const connected = this.port != null
-    hud.setEnabled('explore', connected && !this.task)
-    hud.setEnabled('theme', connected && !this.task)
-    hud.setEnabled('follow', connected)
-    hud.setActive('follow', this.following)
-    hud.setEnabled('autoselect', connected)
-    hud.setActive('autoselect', this.autoSelect)
-    this.renderSelection(this.world.getSelection())
-  }
-
-  private applyViewPreferences(): void {
-    const dramatic = preferences.dramatic.get()
-    this.world.setDramatic(dramatic)
-    this.hud.setActive('dramatic', dramatic)
-    const playedNotes = preferences.playedNotes.get()
-    this.world.setPlayedNotes(playedNotes)
-    this.hud.setActive('played', playedNotes)
-    const trimTables = preferences.trimTables.get()
-    this.world.setTrimTables(trimTables)
-    this.hud.setActive('trim', trimTables)
-    const wallDegrees = preferences.wallDegrees.get()
-    this.world.setWallDegrees(wallDegrees)
-    this.hud.setWallDegrees(wallDegrees)
-  }
-
-  private toggleDramatic(): void {
-    const dramatic = !preferences.dramatic.get()
-    preferences.dramatic.set(dramatic)
-    this.world.setDramatic(dramatic)
-    this.hud.setActive('dramatic', dramatic)
-  }
-
-  private togglePlayedNotes(): void {
-    const playedNotes = !preferences.playedNotes.get()
-    preferences.playedNotes.set(playedNotes)
-    this.world.setPlayedNotes(playedNotes)
-    this.hud.setActive('played', playedNotes)
-  }
-
-  private toggleTrimTables(): void {
-    const trimTables = !preferences.trimTables.get()
-    preferences.trimTables.set(trimTables)
-    this.world.setTrimTables(trimTables)
-    this.hud.setActive('trim', trimTables)
-  }
-
+  /** A song file chosen by hand replaces the song shown. */
   private async importSong(): Promise<void> {
     const picked = await pickSongFile()
     if (picked.kind === 'cancelled') return
@@ -362,36 +220,35 @@ export class ExplorerApp {
       chains: Object.keys(model.chains).length
     })
     // The file was asked for: the library does not swap it for a remembered song of the M8.
-    this.recallPaused = true
-    this.setModel(model, false)
+    this.live.recallPaused = true
+    this.song.show(model, false)
     saveModel(model)
     rememberSong(model)
     this.hud.notify(`Loaded ${model.name ?? 'the song'} from file`)
   }
 
-  /**
-   * The M8 shows another song than the model: when the library holds one that matches the
-   * screen, it is shown again instead of exploring. True when it was loaded.
-   */
-  private recallSong(screen: M8Screen): boolean {
-    if (this.recallPaused) return false
-    const remembered = rememberedSongs().find((candidate) => matchesSong(candidate, screen))
-    if (!remembered) return false
-    debugLog.event('recall', {
-      name      : remembered.name,
-      capturedAt: remembered.capturedAt,
-      replaced  : this.model.name
-    })
-    this.otherSongLoaded = false
-    this.setModel(remembered, false)
-    saveModel(remembered)
-    this.hud.notify(`${remembered.name} was explored before: shown from this browser. Explore song to read it again.`, 'info', 6000)
-    this.scheduleSync()
-    return true
+  // ---------------------------------------------------------------------------
+  // Buttons and the selection's meaning
+
+  /** Lights the top bar's fold buttons for how far each part is unfolded across the tracks. */
+  private showFolds(): void {
+    const { world, hud } = this
+    hud.setFoldCoverage('allfx', world.foldCoverage('fx'))
+    hud.setFoldCoverage('allpanels', world.foldCoverage('panels'))
   }
 
-  // ---------------------------------------------------------------------------
-  // Selection -> meaning
+  /** The buttons that need the M8 (and no task running), Follow and Auto select lit, the selection's panel. */
+  private updateButtons(): void {
+    const { hud, session, live } = this
+    const connected              = session.port != null
+    hud.setEnabled('explore', connected && !session.task)
+    hud.setEnabled('theme', connected && !session.task)
+    hud.setEnabled('follow', connected)
+    hud.setActive('follow', live.following)
+    hud.setEnabled('autoselect', connected)
+    hud.setActive('autoselect', live.autoSelect)
+    this.renderSelection(this.world.getSelection())
+  }
 
   private bindSelection(): void {
     this.world.onSelect = (selection) => this.renderSelection(selection)
@@ -402,528 +259,11 @@ export class ExplorerApp {
   }
 
   private describe(selection: Selection) {
-    return describeSelection(this.song, selection)
+    return describeSelection(this.song.context, selection)
   }
 
   private renderSelection(selection: Selection | null): void {
-    this.hud.renderInfo(selection ? this.describe(selection) : null, this.port != null && !this.task)
-  }
-
-  // ---------------------------------------------------------------------------
-  // Device connection
-
-  async connect(): Promise<void> {
-    const inFrame = window.parent !== window
-    this.hud.setStatus(inFrame ? 'Connecting to yam8d…' : 'Looking for the M8…', 'busy')
-    // Inside yam8d the SDK uses yam8d's connection; on its own the page connects to the M8 itself.
-    const { client, connect } = createM8ClientSync()
-    const asked               = performance.now()
-    try {
-      await withTimeout(connect(), HANDSHAKE_TIMEOUT_MS, inFrame ? 'the SDK handshake' : 'the M8')
-      debugLog.provide('handshake', {
-        ok  : true,
-        ms  : Math.round(performance.now() - asked),
-        mode: client.mode
-      })
-    } catch (error) {
-      debugLog.provide('handshake', {
-        ok   : false,
-        ms   : Math.round(performance.now() - asked),
-        error: messageOf(error)
-      })
-      debugLog.problem('handshake', messageOf(error))
-      this.hud.setStatus('Not connected · this page could not reach yam8d')
-      return
-    }
-    this.client        = client
-    const scheduleSync = () => this.scheduleSync()
-    client.onViewChange(scheduleSync)
-    client.onCursorMove(scheduleSync)
-    client.onTextUpdate(scheduleSync)
-    client.onStateChange(scheduleSync)
-    // Option+Up/Down between two repeats of a phrase only moves the '<': no view, cursor or text change.
-    client.onKeyPress(scheduleSync)
-    this.playback.onChainPosition = scheduleSync
-    // The model arrives with the M8's first system message, after the connection itself.
-    client.onStateChange(() => {
-      if (this.port && !this.task && !this.otherSongLoaded) this.hud.setStatus(connectedStatus(client), 'ok')
-    })
-    this.playback.listenToClock(client)
-    client.onConnectionChange((connected) => (connected ? this.deviceUp(client) : this.deviceDown(client)))
-    if (client.isConnected) this.deviceUp(client)
-    else this.deviceDown(client)
-    void this.playback.poll()
-  }
-
-  private deviceUp(client: M8Client): void {
-    debugLog.event('connection', {
-      up         : true,
-      mode       : client.mode,
-      transport  : client.deviceTransport,
-      audio      : client.isAudioConnected,
-      deviceModel: client.state.deviceModel
-    })
-    this.port = clientPort(client)
-    this.hud.setStatus(connectedStatus(client), 'ok')
-    this.hud.setButton('device', {
-      hidden: client.mode !== 'standalone',
-      label : 'Disconnect M8'
-    })
-    this.updateButtons()
-    this.scheduleSync()
-    void this.playback.enableClock(client)
-  }
-
-  private deviceDown(client: M8Client): void {
-    debugLog.event('connection', {
-      up  : false,
-      mode: client.mode
-    })
-    this.port       = null
-    this.deviceView = null
-    this.world.setDeviceInstrument(null)
-    this.playback.tracker.transportReset('device-down')
-    this.world.setDevicePlaces([])
-    if (client.mode === 'standalone') {
-      this.hud.setStatus('Standalone · Connect M8 (disconnect it in yam8d first)')
-      this.hud.setButton('device', {
-        hidden: false,
-        label : 'Connect M8'
-      })
-    } else {
-      this.hud.setStatus('Not connected · yam8d has no M8')
-    }
-    this.updateButtons()
-  }
-
-  /** Standalone: the device picker needs this click. Audio comes along when the M8 offers it. */
-  private async toggleDevice(): Promise<void> {
-    const client = this.client
-    if (!client || this.task) return
-    try {
-      if (client.isConnected) {
-        await client.disconnectDevice()
-        return
-      }
-      this.hud.setStatus('Connecting to the M8…', 'busy')
-      await client.connectDevice({ audio: true })
-      if (!client.isAudioConnected)
-        this.hud.notify('Connected without sound: no M8 audio input was found, or audio permission was refused', 'warn', 7000)
-      this.deviceUp(client)
-    } catch (error) {
-      this.deviceDown(client)
-      // Closing the browser's picker is not an error worth showing.
-      if (error instanceof DOMException && error.name === 'NotFoundError') {
-        debugLog.event('connect-cancelled')
-      } else {
-        debugLog.problem('connect', messageOf(error))
-        this.hud.notify(`Could not connect to the M8: ${messageOf(error)}`, 'warn', 7000)
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Live: what the M8 shows now
-
-  private scheduleSync(): void {
-    this.syncs.poke()
-  }
-
-  /**
-   * What the M8 shows now. Every read marks and follows the place under its cursor. A settled
-   * read (the screen quiet long enough to be fully drawn) also takes the theme colours, notices
-   * another song and folds edits made on the device into the model: a half-drawn screen must
-   * never reach the saved song.
-   */
-  private async sync(kind: SyncKind): Promise<void> {
-    const client = this.client
-    if (!client?.isConnected || this.task) return
-    const settled = kind === 'settled'
-    try {
-      const [state, screen] = await Promise.all([client.fetchState(), client.getScreen()])
-      if (settled) {
-        // Background and titles: a palette change rebuilds the whole scene, so only stable colours.
-        if (this.theme.observe(observeThemeColors(state))) this.refreshPalette()
-        const other = isOtherSong(this.model, screen)
-        if (other && this.recallSong(screen)) return
-        this.noteOtherSong(client, other)
-      } else if (isOtherSong(this.model, screen)) {
-        // Only a settled read pauses for another song; until then nothing is followed on it.
-        return
-      }
-      if (this.otherSongLoaded) {
-        this.world.setDevicePlaces([])
-        this.world.setDeviceInstrument(null)
-        return
-      }
-      this.absorbEdits(screen, settled)
-      const focus  = deviceFocus(state, screen)
-      this.noteDeviceView(focus, state.viewTitle)
-      // On the Instrument or Inst. Mods view, that instrument's panels turn to their instrument face.
-      this.world.setDeviceInstrument(focus && (focus.view === 'inst' || focus.view === 'instmods') ? focus.id : null)
-      const places = focus ? this.cursor.placesOf(this.song, this.world.layout?.tracks ?? [], focus) : []
-      this.world.setDevicePlaces(places)
-      // Choosing the place can move the context to the track or song row the M8 went to.
-      const followed                     = this.cursor.preferred(places)
-      this.playback.tracker.context      = this.cursor.songContext
-      this.playback.tracker.viewChainRow = focus?.view === 'phrase' ? this.cursor.chainPosition : null
-      this.followCursor(followed)
-    } catch (error) {
-      // The next event tries again.
-      debugLog.problem('sync', messageOf(error))
-    }
-  }
-
-  /**
-   * Edits made on the M8. The item edited shows its new values at the first read that can trust
-   * the screen: a settled one, or a cursor read once the screen has shown that item for a while (a
-   * screen just switched to may still be half drawn; a half-drawn edit is read again later). The
-   * rest of the scene follows, and the song is saved, once the screen is quiet (a settled read).
-   */
-  private absorbEdits(screen: M8Screen, settled: boolean): void {
-    const seen = viewOf(screen)
-    const key  = `${seen.kind}:${seen.id ?? ''}`
-    const now  = performance.now()
-    if (key !== this.screenItem.key) this.screenItem = {
-      key,
-      since: now
-    }
-    const edit = settled || now - this.screenItem.since >= EDIT_READ_AFTER_MS ? absorbEdit(this.model, screen) : null
-    if (edit) {
-      debugLog.event('device-edit', {
-        view   : seen.kind,
-        id     : seen.id,
-        title  : seen.title,
-        settled,
-        playing: this.playback.tracker.playing
-      })
-      // An edit that moves things or changes many updates the whole scene now; the others once the screen is quiet.
-      const inPlace    = this.world.showEditInPlace(edit)
-      if (!inPlace) this.updateSong()
-      this.sceneBehind = inPlace
-      this.unsaved     = true
-      this.renderSelection(this.world.getSelection())
-    }
-    if (!settled) return
-    if (this.sceneBehind) this.updateSong()
-    this.sceneBehind = false
-    if (!this.unsaved) return
-    this.unsaved = false
-    saveModel(this.model)
-    rememberSong(this.model)
-    this.updateSummary()
-  }
-
-  /** The view the M8 is on changed: one event per view (not per cursor move). */
-  private noteDeviceView(focus: ReturnType<typeof deviceFocus>, title: string | null): void {
-    const key = focus ? `${focus.view}:${focus.id ?? ''}` : null
-    if (key === this.deviceView) return
-    this.deviceView = key
-    debugLog.event('device-view', {
-      view  : focus?.view ?? null,
-      id    : focus?.id ?? null,
-      title,
-      row   : focus?.row ?? null,
-      column: focus?.column ?? null
-    })
-  }
-
-  /** Pauses live updates while the M8 has another song loaded (null: the screen cannot tell). */
-  private noteOtherSong(client: M8Client, other: boolean | null): void {
-    if (other == null || other === this.otherSongLoaded) return
-    this.otherSongLoaded = other
-    debugLog.event('other-song', {
-      other,
-      explored: this.model.name,
-      playing : this.playback.tracker.playing
-    })
-    if (other) {
-      this.playback.tracker.transportReset('other-song')
-      this.hud.notify(
-        'The M8 has another song loaded than the one shown here: Explore song to read it. Live updates are paused meanwhile.',
-        'warn',
-        9000,
-      )
-      this.hud.setStatus('M8 connected · another song is loaded', 'busy')
-    } else {
-      this.hud.notify('The M8 is back on the explored song.')
-      this.hud.setStatus(connectedStatus(client), 'ok')
-    }
-  }
-
-  /** Auto select and Follow M8: the place under the M8 cursor. */
-  private followCursor(place: Selection | null): void {
-    if (this.autoSelect && place && !sameSelection(place, this.autoSelected)) {
-      this.autoSelected = place
-      // The HUD first, so a framing keeps clear of its selection panel at its new size.
-      if (this.following) this.renderSelection(place)
-      // Following scrolls by itself; alone, the selection unfolds the wall for wall cells and scrolls to them.
-      this.world.select(place, this.following ? {
-        silent: true,
-        reveal: false
-      } : {
-        turn   : true,
-        landTop: true
-      })
-    }
-    // While the song plays, following scrolls with the playheads; the cursor still picks the open track.
-    if (this.following && place) this.world.follow(place, { scroll: !this.playback.tracker.playing })
-  }
-
-  private toggleFollow(): void {
-    this.following            = !this.following
-    debugLog.event('follow', {
-      on       : this.following,
-      connected: this.port != null,
-      playing  : this.playback.tracker.playing
-    })
-    this.world.followPlayback = this.following
-    if (!this.following) this.world.follow(null)
-    this.updateButtons()
-    this.scheduleSync()
-  }
-
-  private toggleAutoSelect(): void {
-    if (!this.port) return
-    this.autoSelect   = !this.autoSelect
-    debugLog.event('auto-select', { on: this.autoSelect })
-    this.autoSelected = null
-    this.updateButtons()
-    this.scheduleSync()
-  }
-
-  // ---------------------------------------------------------------------------
-  // Device tasks
-
-  /** Runs one task on the device at a time; the buttons follow, and the live view catches up after. */
-  private async runDeviceTask(task: DeviceTask, run: (port: M8Port) => Promise<void>): Promise<void> {
-    const port = this.port
-    if (!port || this.task) return
-    this.task = task
-    this.updateButtons()
-    try {
-      await run(port)
-    } finally {
-      this.task = null
-      this.hud.hideProgress()
-      this.updateButtons()
-      this.scheduleSync()
-    }
-  }
-
-  private async explore(): Promise<void> {
-    if (!this.port || this.task) return
-    if (!(await this.hud.confirm('EXPLORE THE SONG', CONFIRM_EXPLORE, 'Explore'))) return
-    await this.runDeviceTask('explore', async (port) => {
-      const exploration = new AbortController()
-      this.exploration  = exploration
-      const run         = debugLog.startRun('explore', {
-        previousSong: this.model.name,
-        source      : this.model.source,
-        transport   : this.client?.deviceTransport ?? null,
-        following   : this.following
-      })
-      this.hud.setStatus('Exploring the M8…', 'busy')
-      this.hud.showProgress('Starting…', null)
-      let lastDrawAt = 0
-      try {
-        const explored       = await exploreSong(port, {
-          signal    : exploration.signal,
-          onProgress: (progress) => {
-            run.phase(progress.phase, progress.message)
-            this.hud.showProgress(progress.message, progress.total ? progress.done / progress.total : null)
-          },
-          onUpdate  : (model) => {
-            if (performance.now() - lastDrawAt < EXPLORE_REDRAW_MS) return
-            lastDrawAt = performance.now()
-            this.setModel(model, this.model.source === 'device')
-            // Keep what was read if the page goes away mid-run.
-            saveModel(model)
-          },
-          log       : logTo('[explore]', run)
-        })
-        explored.theme       = this.theme.exactTheme
-        this.otherSongLoaded = false
-        if (!exploration.signal.aborted) {
-          explored.midiSync = await this.checkMidiSync(port, run)
-          await this.returnToSongTop(port, run)
-        }
-        this.setModel(explored, false)
-        saveModel(explored)
-        if (!exploration.signal.aborted) rememberSong(explored)
-        this.recallPaused = false
-        const warnings    = explored.warnings.length
-        run.finish(exploration.signal.aborted ? 'cancelled' : 'done', {
-          name       : explored.name,
-          tempo      : explored.tempo ?? null,
-          rows       : lastSongRow(explored) + 1,
-          chains     : Object.keys(explored.chains).length,
-          phrases    : Object.keys(explored.phrases).length,
-          instruments: Object.keys(explored.instruments).length,
-          tables     : Object.keys(explored.tables).length,
-          scales     : Object.keys(explored.scales ?? {}).length,
-          grooves    : Object.keys(explored.grooves ?? {}).length,
-          midiSync   : explored.midiSync ?? null
-        }, explored.warnings)
-        this.hud.notify(warnings ? `Explored with ${warnings} warning(s)` : 'Song explored', warnings ? 'warn' : 'info', 4200, false)
-      } catch (error) {
-        if (!(error instanceof ExploreCancelled)) {
-          run.finish('failed', { error: messageOf(error) })
-          this.hud.notify(`Exploration failed: ${messageOf(error)}`, 'warn', 8000)
-        } else {
-          run.finish('cancelled')
-        }
-      } finally {
-        this.exploration = null
-        if (this.client) this.hud.setStatus(connectedStatus(this.client), 'ok')
-      }
-    })
-  }
-
-  /** The end of an exploration: the M8 on the Song view, cursor on row 00, so Play starts from the top. */
-  private async returnToSongTop(port: M8Port, run: RunHandle): Promise<void> {
-    this.hud.showProgress('Moving the cursor to the top of the song…', null)
-    run.phase('song-top', 'Moving the cursor to the top of the song')
-    try {
-      await moveToSongTop(port, { log: logTo('[explore]', run) })
-    } catch (error) {
-      run.message(`[explore] cursor not moved to the top of the song: ${messageOf(error)}`)
-      debugLog.problem('song-top', messageOf(error))
-    }
-  }
-
-  /**
-   * Reads the song's MIDI SYNC OUT and, when it does not send clock, transport and song
-   * position, offers to set it (the explorer follows playback with them). The change stays in
-   * the loaded song until the user saves it.
-   */
-  private async checkMidiSync(port: M8Port, run: RunHandle): Promise<MidiSync | null> {
-    this.hud.showProgress('Checking the MIDI sync setting…', null)
-    run.phase('midi-sync', 'Checking the MIDI sync setting')
-    let sync: MidiSync
-    try {
-      sync = await readMidiSync(port, { log: logTo('[sync]', run) })
-    } catch (error) {
-      console.info('[sync] not read:', messageOf(error))
-      run.message(`[sync] not read: ${messageOf(error)}`)
-      debugLog.problem('midi-sync', `MIDI settings not read: ${messageOf(error)}`)
-      return null
-    }
-    const plan    = planChannel(sync, this.mixer.channel)
-    const syncDue = sync.syncOut !== SYNC_OUT_TARGET
-    run.message(`[sync] read ${JSON.stringify(sync)}; channel plan ${JSON.stringify(plan)}; explorer channel ${this.mixer.channel}`)
-    if (plan.kind === 'adopt' && plan.channel !== this.mixer.channel) {
-      this.mixer.useChannel(plan.channel)
-      this.hud.notify(`Mute / solo channel set to ${plan.channel}, the M8's CC MAP CHAN`)
-    }
-    if (!syncDue && plan.kind !== 'set') return sync
-    this.hud.hideProgress()
-    const message = confirmMidiSettings(syncDue ? (sync.syncOut ?? 'unknown') : null, plan, sync, this.mixer.channel)
-    if (!(await this.hud.confirm('MIDI SETTINGS', message, 'Apply'))) {
-      run.message('[sync] changes declined')
-      return sync
-    }
-    let result = sync
-    if (syncDue) result = await this.applySyncOut(port, result, run)
-    if (plan.kind === 'set') result = await this.applyCcMapChannel(port, result, plan.channel, run)
-    return result
-  }
-
-  private async applySyncOut(port: M8Port, sync: MidiSync, run: RunHandle): Promise<MidiSync> {
-    this.hud.showProgress(`Setting SYNC OUT to ${SYNC_OUT_TARGET}…`, null)
-    try {
-      const syncOut = await setMidiSyncOut(port, { log: logTo('[sync]', run) })
-      this.hud.notify(`SYNC OUT set to ${syncOut} (save the song on the M8 to keep it)`)
-      return {
-        ...sync,
-        syncOut
-      }
-    } catch (error) {
-      run.message(`[sync] SYNC OUT not set: ${messageOf(error)}`)
-      this.hud.notify(`Could not set SYNC OUT: ${messageOf(error)}`, 'warn', 8000)
-      return sync
-    }
-  }
-
-  /** Sets the M8's CC MAP CHAN, then the explorer's mute / solo channel follows it. */
-  private async applyCcMapChannel(port: M8Port, sync: MidiSync, channel: number, run: RunHandle): Promise<MidiSync> {
-    this.hud.showProgress(`Setting CC MAP CHAN to ${channel}…`, null)
-    try {
-      const ccMapChan = await setCcMapChannel(port, channel, { log: logTo('[sync]', run) })
-      this.mixer.useChannel(channel)
-      this.hud.notify(`CC MAP CHAN set to ${ccMapChan}, mute / solo use it (save the song on the M8 to keep it)`)
-      return {
-        ...sync,
-        ccMapChan
-      }
-    } catch (error) {
-      run.message(`[sync] CC MAP CHAN not set: ${messageOf(error)}`)
-      this.hud.notify(`Could not set CC MAP CHAN: ${messageOf(error)}`, 'warn', 8000)
-      return sync
-    }
-  }
-
-  /** Key M: the same MIDI sync check as after an exploration, on demand. */
-  private checkSyncNow(): Promise<void> {
-    return this.runDeviceTask('sync', async (port) => {
-      const run  = debugLog.startRun('sync', { previous: this.model.midiSync ?? null })
-      const sync = await this.checkMidiSync(port, run)
-      run.finish(sync ? 'done' : 'failed', { midiSync: sync })
-      if (!sync) return
-      this.model.midiSync = sync
-      saveModel(this.model)
-      this.updateSummary()
-      if (sync.syncOut === SYNC_OUT_TARGET) this.hud.notify(`SYNC OUT: ${sync.syncOut}`)
-    })
-  }
-
-  private async readTheme(): Promise<void> {
-    if (!this.port || this.task) return
-    if (!(await this.hud.confirm('READ THE DEVICE THEME', CONFIRM_THEME, 'Read theme'))) return
-    await this.runDeviceTask('theme', async (port) => {
-      this.hud.showProgress('Reading the theme…', null)
-      const run = debugLog.startRun('theme')
-      try {
-        const theme = await readDeviceTheme(port, { log: logTo('[theme]', run) })
-        console.info('[theme] read', JSON.stringify(theme))
-        this.theme.exactTheme = theme
-        this.model.theme      = theme
-        saveTheme(theme)
-        saveModel(this.model)
-        this.refreshPalette()
-        run.finish('done', {
-          name: theme.name ?? null,
-          mode: theme.mode
-        })
-        this.hud.notify(`Theme read${theme.name ? `: ${theme.name}` : ''} (${theme.mode.toUpperCase()})`)
-      } catch (error) {
-        console.info('[theme] failed:', messageOf(error))
-        run.finish('failed', { error: messageOf(error) })
-        this.hud.notify(`Could not read the theme: ${messageOf(error)}`, 'warn', 8000)
-      }
-    })
-  }
-
-  private showSelection(): Promise<void> {
-    const selection = this.world.getSelection()
-    if (!selection) return Promise.resolve()
-    return this.runDeviceTask('show', async (port) => {
-      const target = deviceTargetOf(selection)
-      try {
-        await showOnDevice(port, this.model, target)
-        debugLog.event('show-on-device', {
-          target,
-          ok: true
-        })
-      } catch (error) {
-        debugLog.event('show-on-device', {
-          target,
-          ok   : false,
-          error: messageOf(error)
-        })
-        this.hud.notify(`Could not reach it on the M8: ${messageOf(error)}`, 'warn', 7000)
-      }
-    })
+    this.hud.renderInfo(selection ? this.describe(selection) : null, this.session.port != null && !this.session.task)
   }
 
   // ---------------------------------------------------------------------------
@@ -931,24 +271,25 @@ export class ExplorerApp {
 
   /** The debug log's global sections and page watchers; the rolling events are written where things happen. */
   private setUpDebugLog(): void {
+    const { session, live } = this
     registerDebugProviders(debugLog, {
-      client  : () => this.client,
-      model   : () => this.model,
+      client  : () => session.client,
+      model   : () => this.song.model,
       mixer   : () => this.mixer.info(),
       settings: () => ({
-        following      : this.following,
-        autoSelect     : this.autoSelect,
-        otherSongLoaded: this.otherSongLoaded,
-        deviceTask     : this.task,
-        deviceView     : this.deviceView,
-        deviceConnected: this.port != null,
+        following      : live.following,
+        autoSelect     : live.autoSelect,
+        otherSongLoaded: session.otherSongLoaded,
+        deviceTask     : session.task,
+        deviceView     : live.lastDeviceView,
+        deviceConnected: session.port != null,
         status         : this.hud.statusText()
       })
     })
     watchPage(debugLog, () => this.playback.tracker.playing)
     debugLog.event('start', {
-      song  : this.model.name,
-      source: this.model.source
+      song  : this.song.model.name,
+      source: this.song.model.source
     })
   }
 
@@ -961,7 +302,7 @@ export class ExplorerApp {
     const data    = await report
     const summary = `${data.events.length} events, ${data.problems.length} problems`
     if (opened) return this.hud.notify(`Debug log opened in the analyzer (${summary})`, 'info', 5000, false)
-    const file = downloadDebugReport(data, this.model.name)
+    const file = downloadDebugReport(data, this.song.model.name)
     this.hud.notify(`Debug log saved: ${file} (${summary})`, 'info', 5000, false)
   }
 
@@ -973,21 +314,15 @@ export class ExplorerApp {
         world: this.world,
         debugLog,
         get model() {
-          return app.model
+          return app.song.model
         },
         hex2,
         /** Try a theme without the device: roles as '#rrggbb'. */
         setTheme(colors: Partial<ThemeColors>) {
           app.theme.observe(colors)
-          app.refreshPalette()
+          app.song.refreshPalette()
         }
       },
     })
   }
-}
-
-/** "M8 connected · M8 Model:02", plus how, when this page holds the device itself. */
-function connectedStatus(client: M8Client): string {
-  const how = client.mode === 'standalone' ? ` · ${client.deviceTransport ?? 'direct'}${client.isAudioConnected ? ' + audio' : ''}` : ''
-  return `M8 connected · ${client.state.deviceModel ?? 'device'}${how}`
 }

@@ -36,6 +36,29 @@ the same one to the 3D view, the playback tracker, the device cursor and the cel
 An edit made on the M8 changes the model in place; the app builds a new context when the edit
 reaches the whole scene (at once for an edit that moves things, else once the screen is quiet).
 
+Each large part is a small front that hands its work to parts with one job each:
+
+- `app/app.ts` (`ExplorerApp`) only wires: the song shown (`shownSong.ts`), the connection
+  (`deviceLink.ts`), what the M8 shows now: cursor, edits, another song (`liveSync.ts`), the tasks
+  run on the M8 (`deviceTasks.ts`), the view options (`viewToggles.ts`); `deviceSession.ts` is the
+  device state they share (client, port, the task running, another song loaded).
+- `scene/world.ts` (`World`) builds the track views and runs the frame loop. The camera's
+  framings and navigations are `camera/navigator.ts`, moves by hand `camera/handCamera.ts`, where
+  headers stick and how far the view goes `camera/stickyHeaders.ts`, measures of the camera
+  `camera/viewProbe.ts`, what the view centres on `camera/viewFocus.ts`; the folds
+  `track/wallFolds.ts`, where tracks stand `track/placement.ts`, panel faces
+  `track/panelFaces.ts`; the marks `markers/highlights.ts` and `markers/playbackMarks.ts`; the
+  arrow keys `input/selectionMoves.ts`. `scene/content.ts` is what they read: the layout, the
+  track views, the wall angle.
+- `scene/track/trackView.ts` draws a track's column, wall and header; its panel cards are
+  `track/panelCards.ts`.
+- `scene/layout.ts` (`SongLayout`) places the song (bands, rows, panels, links); which panels a
+  wall shows for the rows in view, and where they stick, is `scene/panelStacks.ts`; the sizes are
+  `scene/dimensions.ts` (re-exported by `layout.ts`).
+- `m8/playback.ts` (`PlaybackTracker`) measures on the device where each track plays (screen
+  markers, MIDI clock and transport); how tracks move through the song in clock ticks (grooves,
+  chain ends, HOPs, phrase loops) is `model/music/songWalk.ts`.
+
 ## Debug log
 
 A double click on the **?** button saves the log described in [Debug log](debug-log.md).

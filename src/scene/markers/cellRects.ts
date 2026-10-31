@@ -93,7 +93,7 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
     case 'table': {
       const panel = panelOf(selection.table)
       if (!panel) return []
-      const frame          = view.faceFrame(panel, 'table')
+      const frame          = view.cards.faceFrame(panel, 'table')
       const y              = -(selection.row + 2) * ROW_H
       const [start, width] = PANEL_FIELDS[selection.column]
       const tableRow       : CellRect = {
@@ -109,13 +109,13 @@ export function cellRects(layout: SongLayout, view: TrackView, selection: Select
     case 'instParam': {
       const panel = panelOf(selection.table)
       if (!panel) return []
-      const shows  = settled ? view.settledFace(panel) : view.shownFace(panel)
-      const frame  = view.faceFrame(panel, shows)
+      const shows  = settled ? view.cards.settledFace(panel) : view.cards.shownFace(panel)
+      const frame  = view.cards.faceFrame(panel, shows)
       const header : CellRect = {
         parent: frame,
         x     : -0.45,
         y     : 0.25,
-        w     : shows === 'inst' ? FACE_HEADER_WIDTH : settled ? view.settledWidth(panel) : view.panelWidth(panel),
+        w     : shows === 'inst' ? FACE_HEADER_WIDTH : settled ? view.cards.settledWidth(panel) : view.cards.panelWidth(panel),
         h     : ROW_H * 2 + 0.35
       }
       if (selection.kind === 'instrument') return [header]
