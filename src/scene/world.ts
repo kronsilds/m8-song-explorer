@@ -33,7 +33,23 @@ import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../mode
 import { phraseMoved, trackMoved } from '../model/stepMoves'
 import type { PhraseInstance } from '../model/timeline'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
-import { type Align, fitDistance, fitsAcross, type Lens, type Margins, rayMeets, rayThrough, screenX, shiftTarget, sideShift, trackSlide } from './camera/framing'
+import {
+  type Align,
+  cutAnchor,
+  fitDistance,
+  fitsAcross,
+  holdOnScreen,
+  type Lens,
+  type Margins,
+  rayMeets,
+  rayThrough,
+  screenPoint,
+  screenX,
+  shiftTarget,
+  showAtHeight,
+  sideShift,
+  trackSlide,
+} from './camera/framing'
 import { CameraRig, placeCamera, type RigPose } from './camera/rig'
 import { type SceneButton, ScenePicker } from './input/picker'
 import { bindPointerControls, PAN_MIN_COS, type PointerTarget } from './input/pointerControls'
@@ -130,6 +146,8 @@ const HEADER_LOWEST_NDC   = 1 / 3
 const COVER_GAP_PX        = 12
 /** An automatic framing keeps clear of the HUD's panels while that leaves it this much of the width (a fraction). */
 const MIN_FREE_WIDTH      = 0.4
+/** Following playback, the playhead shows at this screen height on its track (normalized, -1 bottom to 1 top: a third of the way down), whatever the angle. */
+const PLAYHEAD_NDC_Y      = 0.35
 /** Pixels above the bottom of the view where the halo of a playhead below it sits: just over the footer line. */
 const HALO_BOTTOM_PX      = 26
 /** Ease rate per second of the headers' glide to their height (the pose eases at 9). */
@@ -1173,8 +1191,11 @@ export class World implements PointerTarget {
       this.reachPanel(selection, scroll)
       return
     }
-    const focus = this.focusOf(selection)
-    if (!focus) return
+    const found = this.focusOf(selection)
+    if (!found) return
+    // Following playback the playheads scroll the view: a cell far out of sight (even behind the
+    // camera) would show at no sensible place across, so it is framed at the view's height.
+    const focus = scroll ? found : this.atViewHeight(found)
     // Twice: a scroll moves things across a little (pitch, roll) or past a panel of the HUD, and a
     // slide brings them nearer or further, which moves them up or down the screen.
     for (let pass = 0; pass < 2; pass += 1) {
@@ -1183,54 +1204,40 @@ export class World implements PointerTarget {
     }
   }
 
+  /** A focus moved up or down to the height the view looks at, when its cell is out of sight (see cutAnchor). */
+  private atViewHeight(focus: Focus): Focus {
+    const cell   = focus.cell[0]
+    const anchor = cell && cutAnchor(this.rig.goal, this.lens(), cell)
+    if (!anchor || anchor === cell) return focus
+    const dy    = anchor.y - cell.y
+    const moved = (points: Vector3[]) => points.map((point) => point.clone().setY(point.y + dy))
+    return {
+      box : moved(focus.box),
+      core: focus.core && moved(focus.core),
+      cell: moved(focus.cell)
+    }
+  }
+
   /**
    * With dramatic angles, a navigation that moved the view is a cut: the preset (Front, Turn or
    * Side; not an angle turned by hand) takes a new take, and the camera swings around the cell, which
-   * stays where the framing put it on screen. The framing then moves only if something is cut.
+   * stays where the framing put it on screen. Following playback it swings around the playhead on
+   * the cell's track instead, which keeps its place (the view scrolls with it); a cell out of sight
+   * holds its track at the view's height (see cutAnchor). The framing then moves only if something is cut.
    */
   private cutDramatic(selection: Selection, scroll: boolean, landTop: boolean): void {
     const preset = this.preset
     if (!this.dramatic || !preset || preset === 'overview') return
-    const anchor = isPanelSelection(selection) ? (this.settledCard(selection)?.cell ?? null) : this.settledPoint(selection)
-    const shown  = anchor ? this.goalNdc(anchor) : null
+    const goal   = this.rig.goal
+    const cell   = isPanelSelection(selection) ? (this.settledCard(selection)?.cell ?? null) : this.settledPoint(selection)
+    const anchor = (this.followPlayback ? this.playheadPoint(selectionTrack(selection)) : null) ?? (cell && cutAnchor(goal, this.lens(), cell))
+    const shown  = anchor && screenPoint(goal, this.lens(), anchor)
     this.aim(preset)
-    if (anchor && shown) this.keepOnScreen(anchor, shown)
+    if (anchor && shown) {
+      holdOnScreen(goal, this.lens(), anchor, shown)
+      this.clampGoal()
+    }
     this.frameCell(selection, scroll, landTop)
-  }
-
-  /** Where a world point shows from the goal view (normalized device coordinates). */
-  private goalNdc(point: Vector3): { x: number; y: number } {
-    this.aimProbe(this.rig.goal)
-    const { x, y } = this.probePoint.copy(point).project(this.probeCamera)
-    return {
-      x,
-      y
-    }
-  }
-
-  /** Moves the goal's target along the tracks and up or down until `point` shows at `ndc` (a few Newton steps). */
-  private keepOnScreen(point: Vector3, ndc: { x: number; y: number }): void {
-    const target = this.rig.goal.target
-    const step   = 0.5
-    for (let pass = 0; pass < 4; pass += 1) {
-      const at = this.goalNdc(point)
-      const ex = ndc.x - at.x
-      const ey = ndc.y - at.y
-      if (Math.abs(ex) < 1e-4 && Math.abs(ey) < 1e-4) break
-      target.x     += step
-      const alongX = this.goalNdc(point)
-      target.x     -= step
-      target.y     += step
-      const alongY = this.goalNdc(point)
-      target.y     -= step
-      const [a, b] = [(alongX.x - at.x) / step, (alongY.x - at.x) / step]
-      const [c, d] = [(alongX.y - at.y) / step, (alongY.y - at.y) / step]
-      const det    = a * d - b * c
-      if (Math.abs(det) < 1e-9) break
-      target.x += (d * ex - b * ey) / det
-      target.y += (a * ey - c * ex) / det
-    }
-    this.clampGoal()
   }
 
   /**
@@ -2033,13 +2040,25 @@ export class World implements PointerTarget {
     return playing
   }
 
-  /** Moves the view to the playhead furthest down the song, a third of the way down the view; false when nothing plays. */
+  /**
+   * Scrolls the view for the playhead furthest down the song to show at PLAYHEAD_NDC_Y on the
+   * focused track's column, whatever the angle; false when nothing plays.
+   */
   private aimAtPlayhead(): boolean {
-    const position = this.playheads.leadPosition()
-    if (position == null || !this.layout) return false
-    const row              = Math.floor(position)
-    this.rig.goal.target.y = PlayheadView.rowY(this.layout, row, position - row) - this.visibleHalfHeight(this.rig.goal.distance) * 0.35
+    const point = this.playheadPoint(this.focusTrack())
+    if (!point) return false
+    showAtHeight(this.rig.goal, this.lens(), point, PLAYHEAD_NDC_Y)
+    // Within the view's limits at once, so a navigation does not take the clamp for a move of its own.
+    this.rig.clampGoal()
     return true
+  }
+
+  /** The playhead furthest down the song, on a track's front column; null when nothing plays. */
+  private playheadPoint(track: number): Vector3 | null {
+    const position = this.playheads.leadPosition()
+    if (position == null || !this.layout) return null
+    const row = Math.floor(position)
+    return new Vector3(this.settledX(track) + FRONT_W / 2, PlayheadView.rowY(this.layout, row, position - row), 0)
   }
 
   /** Scrolls once to where the song plays (the playhead furthest down); false when it does not play. */

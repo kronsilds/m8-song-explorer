@@ -1,8 +1,23 @@
-// The camera framing maths: sideways shifts that leave no empty room, fitting distances, rays.
+// The camera framing maths: sideways shifts that leave no empty room, fitting distances, rays,
+// the point a cut to a new angle holds on screen, and the height the followed playhead shows at.
 
 import { describe, expect, test } from 'bun:test'
 import { PerspectiveCamera, Vector3 } from 'three'
-import { fitDistance, type Lens, rayMeets, rayThrough, type Slide, screenX, shiftTarget, sideShift, trackSlide } from '../src/scene/camera/framing'
+import {
+  cutAnchor,
+  fitDistance,
+  holdOnScreen,
+  type Lens,
+  rayMeets,
+  rayThrough,
+  type Slide,
+  screenPoint,
+  screenX,
+  shiftTarget,
+  showAtHeight,
+  sideShift,
+  trackSlide,
+} from '../src/scene/camera/framing'
 import { placeCamera, type RigPose } from '../src/scene/camera/rig'
 
 const lens      : Lens = {
@@ -32,13 +47,20 @@ function placed(start: RigPose, points: Vector3[], shift: number, slide: Slide =
 /** How far the camera stands in front of the tracks' plane (z = 0). */
 const cameraZ = (view: RigPose) => view.target.z + Math.cos(view.yaw) * Math.cos(view.pitch) * view.distance
 
-/** Screen x of a point as three.js projects it, through a camera placed as the rig places it. */
-function projectedX(view: RigPose, point: Vector3): number {
+/** Where a point shows as three.js projects it, through a camera placed as the rig places it. */
+function projected(view: RigPose, point: Vector3): { x: number; y: number } {
   const camera = new PerspectiveCamera(34, lens.aspect, 0.5, 4000)
   placeCamera(view, camera)
   camera.updateMatrixWorld()
-  return point.clone().project(camera).x
+  const { x, y } = point.clone().project(camera)
+  return {
+    x,
+    y
+  }
 }
+
+/** Screen x of a point as three.js projects it. */
+const projectedX = (view: RigPose, point: Vector3): number => projected(view, point).x
 
 describe('sideShift', () => {
   test('content wider than the screen leaves no empty room on the left', () => {
@@ -172,5 +194,103 @@ describe('rays', () => {
   test('rayMeets misses a segment beside the ray', () => {
     const ray = rayThrough(pose(0, 50), lens, 0, 0)
     expect(rayMeets(ray, new Vector3(10, 0, 0), new Vector3(20, 0, 0))).toBeNull()
+  })
+})
+
+describe('cuts to a new angle', () => {
+  /** A dramatic Turn take following playback (angles and places as logged on the device). */
+  const take     = (): RigPose => ({
+    target  : new Vector3(82, -1130, -1),
+    yaw     : 0.4,
+    pitch   : 0.3,
+    distance: 95,
+    roll    : 0.044
+  })
+  const nextTake = {
+    yaw  : 0.66,
+    pitch: -0.21,
+    roll : -0.063
+  }
+
+  test('screenPoint is where three.js shows the point, the roll included', () => {
+    const view  = take()
+    const point = new Vector3(70, -1125, 0)
+    const shown = screenPoint(view, lens, point)
+    expect(shown.x).toBeCloseTo(projected(view, point).x, 9)
+    expect(shown.y).toBeCloseTo(projected(view, point).y, 9)
+  })
+
+  test('holdOnScreen keeps a point on its pixel across a new take', () => {
+    const view  = take()
+    const point = new Vector3(84, -1120, 0)
+    const shown = screenPoint(view, lens, point)
+    Object.assign(view, nextTake)
+    holdOnScreen(view, lens, point, shown)
+    expect(projected(view, point).x).toBeCloseTo(shown.x, 9)
+    expect(projected(view, point).y).toBeCloseTo(shown.y, 9)
+    expect(view.target.z).toBe(-1)
+  })
+
+  test('a cell in sight is the anchor itself', () => {
+    const cell = new Vector3(84, -1120, 0)
+    expect(cutAnchor(take(), lens, cell)).toBe(cell)
+  })
+
+  test('the M8 cell far above the playheads: its track keeps its place, the view stays near', () => {
+    // While the song plays the view follows the playheads; the M8 cursor sits 250 units higher.
+    const view   = take()
+    const cell   = new Vector3(83, -880, 0)
+    const anchor = cutAnchor(view, lens, cell)
+    expect([anchor.x, anchor.y, anchor.z]).toEqual([83, -1130, 0])
+    const shown  = screenPoint(view, lens, anchor)
+    expect(Math.abs(shown.x)).toBeLessThan(1)
+    expect(Math.abs(shown.y)).toBeLessThan(1)
+    Object.assign(view, nextTake)
+    holdOnScreen(view, lens, anchor, shown)
+    expect(projected(view, anchor).x).toBeCloseTo(shown.x, 9)
+    expect(Math.abs(view.target.x - 82)).toBeLessThan(5)
+    // Holding the far cell itself is what threw the view to the end of the song.
+    const thrown = take()
+    const far    = screenPoint(thrown, lens, cell)
+    Object.assign(thrown, nextTake)
+    holdOnScreen(thrown, lens, cell, far)
+    expect(Math.abs(thrown.target.x - 82)).toBeGreaterThan(50)
+  })
+})
+
+describe('following the playhead', () => {
+  const tilted = (): RigPose => ({
+    target  : new Vector3(82, -1130, -1),
+    yaw     : 0.66,
+    pitch   : -0.21,
+    distance: 95,
+    roll    : -0.063
+  })
+
+  test('the playhead shows at the asked height whatever the angle', () => {
+    const view     = tilted()
+    const playhead = new Vector3(84, -1100, 0)
+    showAtHeight(view, lens, playhead, 0.35)
+    expect(projected(view, playhead).y).toBeCloseTo(0.35, 9)
+    expect([view.target.x, view.target.z]).toEqual([82, -1])
+  })
+
+  test('as the song plays the view scrolls with the playhead, which keeps its place', () => {
+    const view     = tilted()
+    const playhead = new Vector3(84, -1100, 0)
+    showAtHeight(view, lens, playhead, 0.35)
+    const shown  = projected(view, playhead)
+    const before = view.target.y
+    playhead.y   -= 12.5
+    showAtHeight(view, lens, playhead, 0.35)
+    expect(view.target.y).toBeCloseTo(before - 12.5, 9)
+    expect(projected(view, playhead).x).toBeCloseTo(shown.x, 9)
+  })
+
+  test('facing the front straight, a third of the view above the target as before', () => {
+    const view     = pose(40, 95)
+    const playhead = new Vector3(42, -500, 0)
+    showAtHeight(view, lens, playhead, 0.35)
+    expect(view.target.y).toBeCloseTo(-500 - 95 * lens.tanHalfFov * 0.35, 9)
   })
 })

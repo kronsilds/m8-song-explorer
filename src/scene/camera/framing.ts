@@ -2,6 +2,8 @@
 // back to stand, for some world points to fill the screen without empty room beside them.
 // Only the horizontal is framed: rows scroll on their own. A slide goes along the camera's right
 // (everything keeps its depth) or along the tracks (the camera keeps its distance from them).
+// A cut to a new camera angle holds one point where it showed (cutAnchor, holdOnScreen); the
+// playhead the view follows shows at one screen height whatever the angle (showAtHeight).
 
 import { Vector3 } from 'three'
 import type { RigPose } from './rig'
@@ -195,6 +197,65 @@ export function screenX(pose: RigPose, lens: Lens, point: Vector3): number {
   const relative        = new Vector3().subVectors(point, pose.target)
   const depth           = Math.max(1e-3, pose.distance - relative.dot(back))
   return relative.dot(right) / (depth * lens.tanHalfFov * lens.aspect)
+}
+
+/** Where a world point shows on screen, in normalized device coordinates (x -1 left .. 1 right, y -1 bottom .. 1 top), the roll included. */
+export function screenPoint(pose: RigPose, lens: Lens, point: Vector3): { x: number; y: number } {
+  const { right, back } = cameraAxes(pose.yaw, pose.pitch, pose.roll)
+  const up              = new Vector3().crossVectors(back, right)
+  const relative        = new Vector3().subVectors(point, pose.target)
+  const depth           = Math.max(1e-3, pose.distance - relative.dot(back))
+  return {
+    x: relative.dot(right) / (depth * lens.tanHalfFov * lens.aspect),
+    y: relative.dot(up) / (depth * lens.tanHalfFov)
+  }
+}
+
+/**
+ * Moves a pose's target along x and y (along the tracks and up or down: the angles, the distance
+ * and the depth stay) until `point` shows at `ndc`. Exact: showing at a place of the screen is
+ * two linear conditions on the target.
+ */
+export function holdOnScreen(pose: RigPose, lens: Lens, point: Vector3, ndc: { x: number; y: number }): void {
+  const { right, back } = cameraAxes(pose.yaw, pose.pitch, pose.roll)
+  const up              = new Vector3().crossVectors(back, right)
+  const kx              = ndc.x * lens.tanHalfFov * lens.aspect
+  const ky              = ndc.y * lens.tanHalfFov
+  // Offset from the target r: r·right = kx (distance - r·back), r·up = ky (distance - r·back); moving the target by s takes s off r.
+  const across          = right.addScaledVector(back, kx)
+  const upward          = up.addScaledVector(back, ky)
+  const relative        = new Vector3().subVectors(point, pose.target)
+  const b1              = relative.dot(across) - kx * pose.distance
+  const b2              = relative.dot(upward) - ky * pose.distance
+  const det             = across.x * upward.y - across.y * upward.x
+  if (Math.abs(det) < 1e-9) return
+  pose.target.x += (b1 * upward.y - across.y * b2) / det
+  pose.target.y += (across.x * b2 - b1 * upward.x) / det
+}
+
+/**
+ * Moves a pose's target up or down until `point` shows at the screen height `ndcY` (-1 bottom ..
+ * 1 top), whatever the angles. Exact: one linear condition on the target's height.
+ */
+export function showAtHeight(pose: RigPose, lens: Lens, point: Vector3, ndcY: number): void {
+  const { right, back } = cameraAxes(pose.yaw, pose.pitch, pose.roll)
+  const ky              = ndcY * lens.tanHalfFov
+  // r·up = ky (distance - r·back) for the offset r from the target; raising the target by s takes s off r.y.
+  const upward          = new Vector3().crossVectors(back, right).addScaledVector(back, ky)
+  if (Math.abs(upward.y) < 1e-9) return
+  const relative = new Vector3().subVectors(point, pose.target)
+  pose.target.y  += (relative.dot(upward) - ky * pose.distance) / upward.y
+}
+
+/**
+ * The point a cut to a new camera angle holds where it shows: the cell when it is in sight; else
+ * (while the song plays the playheads scroll the view, not the cursor) the cell's place across
+ * the tracks at the height the view looks at, so its track keeps its place on screen.
+ */
+export function cutAnchor(pose: RigPose, lens: Lens, cell: Vector3): Vector3 {
+  const { x, y } = screenPoint(pose, lens, cell)
+  if (Math.abs(x) <= 1 && Math.abs(y) <= 1) return cell
+  return cell.clone().setY(pose.target.y)
 }
 
 /**

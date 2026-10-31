@@ -83,7 +83,9 @@ instruments → tables) and shows it as a 3D tracker:
   on and a preset chosen (Front, Turn, Side), a navigation that moved the view also takes a new
   dramatic angle, the camera swinging around the cell, which stays where it was put on screen
   (a panel cell nearly: panels stick under the headers). The same rules apply to Follow M8 and
-  Auto select.
+  Auto select. While the song plays with Follow M8, the playheads scroll the view, not the cursor:
+  a move to another track only pans to it, the playhead keeping its place on screen, and a new
+  dramatic angle swings around that playhead.
 - **Camera**: the angle presets (Turn, Side, Front) only set the angle; the walls open by the
   buttons. Turn and Side centre the focused track's column and what it has unfolded and stand
   back as far as they need, within readable distances. Front centres on all the tracks and
@@ -312,7 +314,8 @@ row is the phrase the track already walks changes nothing (HOPs can keep a track
 without its first step coming round again). A step played again is jumped to at once, not glided
 back to, and counts as a new step: its note lights its instrument again and starts its table.
 
-The view follows the playhead furthest down the song, a third of the way down the view. A track
+The view follows the playhead furthest down the song, a third of the way down the view on the
+followed track's column, at any camera angle (dramatic ones included). A track
 that loops a chain of its own (an empty cell under it) while the others go on stays behind, and
 does not hold the view back. A track whose playhead is out of sight glows in its column, beating
 with it: under its header when it plays above the view, at the bottom when it plays below. The
