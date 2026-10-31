@@ -25,12 +25,14 @@
 // mark (the song plays on), the mark moving, or a reading elsewhere ends the loop.
 
 import { type M8Screen, readPlayPositions } from '@yam8d/m8-sdk'
+import type { TrackNote, TrackPlayhead, ViewKind } from '../model/live'
 import { CLOCK_PPQ, chainStepTicks, DEFAULT_TICKS, occurrenceKey, summarizeTicks, type TicksSummary } from '../model/music/groove'
 import { noteNumber } from '../model/music/pitch'
 import { type HopCounts, hopsKey, NO_HOPS, type Place, PlayPath, type Run } from '../model/music/playPath'
 import { ROWS_PER_PHRASE, type SongModel, TRACKS } from '../model/song'
+import type { SongContext } from '../model/songContext'
 import type { Timeline } from '../model/timeline'
-import { readChainMarks, readTrackNotes, type ViewKind, viewChainPosition, viewOf } from './screen/screenReader'
+import { readChainMarks, readTrackNotes, viewChainPosition, viewOf } from './screen/screenReader'
 
 /** How late the screen shows a step (M8 redraw, serial, host, messages), roughly. */
 const SCREEN_LATENCY_MS  = 20
@@ -89,13 +91,6 @@ interface Reached {
   serial: number
 }
 
-/** The note a track's panel shows (right of most views), and when it last changed (ms). */
-export interface TrackNote {
-  /** Semitones (C-0 = 0), null for '---'. */
-  pitch    : number | null
-  changedAt: number
-}
-
 /** Step lengths of one chain occurrence in clock ticks, and where each step starts (one more entry: the total). */
 interface ChainTicks {
   steps : number[]
@@ -119,24 +114,6 @@ interface MidiClock {
   /** When the last clock event came, in ms. */
   at       : number
   msPerTick: number
-}
-
-export interface TrackPlayhead {
-  /** Timeline row being played, null when the track has nothing at this song row. */
-  row      : number | null
-  songRow  : number
-  /** True once the step is known (to within half a step), false while it is guessed. */
-  exact    : boolean
-  /** How far into its step the track is, 0 to 1 (the step lasts what its groove gives it). */
-  phase    : number
-  /** Step of the chain being played (a beat every 4). */
-  step     : number
-  /** Steps started since playing began: it changes as each step starts, a step a HOP or a loop plays again too. */
-  serial   : number
-  /** When the step started, in ms (performance.now). */
-  startedAt: number
-  /** The note the M8's track panel shows, the evidence of what it really played (chance, random FX). */
-  note     : TrackNote | null
 }
 
 /** Why the song counts as stopped. */
@@ -258,19 +235,24 @@ export class PlaybackTracker {
   /** The read before this one, when it was a Phrase view without a marker: its phrase and when. */
   private lastUnmarkedPhrase         : { id: number; at: number } | null = null
 
-  constructor(
-    private model: SongModel,
-    private timeline: Timeline,
-  ) {
-    this.path = new PlayPath(model)
+  constructor(private song: SongContext) {
+    this.path = new PlayPath(song.model)
     this.buildTicks()
   }
 
-  setSong(model: SongModel, timeline: Timeline): void {
-    this.model    = model
-    this.timeline = timeline
-    this.path     = new PlayPath(model)
+  /** Another song, or the same one after edits (a new context): new step lengths and hops. */
+  setSong(song: SongContext): void {
+    this.song = song
+    this.path = new PlayPath(song.model)
     this.buildTicks()
+  }
+
+  private get model(): SongModel {
+    return this.song.model
+  }
+
+  private get timeline(): Timeline {
+    return this.song.timeline
   }
 
   private buildTicks(): void {

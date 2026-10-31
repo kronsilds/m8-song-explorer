@@ -1,9 +1,9 @@
 import { expect, test } from 'bun:test'
 import { Group, Mesh, type MeshBasicMaterial } from 'three'
-import type { TrackPlayhead } from '../src/m8/playback'
+import type { TrackPlayhead } from '../src/model/live'
+import type { Palette } from '../src/model/palette'
 import { ROW_H, type SongLayout } from '../src/scene/layout'
 import { PlayheadView } from '../src/scene/markers/playheadView'
-import type { Palette } from '../src/scene/palette'
 import type { TrackView } from '../src/scene/track/trackView'
 
 /** Rows hang down from y 0, one ROW_H each; no notes to flash. */
@@ -18,12 +18,16 @@ const views   = Array.from({ length: 8 }, () => ({
   sideAlpha : 0,
   frontAlpha: 1
 })) as unknown as TrackView[]
+/** The same step serial every frame: no step starts, so no note flashes. */
 const head    = (row: number): TrackPlayhead => ({
   row,
-  songRow: 0,
-  exact  : true,
-  phase  : 0,
-  step   : row
+  songRow  : 0,
+  exact    : true,
+  phase    : 0,
+  step     : row,
+  serial   : 0,
+  startedAt: 0,
+  note     : null
 })
 /** The halo of a track: the mesh on its front column drawn with vertex alphas. */
 const haloOf  = (track: number) => views[track].front.children.find((child) => child instanceof Mesh && (child.material as MeshBasicMaterial).vertexColors) as Mesh | undefined

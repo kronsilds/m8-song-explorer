@@ -209,7 +209,7 @@ export class TablePlayback {
     private readonly model: SongModel,
     private readonly timeline: Timeline,
     /** The instrument each step plays, per instance key (see effectiveInstruments). */
-    private readonly effective: Map<string, (number | null)[]>,
+    private readonly effective: ReadonlyMap<string, readonly (number | null)[]>,
   ) {
     this.ticks = chainStepTicks(model, timeline)
   }

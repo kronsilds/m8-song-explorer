@@ -272,7 +272,7 @@ export interface TableUse {
 }
 
 /** The steps that start table `table`, along the timeline (see stepTables for the rules). */
-export function tableUses(model: SongModel, timeline: Timeline, effective: Map<string, (number | null)[]>, table: number): TableUse[] {
+export function tableUses(model: SongModel, timeline: Timeline, effective: ReadonlyMap<string, readonly (number | null)[]>, table: number): TableUse[] {
   const uses: TableUse[] = []
   for (const instance of timeline.instances) {
     model.phrases[instance.phrase]?.steps.forEach((step, s) => {

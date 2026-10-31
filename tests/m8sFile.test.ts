@@ -40,9 +40,9 @@ test('WAFFELISER (fw 6.6.2): the same layout', () => {
 test('the file picker path reads a .m8s and refuses a cut-short one', async () => {
   const bytes = sample('WAFFELISER')
   if (!bytes) return
-  const ok = await readSongFile(new File([bytes], 'WAFFELISER.m8s'))
+  const ok = await readSongFile(new File([new Uint8Array(bytes)], 'WAFFELISER.m8s'))
   expect(ok.kind === 'song' && ok.model.source).toBe('file')
-  const cut = await readSongFile(new File([bytes.subarray(0, 4000)], 'cut.m8s'))
+  const cut = await readSongFile(new File([new Uint8Array(bytes.subarray(0, 4000))], 'cut.m8s'))
   expect(cut.kind).toBe('invalid')
 })
 

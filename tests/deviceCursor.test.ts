@@ -6,12 +6,13 @@ import { readChainMarks, viewChainPosition, viewOf } from '../src/m8/screen/scre
 import { phraseScreen } from '../src/model/screens'
 import type { Selection } from '../src/model/selection'
 import { emptyModel, emptyStep, ROWS_PER_PHRASE } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { SongLayout } from '../src/scene/layout'
 import { FakeM8 } from './fakeM8'
 
 // Track 1 plays chain 00 on song rows 0 and 1: phrases 05, 06, 05, 05 (05 three times), then
 // chain 02 on row 2: phrase 06. Track 2 plays chain 01 on song row 0: phrases 06, 05.
-const song   = emptyModel('repeats')
+const song   = emptyModel('demo')
 const phrase = (id: number) => ({
   id,
   steps: Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
@@ -102,8 +103,8 @@ describe('the chain position of a Phrase view', () => {
 })
 
 describe('the M8 cursor on a phrase played more than once in its chain', () => {
-  const layout = new SongLayout(song)
-  const placed = (cursor: DeviceCursor, at: DeviceFocus) => cursor.preferred(cursor.placesOf(layout, at))
+  const layout = new SongLayout(buildSongContext(song))
+  const placed = (cursor: DeviceCursor, at: DeviceFocus) => cursor.preferred(cursor.placesOf(layout.song, layout.tracks, at))
 
   test('before any Song view, a chain in one song cell gives the song row and track', () => {
     const cursor = new DeviceCursor()
@@ -120,7 +121,7 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
 
   test('before any Song view, stays near the place followed last rather than jumping to the first use', () => {
     // Track 1 plays chain 0D (phrase 03) on song rows 1 and 2; track 2 plays phrase 02 on song rows 0 and 1.
-    const other   = emptyModel('guess')
+    const other   = emptyModel('demo')
     other.phrases = {
       2: phrase(2),
       3: phrase(3)
@@ -135,8 +136,8 @@ describe('the M8 cursor on a phrase played more than once in its chain', () => {
       [0x0d, 0x0c, null, null, null, null, null, null],
       [0x0d, null, null, null, null, null, null, null],
     ]
-    const layout  = new SongLayout(other)
-    const at      = (cursor: DeviceCursor, where: DeviceFocus) => cursor.preferred(cursor.placesOf(layout, where))
+    const layout  = new SongLayout(buildSongContext(other))
+    const at      = (cursor: DeviceCursor, where: DeviceFocus) => cursor.preferred(cursor.placesOf(layout.song, layout.tracks, where))
     // Alone, phrase 02 is shown at its first use, song row 0.
     expect(at(new DeviceCursor(), focus('phrase', 2, 0, 'note', [0]))).toMatchObject({ instance: { songRow: 0 } })
     // Chain 0D is on two song rows: no context, the first (row 1) is shown and kept as a guess.

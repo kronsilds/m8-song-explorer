@@ -37,11 +37,11 @@ export type ItemView = 'inst' | 'table' | 'scale' | 'groove'
 
 export interface DriverOptions {
   /** Delay between two screen reads while waiting for a view to settle. */
-  pollMs?         : number
+  pollMs?         : number | undefined
   /** How long a view may take to appear after a key. */
-  settleTimeoutMs?: number
-  signal?         : AbortSignal
-  log?            : (message: string) => void
+  settleTimeoutMs?: number | undefined
+  signal?         : AbortSignal | undefined
+  log?            : ((message: string) => void) | undefined
 }
 
 const DEFAULT_POLL_MS           = 30
@@ -81,7 +81,7 @@ export class M8Driver {
   readonly port                   : M8Port
   private readonly pollMs         : number
   private readonly settleTimeoutMs: number
-  private readonly signal?        : AbortSignal
+  private readonly signal         : AbortSignal | undefined
   private readonly log            : (message: string) => void
   /** Option+Up/Down steps 16 items on Instrument and Table; turned off if the device disagrees. */
   private readonly bigStepsWork   : Record<'inst' | 'table', boolean> = {

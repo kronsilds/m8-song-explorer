@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { describeSelection } from '../src/m8/semantics'
 import { demoSong } from '../src/model/demo'
+import { buildSongContext } from '../src/model/songContext'
 import { buildTimeline } from '../src/model/timeline'
 
 const model      = demoSong()
@@ -14,7 +15,7 @@ const text       = (d: ReturnType<typeof describeSelection>) => d.parts.map((p) 
 
 test('an ARP value is read as intervals by the SDK', () => {
   const arp = instanceOf((p) => model.phrases[p].steps[0].fx[0].cmd === 'ARP')
-  const d   = describeSelection(model, {
+  const d   = describeSelection(buildSongContext(model), {
     kind    : 'step',
     instance: arp,
     step    : 0,
@@ -26,7 +27,7 @@ test('an ARP value is read as intervals by the SDK', () => {
 
 test('an empty cell under a REP knows the lane is still running', () => {
   const riser = instanceOf((p) => model.phrases[p].steps[1].fx[0].cmd === 'REP')
-  const d     = describeSelection(model, {
+  const d     = describeSelection(buildSongContext(model), {
     kind    : 'step',
     instance: riser,
     step    : 4,
@@ -36,7 +37,7 @@ test('an empty cell under a REP knows the lane is still running', () => {
 })
 
 test('table cells and instrument headers', () => {
-  const d = describeSelection(model, {
+  const d = describeSelection(buildSongContext(model), {
     kind      : 'table',
     table     : 0,
     row       : 1,
@@ -46,7 +47,7 @@ test('table cells and instrument headers', () => {
   })
   expect(d.title).toBe('FX1 · VOL F8')
   expect(d.parts.length).toBeGreaterThan(0)
-  const h = describeSelection(model, {
+  const h = describeSelection(buildSongContext(model), {
     kind      : 'instrument',
     instrument: 3,
     table     : 3,

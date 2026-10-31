@@ -15,10 +15,11 @@ import { readDeviceTheme } from '../m8/tasks/themeReader'
 import { debugLog, type RunHandle } from '../model/debugLog'
 import { demoSong } from '../model/demo'
 import { hex2 } from '../model/hex'
+import type { ThemeColors } from '../model/palette'
 import { type Selection, sameSelection } from '../model/selection'
 import { lastSongRow, type MidiSync, type SongModel, usedItems } from '../model/song'
+import { buildSongContext, type SongContext } from '../model/songContext'
 import { loadModel, loadTheme, rememberedSongs, rememberSong, saveModel, saveTheme } from '../model/storage'
-import type { ThemeColors } from '../scene/palette'
 import { preloadText } from '../scene/text'
 import { World } from '../scene/world'
 import { downloadDebugReport, openInAnalyzer } from '../ui/debugFile'
@@ -85,7 +86,8 @@ export class ExplorerApp {
   private readonly playback : PlaybackFeed
   private readonly mixer    : TrackMixer
   private readonly cursor   = new DeviceCursor()
-  private model             : SongModel
+  /** The song shown, and what is worked out from it: a new one for each version of the model (see setModel, updateSong). */
+  private song              : SongContext
 
   private client          : M8Client | null = null
   private port            : M8Port | null = null
@@ -130,7 +132,7 @@ export class ExplorerApp {
     this.hud                = hud
     this.world              = world
     this.theme              = theme
-    this.model              = model
+    this.song               = buildSongContext(model)
     this.hud.onInfoPinned   = (pinned) => preferences.infoPinned.set(pinned)
     this.hud.onDebugExport  = () => void this.exportDebugLog()
     this.hud.onTopBarResize = (bottom) => this.world.setTopInset(bottom)
@@ -143,10 +145,10 @@ export class ExplorerApp {
     this.world.onFolds      = () => this.showFolds()
     this.world.setTopInset(this.hud.topBarBottom())
     this.world.setCoveredAreas(this.hud.coveredAreas())
-    this.world.setModel(this.model)
+    this.world.setSong(this.song)
     this.playback          = new PlaybackFeed(
       this.world,
-      () => this.model,
+      () => this.song,
       () => (this.client?.isConnected && !this.task && !this.otherSongLoaded ? this.client : null),
       () => this.otherSongLoaded,
     )
@@ -261,11 +263,22 @@ export class ExplorerApp {
   // ---------------------------------------------------------------------------
   // Song and view state
 
+  private get model(): SongModel {
+    return this.song.model
+  }
+
+  /** Shows another song model (or the same one read again). */
   private setModel(model: SongModel, keepView: boolean): void {
-    this.model = model
-    this.world.setModel(model, keepView)
+    this.song = buildSongContext(model)
+    this.world.setSong(this.song, keepView)
     this.refreshPalette()
     this.updateSummary()
+  }
+
+  /** The model changed in place (edits made on the M8): what is worked out from it is worked out again, and the scene follows. */
+  private updateSong(): void {
+    this.song = buildSongContext(this.model)
+    this.world.updateSong(this.song)
   }
 
   private refreshPalette(): void {
@@ -389,8 +402,7 @@ export class ExplorerApp {
   }
 
   private describe(selection: Selection) {
-    const instrument = selection.kind === 'step' ? (this.world.layout?.effective.get(selection.instance.key)?.[selection.step] ?? null) : null
-    return describeSelection(this.model, selection, instrument, this.world.layout ?? undefined)
+    return describeSelection(this.song, selection)
   }
 
   private renderSelection(selection: Selection | null): void {
@@ -547,10 +559,9 @@ export class ExplorerApp {
       this.absorbEdits(screen, settled)
       const focus  = deviceFocus(state, screen)
       this.noteDeviceView(focus, state.viewTitle)
-      const layout = this.world.layout
       // On the Instrument or Inst. Mods view, that instrument's panels turn to their instrument face.
       this.world.setDeviceInstrument(focus && (focus.view === 'inst' || focus.view === 'instmods') ? focus.id : null)
-      const places = focus && layout ? this.cursor.placesOf(layout, focus) : []
+      const places = focus ? this.cursor.placesOf(this.song, this.world.layout?.tracks ?? [], focus) : []
       this.world.setDevicePlaces(places)
       // Choosing the place can move the context to the track or song row the M8 went to.
       const followed                     = this.cursor.preferred(places)
@@ -586,12 +597,15 @@ export class ExplorerApp {
         settled,
         playing: this.playback.tracker.playing
       })
-      this.sceneBehind = !this.world.showEdit(edit)
+      // An edit that moves things or changes many updates the whole scene now; the others once the screen is quiet.
+      const inPlace    = this.world.showEditInPlace(edit)
+      if (!inPlace) this.updateSong()
+      this.sceneBehind = inPlace
       this.unsaved     = true
       this.renderSelection(this.world.getSelection())
     }
     if (!settled) return
-    if (this.sceneBehind) this.world.updateModel(this.model)
+    if (this.sceneBehind) this.updateSong()
     this.sceneBehind = false
     if (!this.unsaved) return
     this.unsaved = false

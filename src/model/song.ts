@@ -93,8 +93,9 @@ export interface Groove {
 
 /** Colours the device used for each column of a view, learnt from the screen while exploring. */
 export interface ObservedColumnColors {
-  filled?: string
-  empty? : string
+  /** Undefined when no cell of that kind was seen. */
+  filled?: string | undefined
+  empty? : string | undefined
 }
 
 /** Observed colours per view kind, then per field key. */

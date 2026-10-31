@@ -4,6 +4,7 @@ import { type PlaybackEvent, PlaybackTracker } from '../src/m8/playback'
 import { demoSong } from '../src/model/demo'
 import { chainScreen, FIRST_CONTENT_ROW, phraseScreen, songScreen } from '../src/model/screens'
 import { chainLength, emptyModel, emptyStep, ROWS_PER_PHRASE } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { buildTimeline } from '../src/model/timeline'
 
 const model    = demoSong()
@@ -46,7 +47,7 @@ const bandRow      = (songRow: number) => timeline.bands.find((b) => b.songRow =
 function simulate(options: { clockMsPerTick?: number; pollMs?: number; latencyMs?: number; bpm?: number }) {
   const { pollMs = 60, latencyMs = 25, bpm = 96 } = options
   const stepMs                                    = 60000 / bpm / 4
-  const tracker                                   = new PlaybackTracker(model, timeline)
+  const tracker                                   = new PlaybackTracker(buildSongContext(model))
   const kick                                      = model.song[2][0] as number
   const phraseId                                  = model.chains[kick].rows[0].phrase as number
   tracker.context                                 = {
@@ -93,7 +94,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('song markers place each track at its song row, then it moves on at the tempo', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     expect(tracker.observe(songWithMarkers([2, 2, 2, 2, 2, null, null, null]), 1000)).toBe(true)
     expect(tracker.bpm).toBe(120)
     const at = tracker.playheads(1000 + 10 * STEP_MS + 1)
@@ -106,7 +107,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('a track entering the next song row is exact from then on', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     tracker.observe(songWithMarkers([2]), 0)
     const kick   = model.song[2][0] as number
     const length = chainLength(model.chains[kick]) * ROWS_PER_PHRASE
@@ -118,7 +119,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('the prediction walks past a chain end without the screen', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     tracker.observe(songWithMarkers([2]), 0)
     const kick   = model.song[2][0] as number
     const length = chainLength(model.chains[kick]) * ROWS_PER_PHRASE
@@ -131,7 +132,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('a phrase view marker sets the exact step of the track playing that phrase', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     tracker.observe(songWithMarkers([2]), 0)
     const kick     = model.song[2][0] as number
     const phraseId = model.chains[kick].rows[0].phrase as number
@@ -151,7 +152,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('a phrase on screen before any song view anchors the track the M8 came from', () => {
-    const tracker   = new PlaybackTracker(model, timeline)
+    const tracker   = new PlaybackTracker(buildSongContext(model))
     const bass      = model.song[2][3] as number
     const phraseId  = model.chains[bass].rows[1].phrase as number
     tracker.context = {
@@ -173,7 +174,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('stops once the markers are gone', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     tracker.observe(songWithMarkers([2]), 0)
     tracker.observe(songWithMarkers([]), 500)
     expect(tracker.playing).toBe(true)
@@ -192,7 +193,7 @@ describe('PlaybackTracker', () => {
   }
 
   test('leaving the Song view keeps every track following: no marker on a chain nobody plays', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     // Without MIDI transport: markers on the Song view place the tracks...
     tracker.observe(songWithMarkers([2, 2, 2, 2, 2, null, null, null]), 0)
     const before = tracker.playheads(10 * STEP_MS).map((h) => h?.row)
@@ -210,7 +211,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('a phrase that should be playing but shows no marker means stopped', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     tracker.observe(songWithMarkers([2]), 0)
     const kick     = model.song[2][0] as number
     const phraseId = model.chains[kick].rows[0].phrase as number
@@ -230,7 +231,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('with MIDI transport the Stop message ends the song, not missing markers', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     const ms      = (tick: number) => tick * 20
     tracker.clockTick(600, ms(600), 20)
     expect(tracker.transportStart(bandRow(3), ms(600))).toBe(true)
@@ -253,7 +254,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('with MIDI transport the Song view without markers (playing rows off screen) keeps playing', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     const ms      = (tick: number) => tick * 20
     tracker.clockTick(600, ms(600), 20)
     expect(tracker.transportStart(bandRow(3), ms(600))).toBe(true)
@@ -266,7 +267,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('a clock running before playback is only a time base', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     for (let tick = 6; tick <= 600; tick += 6) tracker.clockTick(tick, tick * 20, 20)
     expect(tracker.playheads(12000).every((h) => h == null)).toBe(true)
     tracker.observe(songWithMarkers([2]), 12000)
@@ -277,7 +278,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('Song Position + Continue place every track at once, on the clock', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     const ms      = (tick: number) => tick * 20
     tracker.clockTick(600, ms(600), 20)
     // Play on song row 03: the M8 sends SPP = the timeline row where that song row starts.
@@ -299,7 +300,7 @@ describe('PlaybackTracker', () => {
   })
 
   test('MIDI clock drives the steps once it arrives', () => {
-    const tracker = new PlaybackTracker(model, timeline)
+    const tracker = new PlaybackTracker(buildSongContext(model))
     tracker.clockTick(0, 0, 20)
     tracker.observe(songWithMarkers([2]), 0)
     tracker.clockTick(6 * 5, 5000, 20) // 5 steps of clock, whatever the wall time says
@@ -321,7 +322,7 @@ describe('each track loops its own run of chains', () => {
   const bandOf = (songRow: number) => looped.bands.find((b) => b.songRow === songRow) as (typeof looped.bands)[number]
   const ms     = (tick: number) => tick * 20
   const place  = (cursorRow: number | null, spp: number) => {
-    const tracker   = new PlaybackTracker(two, looped)
+    const tracker   = new PlaybackTracker(buildSongContext(two))
     tracker.context = cursorRow == null ? null : {
       songRow: cursorRow,
       track  : 0
@@ -362,7 +363,7 @@ describe('each track loops its own run of chains', () => {
   })
 
   test('a track at the end of its run goes back to the start of the run', () => {
-    const tracker = new PlaybackTracker(two, looped)
+    const tracker = new PlaybackTracker(buildSongContext(two))
     tracker.clockTick(0, 0, 20)
     tracker.observe(songWithMarkers([null, 5]), 0)
     // The last row of the run plays through, then loops to row 4.
@@ -377,8 +378,7 @@ describe('each track loops its own run of chains', () => {
       ...source,
       song: [source.song[2], blank, source.song[3], blank, blank]
     }
-    const soloLine  = buildTimeline(solo)
-    const tracker   = new PlaybackTracker(solo, soloLine)
+    const tracker   = new PlaybackTracker(buildSongContext(solo))
     tracker.context = {
       songRow: 4,
       track  : 0
@@ -397,7 +397,7 @@ describe('each track loops its own run of chains', () => {
 
 describe('a MIDI clock that stops', () => {
   test('is dropped after a silence: the playheads go on from where they were, at the tempo the screen shows', () => {
-    const tracker   = new PlaybackTracker(model, timeline)
+    const tracker   = new PlaybackTracker(buildSongContext(model))
     const events    : PlaybackEvent[] = []
     tracker.onEvent = (event) => events.push(event)
     const ms        = (tick: number) => tick * 20
@@ -423,7 +423,7 @@ describe('a MIDI clock that stops', () => {
   })
 
   test('a clock that keeps coming is never dropped, also while the song is stopped', () => {
-    const tracker   = new PlaybackTracker(model, timeline)
+    const tracker   = new PlaybackTracker(buildSongContext(model))
     const events    : PlaybackEvent[] = []
     tracker.onEvent = (event) => events.push(event)
     for (let tick = 6; tick <= 600; tick += 6) {
@@ -479,7 +479,7 @@ describe('HOP in a phrase', () => {
   const ms      = (tick: number) => tick * 20
   // Step 0 starts on tick 601 (the first clock after Continue), six ticks a step.
   const started = () => {
-    const tracker   = new PlaybackTracker(song, hopLine)
+    const tracker   = new PlaybackTracker(buildSongContext(song))
     tracker.context = {
       songRow: 0,
       track  : 0
@@ -582,11 +582,11 @@ describe('counted HOPs (device, GEN_INTERMIS)', () => {
     3: chain(3, 3)
   }
   song.song    = [[0, 1, 3, null, null, null, null, null], [null, 2, null, null, null, null, null, null]]
-  const line   = buildTimeline(song)
+  const line   = buildSongContext(song)
   const ms     = (tick: number) => tick * 20
   // Step 0 starts on tick 601 (the first clock after Continue), six ticks a step.
   const start  = () => {
-    const tracker   = new PlaybackTracker(song, line)
+    const tracker   = new PlaybackTracker(line)
     tracker.context = {
       songRow: 0,
       track  : 0
@@ -680,7 +680,7 @@ describe('HOPs on a test song (device, 2026-10-29)', () => {
   // Track 1: chain 00 = phrases 00 and 01 on song row 0, chain 01 (phrase 02) on row 1. Phrase 00
   // has HOP 14 on step C, phrase 01 HOP 04 on step 8. The M8's Chain 00 view showed row 0 for 3 s,
   // row 1 for 1 s, then no marker for 1.5 s (chain 01 from row 4), then row 0 again.
-  const song    = emptyModel('test')
+  const song    = emptyModel('demo')
   const withHop = (id: number, step: number, value: number) => {
     const steps = Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
     if (step >= 0) steps[step].fx[0] = {
@@ -709,10 +709,10 @@ describe('HOPs on a test song (device, 2026-10-29)', () => {
     1: chainOf(1, [2])
   }
   song.song     = [[0, ...Array(7).fill(null)], [1, ...Array(7).fill(null)]]
-  const line    = buildTimeline(song)
+  const line    = buildSongContext(song)
   const ms      = (tick: number) => tick * 20
   const placeAt = (tick: number) => {
-    const tracker   = new PlaybackTracker(song, line)
+    const tracker   = new PlaybackTracker(line)
     tracker.context = {
       songRow: 0,
       track  : 0
@@ -737,7 +737,7 @@ describe('HOPs on a test song (device, 2026-10-29)', () => {
 
 describe('a phrase played more than once in its chain', () => {
   // Track 1: chain 00 on song row 0, phrase 00 four times.
-  const song      = emptyModel('repeats')
+  const song      = emptyModel('demo')
   song.phrases    = {
     0: {
       id   : 0,
@@ -754,7 +754,7 @@ describe('a phrase played more than once in its chain', () => {
     }
   }
   song.song       = [[0, ...Array(7).fill(null)]]
-  const repeats   = buildTimeline(song)
+  const repeats   = buildSongContext(song)
   const withTempo = (lines: string[]): M8Screen => {
     const out = [...lines]
     out[5]    = `${out[5].padEnd(33)}T>120`
@@ -767,7 +767,7 @@ describe('a phrase played more than once in its chain', () => {
   /** The Phrase view at chain position `chainPosition` (its '<'), step `step` playing. */
   const phraseAt  = (chainPosition: number | null, step: number) => withTempo(markStep(phraseScreen(song.phrases[0], chainPosition), step))
   const tracker   = () => {
-    const made   = new PlaybackTracker(song, repeats)
+    const made   = new PlaybackTracker(repeats)
     made.context = {
       songRow: 0,
       track  : 0
@@ -862,7 +862,7 @@ describe('a phrase played more than once in its chain', () => {
         [1, ...Array(7).fill(null)],
         [1, ...Array(7).fill(null)],
       ]
-      const going     = new PlaybackTracker(twice, buildTimeline(twice))
+      const going     = new PlaybackTracker(buildSongContext(twice))
       const events    : PlaybackEvent[] = []
       going.onEvent   = (event) => events.push(event)
       going.context   = {
@@ -906,7 +906,7 @@ describe('a phrase played more than once in its chain', () => {
       steps: Array.from({ length: ROWS_PER_PHRASE }, emptyStep)
     }
     mixed.chains[0].rows[1].phrase = 1
-    const going                    = new PlaybackTracker(mixed, buildTimeline(mixed))
+    const going                    = new PlaybackTracker(buildSongContext(mixed))
     const events                   : PlaybackEvent[] = []
     going.onEvent                  = (event) => events.push(event)
     going.context                  = {

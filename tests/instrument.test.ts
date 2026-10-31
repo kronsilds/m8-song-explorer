@@ -9,6 +9,7 @@ import { cellAt, instrumentCells, instrumentPage, modCells, modSlots } from '../
 import { modShape } from '../src/model/modShapes'
 import { INSTRUMENT_TEMPLATES, instrumentLines, instrumentModsLines, MOD_ROWS, storedScreen } from '../src/model/screens'
 import { usedItems } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { FACE_CHARS, isTitlePlace, layoutInstrumentFace, MOD_CARD_ROWS, MODS_X, placeAt, placeOf } from '../src/scene/instrumentFace'
 import { PANEL_ROWS, SongLayout } from '../src/scene/layout'
 import { FakeM8 } from './fakeM8'
@@ -241,10 +242,10 @@ describe('instrument on the device', () => {
 
   test('the M8 cursor on a value selects it on every panel of that instrument', () => {
     const model  = demoSong()
-    const layout = new SongLayout(model)
+    const layout = new SongLayout(buildSongContext(model))
     const cursor = new DeviceCursor()
     // CUTOFF of instrument 05 (FM): line 17, x 8.
-    const places = cursor.placesOf(layout, {
+    const places = cursor.placesOf(layout.song, layout.tracks, {
       view      : 'inst',
       id        : 5,
       row       : null,
@@ -266,7 +267,7 @@ describe('instrument on the device', () => {
 
   test('the Selection panel explains a value and what modulates it', () => {
     const model  = demoSong()
-    const cutoff = describeSelection(model, {
+    const cutoff = describeSelection(buildSongContext(model), {
       kind      : 'instParam',
       instrument: 5,
       screen    : 'inst',
@@ -280,7 +281,7 @@ describe('instrument on the device', () => {
     expect(cutoff.facts.find(([label]) => label === 'Modulated by')?.[1]).toMatch(/^MOD3 · ADSR ENV/)
     const page    = instrumentPage(model.instruments[5])
     const attack  = page.slots[2].cells.ATK
-    const modCell = describeSelection(model, {
+    const modCell = describeSelection(buildSongContext(model), {
       kind      : 'instParam',
       instrument: 5,
       screen    : 'mods',

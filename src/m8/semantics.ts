@@ -4,6 +4,7 @@
 
 import { describeContextParts, getSemanticContext, type M8DescriptionPart, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X, fxLaneOf, phraseColumnX, tableColumnX } from '../model/columns'
+import type { CellDescription, Fact } from '../model/description'
 import { hex2, hexDigit } from '../model/hex'
 import { cellAt, type InstrumentCell, type InstrumentScreen, instrumentPage, type ModSlot, modulatorsOf, tableTicOf } from '../model/instrumentPage'
 import { modSummary } from '../model/modShapes'
@@ -16,7 +17,7 @@ import {
   type PhraseHarmony,
   pitchList,
   playedNote,
-  ScaleMap,
+  type ScaleMap,
   scaleLabel,
   scalePitches,
   transposeSemitones,
@@ -37,19 +38,8 @@ import {
 import { chainScreen, FIRST_CONTENT_ROW, phraseScreen, SCREEN_HEIGHT, SCREEN_WIDTH, storedScreen, TITLE_ROW, tableScreen } from '../model/screens'
 import type { Selection } from '../model/selection'
 import { emptyTable, type FxCell, type SongModel, type Table } from '../model/song'
-import { buildTimeline, effectiveInstruments, type PhraseInstance, type Timeline } from '../model/timeline'
-
-export interface CellDescription {
-  /** Breadcrumb from the song down to the cell. */
-  path : string[]
-  /** Short title, e.g. "FX2 · KIL 03". */
-  title: string
-  parts: M8DescriptionPart[]
-  /** Extra facts the app knows from the whole song (instrument name, uses...). */
-  facts: Fact[]
-}
-
-type Fact = [label: string, value: string]
+import { effectiveInstrumentAt, type SongContext } from '../model/songContext'
+import type { PhraseInstance } from '../model/timeline'
 
 type StepSelection = Extract<Selection, { kind: 'step' }>
 type ChainSelection = Extract<Selection, { kind: 'chain' }>
@@ -57,35 +47,16 @@ type TableSelection = Extract<Selection, { kind: 'table' }>
 type InstrumentSelection = Extract<Selection, { kind: 'instrument' }>
 type InstParamSelection = Extract<Selection, { kind: 'instParam' }>
 
-/** What the app already worked out about the song (the scene layout holds it). */
-export interface SongContext {
-  timeline : Timeline
-  /** Instrument each step plays, per instance key (see effectiveInstruments). */
-  effective: Map<string, (number | null)[]>
-  /** The track scales along the song. */
-  scales   : ScaleMap
-}
-
-function songContext(model: SongModel): SongContext {
-  const timeline = buildTimeline(model)
-  return {
-    timeline,
-    effective: effectiveInstruments(model, timeline),
-    scales   : new ScaleMap(model, timeline)
-  }
-}
-
-/**
- * @param effectiveInstrument the instrument the step plays (its I column or the last one before it)
- * @param song timeline, instruments and scales of the song, built from the model when not given
- */
-export function describeSelection(model: SongModel, selection: Selection, effectiveInstrument?: number | null, song?: SongContext): CellDescription {
+/** What a selected cell means, in the song `song` (a step's instrument is the one it plays, see effectiveInstrumentAt). */
+export function describeSelection(song: SongContext, selection: Selection): CellDescription {
+  const { model } = song
   switch (selection.kind) {
     case 'step':
+      return new PhraseCellDescriber(model, selection, song.scales).describe(effectiveInstrumentAt(song, selection.instance.key, selection.step))
     case 'chain':
-      return new PhraseCellDescriber(model, selection, (song ?? songContext(model)).scales).describe(effectiveInstrument)
+      return new PhraseCellDescriber(model, selection, song.scales).describe(null)
     case 'table':
-      return describeTableCell(model, selection, song ?? songContext(model))
+      return describeTableCell(model, selection, song)
     case 'instrument':
       return describeInstrumentPanel(model, selection)
     case 'instParam':
@@ -175,7 +146,7 @@ class PhraseCellDescriber {
     return this.chainSemitones !== 0 || this.projectSemitones !== 0
   }
 
-  describe(effectiveInstrument: number | null | undefined): CellDescription {
+  describe(effectiveInstrument: number | null): CellDescription {
     const { instance, model } = this
     const path                = [
       `Song row ${hex2(instance.songRow)}`,
@@ -222,7 +193,7 @@ class PhraseCellDescriber {
     }
   }
 
-  private describeStep(selection: StepSelection, path: string[], effectiveInstrument: number | null | undefined): CellDescription {
+  private describeStep(selection: StepSelection, path: string[], effectiveInstrument: number | null): CellDescription {
     const { instance, model, facts } = this
     const step                       = this.phrase?.steps[selection.step]
     const written                    = noteNumber(step?.note ?? null)

@@ -7,6 +7,7 @@ import { absorbEdit } from '../src/m8/screen/liveScreen'
 import { demoSong } from '../src/model/demo'
 import { phraseScreen } from '../src/model/screens'
 import { TRACKS } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { SongLayout } from '../src/scene/layout'
 
 const screenOf   = (lines: string[]): M8Screen => ({
@@ -39,7 +40,7 @@ describe('an edit read from the M8 screen', () => {
 describe('the tracks an edit redraws', () => {
   test('a phrase edit changes only the tracks that play the phrase', () => {
     const model       = demoSong()
-    const before      = new SongLayout(model)
+    const before      = new SongLayout(buildSongContext(model))
     const old         = signatures(before)
     const id          = before.timeline.instances[0].phrase
     model.phrases[id] = {
@@ -49,20 +50,20 @@ describe('the tracks an edit redraws', () => {
         note: step.note === 'D-4' ? 'E-4' : 'D-4'
       } : step))
     }
-    expect(changed(old, new SongLayout(model))).toEqual(playing(before, id))
+    expect(changed(old, new SongLayout(buildSongContext(model)))).toEqual(playing(before, id))
   })
 
   test('the same song draws every track alike; a project transpose redraws them all', () => {
     const model = demoSong()
-    const old   = signatures(new SongLayout(model))
-    expect(changed(old, new SongLayout(model))).toEqual([])
+    const old   = signatures(new SongLayout(buildSongContext(model)))
+    expect(changed(old, new SongLayout(buildSongContext(model)))).toEqual([])
     model.projectTranspose = (model.projectTranspose ?? 0) + 1
-    expect(changed(old, new SongLayout(model))).toEqual(Array.from({ length: TRACKS }, (_, track) => track))
+    expect(changed(old, new SongLayout(buildSongContext(model)))).toEqual(Array.from({ length: TRACKS }, (_, track) => track))
   })
 
   test('a new layout takes over where the panels of the old one were and how they showed', () => {
     const model  = demoSong()
-    const before = new SongLayout(model)
+    const before = new SongLayout(buildSongContext(model))
     const panel  = before.tracks.flatMap((track) => track.panels)[0]
     Object.assign(panel, {
       visible: true,
@@ -74,7 +75,7 @@ describe('the tracks an edit redraws', () => {
       seq    : 9,
       folded : true
     })
-    const after  = new SongLayout(model)
+    const after  = new SongLayout(buildSongContext(model))
     after.adoptState(before)
     const same   = after.tracks[panel.track].panels.find((other) => other.table === panel.table)
     expect(same).toMatchObject({

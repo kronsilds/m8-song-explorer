@@ -3,8 +3,8 @@
 // vertex buffers are reused from frame to frame (grown when a frame needs more).
 
 import { BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, LineBasicMaterial, LineSegments } from 'three'
+import type { Palette } from '../../model/palette'
 import { CHAR_W, FRONT_W, type Link, PANELS_SLIDE, ROW_H, SIDE_U0, type SongLayout, type TrackLayout, WALL_HINGE } from '../layout'
-import type { Palette } from '../palette'
 import { bezierWeights, smoothstep } from '../shapes'
 
 const SEGMENTS_PER_LINK = 14

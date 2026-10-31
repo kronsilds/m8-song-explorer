@@ -6,9 +6,9 @@
 
 import { fxColumn } from '../../model/columns'
 import type { TablePlayback, TablePosition, TrackSound } from '../../model/music/tablePlayback'
+import type { Palette } from '../../model/palette'
 import { FX_LANES, TRACKS } from '../../model/song'
 import { CHAR_W, PANEL_CHARS, PANEL_FIELDS, ROW_H, type SongLayout, TITLE_ROWS } from '../layout'
-import type { Palette } from '../palette'
 import type { TrackView } from '../track/trackView'
 import { CellMarker } from './cellMarker'
 

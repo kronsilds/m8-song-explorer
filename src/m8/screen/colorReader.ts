@@ -3,9 +3,10 @@
 
 import { type M8ScreenCells, parseGridScreen, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { GRID_FIELDS } from '../../model/columns'
+import type { ViewKind } from '../../model/live'
 import { FIRST_CONTENT_ROW, TITLE_ROW } from '../../model/screens'
 import type { ObservedColors } from '../../model/song'
-import { LAST_CONTENT_ROW, type ViewKind } from './screenReader'
+import { LAST_CONTENT_ROW } from './screenReader'
 
 /** Screen x where the title text whose colour is learnt ends. */
 const TITLE_END_X = 12

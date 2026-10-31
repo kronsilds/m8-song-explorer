@@ -2,8 +2,8 @@
 // the colours any screen shows now, plus the column colours learnt while exploring.
 
 import type { M8Theme } from '@yam8d/m8-sdk'
+import { makePalette, type Palette, type ThemeColors } from '../model/palette'
 import type { SongModel } from '../model/song'
-import { makePalette, type Palette, type ThemeColors } from '../scene/palette'
 
 export class ThemeColorsSource {
   /** Read from the Theme View. */

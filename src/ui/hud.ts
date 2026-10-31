@@ -2,11 +2,13 @@
 // cell's meaning, notices, confirmations and key hints. Plain DOM; colours come from the same
 // palette as the scene. User actions go out through onAction.
 
-import type { CellDescription } from '../m8/semantics'
 import { debugLog } from '../model/debugLog'
-import { WALL_DEGREES_RANGE } from '../scene/layout'
-import type { Palette } from '../scene/palette'
-import type { CoveredArea } from '../scene/world'
+import type { CellDescription } from '../model/description'
+import type { Palette } from '../model/palette'
+import { WALL_DEGREES_RANGE } from '../model/viewOptions'
+
+/** A part of the view a panel of the HUD covers, in pixels from the view's top-left corner (the 3D view keeps clear of it). */
+export type CoveredArea = Pick<DOMRectReadOnly, 'left' | 'top' | 'width' | 'height'>
 
 export type Action =
   | 'device'

@@ -2,6 +2,7 @@
 // another song is loaded, and edits made on the device folded back into the model.
 
 import { getSemanticContext, type M8Screen, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
+import type { DeviceEdit } from '../../model/live'
 import { type SongModel, TRACKS } from '../../model/song'
 import {
   isPage,
@@ -126,10 +127,9 @@ function absorbInstrument(model: SongModel, view: ScreenView): boolean {
   const instrument = readInstrument(view)
   const known      = model.instruments[view.id as number]
   if (!instrument || (known && sameJson(known.lines, instrument.lines) && known.name === instrument.name && known.type === instrument.type)) return false
-  model.instruments[instrument.id] = {
-    ...instrument,
-    mods: known?.mods
-  }
+  // The Instrument view does not show the modulators: the ones read from Inst. Mods stay.
+  if (known?.mods) instrument.mods = known.mods
+  model.instruments[instrument.id] = instrument
   return true
 }
 
@@ -194,18 +194,12 @@ function absorbProject(model: SongModel, project: NonNullable<ReturnType<typeof 
   return changed
 }
 
-/** What an edit made on the M8 changed: the item of a view (its number; null for the Song view), or the project's settings. */
-export interface ScreenEdit {
-  kind: ScreenView['kind'] | 'project'
-  id  : number | null
-}
-
 /**
  * Folds a fully drawn song / chain / phrase / table / instrument / modulators / groove / scale screen, or the
  * Project view's TRANSPOSE, GROOVE and SCALE, into the model. Returns what changed (the M8 was edited since the
  * exploration), null when nothing did.
  */
-export function absorbEdit(model: SongModel, screen: M8Screen): ScreenEdit | null {
+export function absorbEdit(model: SongModel, screen: M8Screen): DeviceEdit | null {
   const project = readProject(screen)
   if (project) return absorbProject(model, project) ? {
     kind: 'project',

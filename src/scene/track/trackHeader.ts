@@ -4,9 +4,9 @@
 
 import { DoubleSide, Group, type LineBasicMaterial, MathUtils, Mesh, MeshBasicMaterial, type Object3D } from 'three'
 import type { Text } from 'troika-three-text'
-import type { TrackToggle } from '../../m8/midiControl'
+import type { TrackToggle } from '../../model/live'
+import type { Palette } from '../../model/palette'
 import { CHAR_W, DEFAULT_PANEL_COLS, FRONT_W, PANEL_U0, ROW_H, SIDE_END, SIDE_U0 } from '../layout'
-import type { Palette } from '../palette'
 import { lineSegments, rectangles, UNIT_QUAD } from '../shapes'
 import { makeText, RichText } from '../text'
 

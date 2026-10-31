@@ -2,7 +2,7 @@
 
 import { DEFAULT_CHANNEL } from '../m8/midiControl'
 import { readItem, writeItem } from '../model/storage'
-import { DEFAULT_WALL_DEGREES, WALL_DEGREES_RANGE } from '../scene/layout'
+import { DEFAULT_WALL_DEGREES, WALL_DEGREES_RANGE } from '../model/viewOptions'
 
 export interface Preference<T> {
   get(): T

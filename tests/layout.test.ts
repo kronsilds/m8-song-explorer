@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { demoSong } from '../src/model/demo'
 import { emptyModel, emptyStep, type SongModel, TRACKS } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { FACE_CHARS } from '../src/scene/instrumentFace'
 import { DEFAULT_PANEL_COLS, MAX_PANEL_COLS, PANEL_ROWS, PANEL_SPAN, type Panel, panelSpan, ROW_H, SongLayout, shownPanelRows, TITLE_ROWS } from '../src/scene/layout'
 
 /** A layout whose walls may have as many columns as their panels want (the usual limit is DEFAULT_PANEL_COLS). */
-const newLayout = (song: SongModel, trimTables = true) => new SongLayout(song, trimTables, Array.from({ length: TRACKS }, () => MAX_PANEL_COLS))
+const newLayout = (song: SongModel, trimTables = true) => new SongLayout(buildSongContext(song), trimTables, Array.from({ length: TRACKS }, () => MAX_PANEL_COLS))
 
 /** The demo song with track 0's first phrase using `n` different instruments, one per step. */
 function crowded(n: number): SongModel {
@@ -99,7 +100,7 @@ describe('panel columns', () => {
   })
 
   test('a wall has two columns at most until its limit is raised', () => {
-    const usual = new SongLayout(crowded(14)).tracks[0]
+    const usual = new SongLayout(buildSongContext(crowded(14))).tracks[0]
     const wide  = newLayout(crowded(14)).tracks[0]
     expect(usual.wanted).toBeGreaterThan(2)
     expect(usual.cols).toBe(DEFAULT_PANEL_COLS)

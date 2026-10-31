@@ -3,7 +3,7 @@
 // fold buttons, a panel's tab that turns it over).
 
 import { Matrix4, type Object3D, type PerspectiveCamera, type Ray, Raycaster, Vector2, type Vector3 } from 'three'
-import type { TrackToggle } from '../../m8/midiControl'
+import type { TrackToggle } from '../../model/live'
 import type { Selection } from '../../model/selection'
 import { isTitlePlace, placeAt } from '../instrumentFace'
 import {

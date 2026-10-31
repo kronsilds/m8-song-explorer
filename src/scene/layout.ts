@@ -5,9 +5,11 @@
 // instruments and tables the track uses, joined to the steps that use them.
 
 import { fxColumn, type PhraseColumn, type TableColumn } from '../model/columns'
-import { ScaleMap } from '../model/music/harmony'
+import type { ScaleMap } from '../model/music/harmony'
 import { allFxCells, fxValues, ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, type Table, TRACKS } from '../model/song'
-import { buildTimeline, effectiveInstruments, instanceAt, type PhraseInstance, type Timeline } from '../model/timeline'
+import type { SongContext } from '../model/songContext'
+import { instanceAt, type PhraseInstance, type Timeline } from '../model/timeline'
+import { DEFAULT_WALL_DEGREES } from '../model/viewOptions'
 import { type InstrumentFace, layoutInstrumentFace } from './instrumentFace'
 
 export const FONT     = 1
@@ -28,67 +30,62 @@ export const TRACK_GAP   = 2.4
 export const TRACK_PITCH = FRONT_W + TRACK_GAP
 
 // Wall: step details "VV II CCCvv CCCvv CCCvv", then the panels. u runs along the wall.
-/** How far the wall is turned from the front by default, in degrees (the Options panel changes it). */
-export const WALL_DEGREES_RANGE   = {
-  min: 20,
-  max: 80
-} as const
-export const DEFAULT_WALL_DEGREES = 40
-export const DEFAULT_WALL_ANGLE   = (DEFAULT_WALL_DEGREES * Math.PI) / 180
-export const WALL_HINGE           = FRONT_W + 0.35
-export const SIDE_U0              = 0.5
-export const SIDE_CHARS           = 23
+/** How far the wall is turned from the front by default, in radians (the Options panel changes it). */
+export const DEFAULT_WALL_ANGLE = (DEFAULT_WALL_DEGREES * Math.PI) / 180
+export const WALL_HINGE         = FRONT_W + 0.35
+export const SIDE_U0            = 0.5
+export const SIDE_CHARS         = 23
 /** Where the step details end along the wall. */
-export const SIDE_END             = SIDE_U0 + SIDE_CHARS * CHAR_W + 0.35
-export const PANEL_U0             = SIDE_U0 + SIDE_CHARS * CHAR_W + 2.5
+export const SIDE_END           = SIDE_U0 + SIDE_CHARS * CHAR_W + 0.35
+export const PANEL_U0           = SIDE_U0 + SIDE_CHARS * CHAR_W + 2.5
 /**
  * How far the wall slides back along itself while the step details are folded: by their width,
  * so the panels keep the room they have after the FX columns (for the links) from the front column.
  */
-export const PANELS_SLIDE         = SIDE_U0 + SIDE_CHARS * CHAR_W
-export const PANEL_CHARS          = 25
+export const PANELS_SLIDE       = SIDE_U0 + SIDE_CHARS * CHAR_W
+export const PANEL_CHARS        = 25
 /** Panel rows: title, subtitle, 16 table rows. */
-export const PANEL_ROWS           = 18
+export const PANEL_ROWS         = 18
 /** The title lines of a panel (title, subtitle): all a folded panel or an empty table shows. */
-export const TITLE_ROWS           = 2
+export const TITLE_ROWS         = 2
 /** Panels that do not fit one column below each other tile into more columns, deeper along the wall. */
-export const MAX_PANEL_COLS       = 4
+export const MAX_PANEL_COLS     = 4
 /** Columns a wall has room for until its `+` button extends it (up to MAX_PANEL_COLS). */
-export const DEFAULT_PANEL_COLS   = 2
-export const PANEL_COL_W          = PANEL_CHARS * CHAR_W + 2
+export const DEFAULT_PANEL_COLS = 2
+export const PANEL_COL_W        = PANEL_CHARS * CHAR_W + 2
 /** Panels a column is expected to show at once, to size the wall from how many are in use together. */
-const PANELS_PER_COL              = 2
+const PANELS_PER_COL            = 2
 /** Rows around a panel's uses counted as "in view together" when sizing the wall. */
-const PANEL_VIEW_PAD_ROWS         = 24
+const PANEL_VIEW_PAD_ROWS       = 24
 /** Rows between panels stacked in a column: room for the tab over the lower one's corner. */
-const PANEL_GAP_ROWS              = 1.75
+const PANEL_GAP_ROWS            = 1.75
 /** Height of a phrase on the wall. */
-const PHRASE_HEIGHT               = ROWS_PER_PHRASE * ROW_H
+const PHRASE_HEIGHT             = ROWS_PER_PHRASE * ROW_H
 /**
  * The reach panels are placed for: the view height, and at least this many phrases, so that when
  * zoomed in panels do not change band, or come and go, at every phrase of a fast song.
  */
-const MIN_REACH_PHRASES           = 6
+const MIN_REACH_PHRASES         = 6
 /**
  * Distance bands, in reaches between the view and a panel's nearest use: on screen or within half
  * a reach, within one and a half, within four, further. A panel's band is the first column it may
  * take, so how far along the wall it is tells how far away it is used.
  */
-const DISTANCE_BANDS              = [0.5, 1.5, 4]
+const DISTANCE_BANDS            = [0.5, 1.5, 4]
 /** How far (in reaches) a panel may go past the edge of its band before it changes band, so panels do not change columns while a song plays or scrolls a little. */
-const BAND_HYSTERESIS             = 0.5
+const BAND_HYSTERESIS           = 0.5
 /** The band of panels used further than the last DISTANCE_BANDS edge: they show their title lines only, while there is room. */
-const FAR_BAND                    = DISTANCE_BANDS.length
+const FAR_BAND                  = DISTANCE_BANDS.length
 /** How far (in view heights, and at least a phrase) the uses of a panel may scroll off screen before it stops counting as used on screen (it then folds before those that are). */
-const NOW_HYSTERESIS              = 0.25
+const NOW_HYSTERESIS            = 0.25
 /** Fewest table rows a fold must hide to make room: a smaller table is nearly its title lines, and folding it would mostly move the panels below (it still folds for a fuller table used on screen, or a title). */
-const MIN_FOLD_ROWS               = 2
+const MIN_FOLD_ROWS             = 2
 /** How much the view height may change (a zoom) before a track's grid is laid out afresh for it, in the order its panels had. */
-const REPACK_ZOOM                 = 0.15
+const REPACK_ZOOM               = 0.15
 /** Room a panel takes on the wall, gap included. */
-export const PANEL_SPAN           = (PANEL_ROWS + PANEL_GAP_ROWS) * ROW_H
+export const PANEL_SPAN         = (PANEL_ROWS + PANEL_GAP_ROWS) * ROW_H
 /** Room a panel of `rows` rows takes on the wall, gap included. */
-export const panelSpan            = (rows: number): number => (rows + PANEL_GAP_ROWS) * ROW_H
+export const panelSpan          = (rows: number): number => (rows + PANEL_GAP_ROWS) * ROW_H
 
 /** Columns a wall has for panels that want `wanted` of them, with at most `limit`. */
 const columnsWithin = (wanted: number, limit: number): number => Math.max(1, Math.min(wanted, limit))
@@ -285,13 +282,15 @@ export interface TrackLayout {
 }
 
 export class SongLayout {
+  /** What is laid out; model, timeline, effective and scales are its parts, kept at hand. */
+  readonly song          : SongContext
   readonly model         : SongModel
   readonly timeline      : Timeline
   /** Top y of each song band. */
   readonly bandTop       : number[]
   readonly tracks        : TrackLayout[]
   /** The instrument each step plays, per instance key (see effectiveInstruments). */
-  readonly effective     : Map<string, (number | null)[]>
+  readonly effective     : SongContext['effective']
   /** The scale each track plays with along the song. */
   readonly scales        : ScaleMap
   readonly bottomY       : number
@@ -305,12 +304,13 @@ export class SongLayout {
   private packedFor = new Map<number, number>()
 
   /** `columnLimits[track]`: the columns that track's wall may have (DEFAULT_PANEL_COLS when not given). */
-  constructor(model: SongModel, trimTables = true, private readonly columnLimits: readonly number[] = []) {
+  constructor(song: SongContext, trimTables = true, private readonly columnLimits: readonly number[] = []) {
     this.trimTables = trimTables
-    this.model      = model
-    this.timeline   = buildTimeline(model)
-    this.effective  = effectiveInstruments(model, this.timeline)
-    this.scales     = new ScaleMap(model, this.timeline)
+    this.song       = song
+    this.model      = song.model
+    this.timeline   = song.timeline
+    this.effective  = song.effective
+    this.scales     = song.scales
     this.bandTop    = this.timeline.bands.map((band, i) => -(band.row * ROW_H + i * BAND_GAP))
     const lastBand  = this.timeline.bands.length - 1
     let bottomY     = lastBand >= 0 ? this.bandTop[lastBand] - this.timeline.bands[lastBand].length * ROW_H : 0

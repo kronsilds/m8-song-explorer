@@ -5,9 +5,9 @@
 
 import { Group, type InstancedMesh, type LineSegments, type MeshBasicMaterial } from 'three'
 import type { Text } from 'troika-three-text'
+import { mix, type Palette } from '../../model/palette'
 import { FACE_HEADER, INST_CHARS, type InstrumentFace, MOD_CARD_CHARS, MOD_CARD_ROWS, MOD_CURVE_ROWS, type ModCard, type TextRole } from '../instrumentFace'
 import { CHAR_W, PANEL_CHARS, PANEL_COL_W, ROW_H } from '../layout'
-import { mix, type Palette } from '../palette'
 import { type ColoredRect, lineSegments, rectangles } from '../shapes'
 import { disposeText, makeText, RichText } from '../text'
 

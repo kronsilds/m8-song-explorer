@@ -7,6 +7,7 @@
 import { SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X } from '../../model/columns'
 import { hex2 } from '../../model/hex'
+import type { ViewKind } from '../../model/live'
 import { referencedGrooves } from '../../model/music/groove'
 import { referencedScales } from '../../model/music/harmony'
 import { chainLength, emptyModel, SONG_ROWS, type SongModel, TRACKS, usedItems } from '../../model/song'
@@ -28,7 +29,6 @@ import {
   readSongRows,
   readTable,
   type ScreenView,
-  type ViewKind,
 } from '../screen/screenReader'
 
 export interface ExploreProgress {
@@ -39,21 +39,21 @@ export interface ExploreProgress {
 }
 
 export interface ExploreOptions {
-  signal?         : AbortSignal
-  onProgress?     : (progress: ExploreProgress) => void
+  signal?         : AbortSignal | undefined
+  onProgress?     : ((progress: ExploreProgress) => void) | undefined
   /** Called whenever the model gained something (to draw while exploring). */
-  onUpdate?       : (model: SongModel) => void
-  readInstruments?: boolean
-  readTables?     : boolean
+  onUpdate?       : ((model: SongModel) => void) | undefined
+  readInstruments?: boolean | undefined
+  readTables?     : boolean | undefined
   /** Read each instrument's Inst. Mods view (its modulators). */
-  readMods?       : boolean
-  readScales?     : boolean
-  readGrooves?    : boolean
+  readMods?       : boolean | undefined
+  readScales?     : boolean | undefined
+  readGrooves?    : boolean | undefined
   /** Song rows to read from row 00 (all 256 by default). */
-  songRows?       : number
-  pollMs?         : number
-  settleTimeoutMs?: number
-  log?            : (message: string) => void
+  songRows?       : number | undefined
+  pollMs?         : number | undefined
+  settleTimeoutMs?: number | undefined
+  log?            : ((message: string) => void) | undefined
 }
 
 /** One item step of the exploration: every listed item of one view kind, read in turn. */

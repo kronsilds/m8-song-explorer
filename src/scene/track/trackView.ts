@@ -6,6 +6,7 @@ import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, M
 import type { Text } from 'troika-three-text'
 import { fxColumn } from '../../model/columns'
 import { transposeSemitones } from '../../model/music/harmony'
+import { mix, type Palette } from '../../model/palette'
 import { ROWS_PER_PHRASE, type SongModel } from '../../model/song'
 import type { PhraseInstance } from '../../model/timeline'
 import { FACE_CHARS, type InstrumentFace } from '../instrumentFace'
@@ -31,7 +32,6 @@ import {
   type TrackLayout,
   WALL_HINGE,
 } from '../layout'
-import { mix, type Palette } from '../palette'
 import { type ColoredRect, easeFactor, lineSegments, rectangles, smoothstep } from '../shapes'
 import { disposeText, makeText, RichText, showsRich, type TextBlock } from '../text'
 import { FACE_WIDTH, InstrumentFaceView } from './instrumentFaceView'

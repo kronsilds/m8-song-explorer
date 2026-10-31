@@ -20,7 +20,8 @@ import {
 import { noteNumber, noteText } from '../src/model/music/pitch'
 import { scaleScreen } from '../src/model/screens'
 import { emptyStep, type PhraseStep } from '../src/model/song'
-import { buildTimeline, effectiveInstruments } from '../src/model/timeline'
+import { buildSongContext } from '../src/model/songContext'
+import { buildTimeline } from '../src/model/timeline'
 
 const steps = (notes: string[]): PhraseStep[] => notes.map((note) => ({ ...emptyStep(), note }))
 
@@ -64,18 +65,17 @@ test('a phrase key is guessed from its notes', () => {
 })
 
 test('a transposed step says what it plays, quantized to the track scale', () => {
-  const model     = demoSong()
-  const timeline  = buildTimeline(model)
-  const effective = effectiveInstruments(model, timeline)
-  const inst      = timeline.instances.find((i) => transposeSemitones(model.chains[i.chain].rows[i.chainRow].transpose) === -2)
+  const model    = demoSong()
+  const timeline = buildTimeline(model)
+  const inst     = timeline.instances.find((i) => transposeSemitones(model.chains[i.chain].rows[i.chainRow].transpose) === -2)
   if (!inst) throw new Error('the demo has a chain row transposed by -2')
   const steps = model.phrases[inst.phrase].steps
-  const d0    = describeSelection(model, {
+  const d0    = describeSelection(buildSongContext(model), {
     kind    : 'step',
     instance: inst,
     step    : 0,
     column  : 'note'
-  }, effective.get(inst.key)?.[0])
+  })
   expect(d0.facts.find(([k]) => k === 'Chain transpose')?.[1]).toBe('-2 st (TSP FE)')
   // An earlier lead phrase's SCA 91 put the track in A minor: a note moved out of it goes up into it.
   const minor = new Set([9, 11, 0, 2, 4, 5, 7])
@@ -83,12 +83,12 @@ test('a transposed step says what it plays, quantized to the track scale', () =>
   expect(step).toBeGreaterThan(0)
   const note     = steps[step].note
   const expected = noteText((noteNumber(note) as number) - 1)
-  const d        = describeSelection(model, {
+  const d        = describeSelection(buildSongContext(model), {
     kind    : 'step',
     instance: inst,
     step,
     column  : 'note'
-  }, effective.get(inst.key)?.[step])
+  })
   expect(d.title).toBe(`Note ${note} → ${expected}`)
   expect(d.facts.find(([k]) => k === 'Plays')?.[1]).toStartWith(`${expected} (${note} -2, scale +1)`)
   expect(d.facts.find(([k]) => k === 'Track scale')?.[1]).toBe('01 MINOR · key A · SCA')
@@ -116,8 +116,8 @@ test('SCA and SCG choose the scale of a track from their step on', () => {
 
 test('quantize goes up to the next scale note, as measured on the device', () => {
   const minorA = scalePitches(demoSong().scales?.[1], 9)
-  expect(quantize(noteNumber('A#4') as number, minorA)).toBe(noteNumber('B-4'))
-  expect(quantize(noteNumber('C-5') as number, minorA)).toBe(noteNumber('C-5'))
+  expect(quantize(noteNumber('A#4') as number, minorA)).toBe(noteNumber('B-4') as number)
+  expect(quantize(noteNumber('C-5') as number, minorA)).toBe(noteNumber('C-5') as number)
   expect(scalePitches(demoSong().scales?.[0], 0)).toBeNull()
   // The device test: scale C, E, G; C-4 transposed by 1, 2, 5 and 8 semitones.
   const triad  = new Set([0, 4, 7])
@@ -299,7 +299,8 @@ test('a written note outside the scale is quantized at play time too, without a 
   const played = playedNote(model, 'E-4', 0, null, {
     scale : 7,
     key   : 2,
-    source: 'project'
+    source: 'project',
+    row   : null
   })
   expect(played.note).toBe('F#4')
   expect(played.snapped).toBe(2)
@@ -324,7 +325,8 @@ test("a scale note's semitone offset is added after the quantizing", () => {
   const played = playedNote(model, 'C-5', 0, null, {
     scale : 0,
     key   : 1,
-    source: 'SCA'
+    source: 'SCA',
+    row   : null
   })
   expect(played.note).toBe('C#5')
   expect(played.snapped).toBe(1)
@@ -334,7 +336,8 @@ test("a scale note's semitone offset is added after the quantizing", () => {
   expect(playedNote(model, 'C#5', 0, null, {
     scale : 0,
     key   : 1,
-    source: 'SCA'
+    source: 'SCA',
+    row   : null
   }).sounding).toBe('D-5')
 })
 
@@ -355,19 +358,18 @@ test('the selection says when only the scale moved a written note', () => {
   model.projectKey       = 0
   model.projectTranspose = 0
   const timeline         = buildTimeline(model)
-  const effective        = effectiveInstruments(model, timeline)
   const triad            = new Set([0, 4, 7])
   for (const inst of timeline.instances) {
     if (transposeSemitones(model.chains[inst.chain].rows[inst.chainRow].transpose) !== 0) continue
     const steps = model.phrases[inst.phrase].steps
     const step  = steps.findIndex((s) => noteNumber(s.note) != null && !triad.has((noteNumber(s.note) as number) % 12))
     if (step < 0) continue
-    const d = describeSelection(model, {
+    const d = describeSelection(buildSongContext(model), {
       kind    : 'step',
       instance: inst,
       step,
       column  : 'note'
-    }, effective.get(inst.key)?.[step])
+    })
     // The demo has no SCA that would change the track's scale before this step on every track: skip those.
     if (!d.facts.some(([k]) => k === 'Quantized')) continue
     expect(d.title).toContain('(scale)')

@@ -6,6 +6,7 @@ import { demoSong } from '../src/model/demo'
 import { chainStepTicks, grooveLoop, occurrenceKey, referencedGrooves, stepClockTicks } from '../src/model/music/groove'
 import { FIRST_CONTENT_ROW, grooveScreen, phraseScreen } from '../src/model/screens'
 import type { Groove, SongModel } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { buildTimeline } from '../src/model/timeline'
 import { FakeM8 } from './fakeM8'
 
@@ -136,14 +137,12 @@ describe('grooves', () => {
  * running; the tracker knows the grooves or not. Returns how often the prediction matched.
  */
 function simulateSwing(knowsGroove: boolean): number {
-  const device    = demoSong()
-  device.grooves  = { 0: groove(0, [8, 4]) }
-  const model     : SongModel = knowsGroove ? device : {
-    ...device,
-    grooves: undefined
-  }
+  const device   = demoSong()
+  device.grooves = { 0: groove(0, [8, 4]) }
+  const model    : SongModel = { ...device }
+  if (!knowsGroove) delete model.grooves
   const timeline  = buildTimeline(model)
-  const tracker   = new PlaybackTracker(model, timeline)
+  const tracker   = new PlaybackTracker(buildSongContext(model))
   const kick      = model.song[2][0] as number
   const phraseId  = model.chains[kick].rows[0].phrase as number
   const band      = timeline.bands.find((b) => b.songRow === 2)?.row as number

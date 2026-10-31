@@ -5,10 +5,10 @@ import { fxColumn } from '../../model/columns'
 import { hex2, hexDigit } from '../../model/hex'
 import { tableTicOf } from '../../model/instrumentPage'
 import { formatTranspose, playedNote, transposeSemitones } from '../../model/music/harmony'
+import type { CellColors, Palette } from '../../model/palette'
 import { allFxCells, FX_LANES, type FxCell, fxValues, type PhraseStep, ROWS_PER_PHRASE, ROWS_PER_TABLE, type TableRow } from '../../model/song'
 import type { PhraseInstance } from '../../model/timeline'
 import type { Panel, SongLayout } from '../layout'
-import type { CellColors, Palette } from '../palette'
 import { RichText } from '../text'
 
 /** 'KIL', '03'; '---', '00' for an empty lane. */

@@ -9,10 +9,16 @@ import { cellAt, instrumentPage } from '../model/instrumentPage'
 import { TITLE_ROW } from '../model/screens'
 import { type Selection, selectionTrack } from '../model/selection'
 import { TRACKS } from '../model/song'
-import type { SongLayout } from '../scene/layout'
+import type { SongContext } from '../model/songContext'
 
 /** A place in a chain: a song cell or a phrase step. */
 type ChainPlace = Extract<Selection, { kind: 'chain' | 'step' }>
+
+/** The panels on a track's wall (the 3D layout's tracks): a table or an instrument is followed on them. */
+export interface TrackPanels {
+  track : number
+  panels: readonly { table: number; instrument: number | null }[]
+}
 
 export class DeviceCursor {
   /** Song row and track the M8 is on: set on the Song view, then moved along with it on the Chain and Phrase views. */
@@ -33,9 +39,13 @@ export class DeviceCursor {
     return this.chainRow
   }
 
-  /** Every place of the song the item under the M8 cursor appears. Remembers the song cell and chain row on the way. */
-  placesOf(layout: SongLayout, focus: DeviceFocus): Selection[] {
-    const { id, row } = focus
+  /**
+   * Every place of the song the item under the M8 cursor appears (tables and instruments: on the
+   * tracks whose wall has their panel). Remembers the song cell and chain row on the way.
+   */
+  placesOf(song: SongContext, tracks: readonly TrackPanels[], focus: DeviceFocus): Selection[] {
+    const { id, row }  = focus
+    const { timeline } = song
     switch (focus.view) {
       case 'song': {
         const track = focus.column?.startsWith('track') ? Number(focus.column.slice(5)) - 1 : null
@@ -44,7 +54,7 @@ export class DeviceCursor {
           songRow: row,
           track
         }
-        const instance   = layout.timeline.byTrack[track].find((i) => i.songRow === row && i.chainRow === 0)
+        const instance   = timeline.byTrack[track].find((i) => i.songRow === row && i.chainRow === 0)
         return instance ? [{
           kind: 'chain',
           instance,
@@ -54,7 +64,7 @@ export class DeviceCursor {
       case 'chain':
         if (id == null || row == null) return []
         this.chainRow = row
-        return layout.timeline.instances.filter((i) => i.chain === id && i.chainRow === row).map((instance) => ({
+        return timeline.instances.filter((i) => i.chain === id && i.chainRow === row).map((instance) => ({
           kind: 'chain',
           instance,
           view: 'chain'
@@ -66,7 +76,7 @@ export class DeviceCursor {
         this.lastMarks = focus.chainMarks
         if (position != null) this.chainRow = position
         const column = isPhraseColumn(focus.column) ? focus.column : 'note'
-        return (layout.timeline.byPhrase.get(id) ?? []).map((instance) => ({
+        return (timeline.byPhrase.get(id) ?? []).map((instance) => ({
           kind: 'step',
           instance,
           step: row ?? 0,
@@ -76,7 +86,7 @@ export class DeviceCursor {
       case 'table': {
         if (id == null) return []
         const column = isTableColumn(focus.column) ? focus.column : 'transpose'
-        return layout.tracks.flatMap((track) => {
+        return tracks.flatMap((track) => {
           const panel = track.panels.find((p) => p.table === id)
           return panel ? [{
             kind      : 'table',
@@ -92,10 +102,10 @@ export class DeviceCursor {
       case 'instmods': {
         if (id == null) return []
         // The value under the cursor, on every panel of that instrument; the header when none is under it.
-        const instrument = layout.model.instruments[id]
+        const instrument = song.model.instruments[id]
         const screen     = focus.view === 'inst' ? 'inst' : 'mods'
         const cell       = instrument && focus.cursor ? cellAt(instrumentPage(instrument), screen, focus.cursor.y - TITLE_ROW, focus.cursor.x) : null
-        return layout.tracks.flatMap((track): Selection[] => {
+        return tracks.flatMap((track): Selection[] => {
           const panel = track.panels.find((p) => p.instrument === id)
           if (!panel) return []
           return [cell ? {

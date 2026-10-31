@@ -3,6 +3,7 @@ import { describeSelection } from '../src/m8/semantics'
 import { demoSong } from '../src/model/demo'
 import { arpeggioText, chordName, describeWalk, intervalsText, rowRuns, type TableWalk, unitsText, walkTable } from '../src/model/music/tableWalk'
 import { emptyTable, type TableRow } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 
 /** An empty 16-row table with transposes (row, N) and FX cells (row, lane, cmd, value). */
 function table(transposes: [row: number, n: number][], ...cells: [row: number, lane: number, cmd: string, val: number][]): TableRow[] {
@@ -103,7 +104,7 @@ describe('the selection panel on a table cell', () => {
       id  : 0,
       rows: ARPEGGIO
     }
-    const facts     = Object.fromEntries(describeSelection(model, {
+    const facts     = Object.fromEntries(describeSelection(buildSongContext(model), {
       kind      : 'table',
       table     : 0,
       row       : 6,

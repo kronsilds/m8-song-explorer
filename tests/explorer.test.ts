@@ -197,7 +197,7 @@ describe('exploreSong', () => {
       pollMs         : 0,
       settleTimeoutMs: 400
     })
-    expect(fake.view).toBe('song')
+    expect(fake.view as string).toBe('song')
     expect([fake.songRow, fake.songTrack]).toEqual([0, 0])
     expect(fake.forbidden).toEqual([])
   })

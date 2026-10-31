@@ -3,6 +3,7 @@
 
 import { type M8Screen, parseGridScreen, parseViewTitle, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X } from '../../model/columns'
+import type { ViewKind } from '../../model/live'
 import { pitchClassOfName } from '../../model/music/pitch'
 import { FIRST_CONTENT_ROW, TITLE_ROW } from '../../model/screens'
 import {
@@ -21,8 +22,6 @@ import {
   type TableRow,
   TRACKS,
 } from '../../model/song'
-
-export type ViewKind = 'song' | 'chain' | 'phrase' | 'inst' | 'instmods' | 'table' | 'scale' | 'groove' | 'other'
 
 export interface ScreenView {
   kind  : ViewKind

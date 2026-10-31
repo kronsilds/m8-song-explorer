@@ -7,8 +7,7 @@ import { type PlaybackEvent, PlaybackTracker } from '../m8/playback'
 import { readChainMarks, readTableMarks, viewOf } from '../m8/screen/screenReader'
 import { type DebugLog, debugLog, type EventData } from '../model/debugLog'
 import { CLOCK_PPQ } from '../model/music/groove'
-import type { SongModel } from '../model/song'
-import type { SongLayout } from '../scene/layout'
+import type { SongContext } from '../model/songContext'
 import type { World } from '../scene/world'
 
 const PLAYING_POLL_MS  = 60
@@ -64,7 +63,8 @@ export class PlaybackFeed {
   /** The Phrase view's '<' moved between two reads (a key, or the song playing on): nothing else may say so. */
   onChainPosition             : () => void = () => {}
   private lastChainMarks      = ''
-  private trackedLayout       : SongLayout | null
+  /** The song the tracker follows: the app makes a new one for each version of the model. */
+  private trackedSong         : SongContext
   private session             : PlaySession | null = null
   private lastView            : { kind: string; id: number | null } | null = null
   private readonly clockStats : ClockStats = {
@@ -88,20 +88,19 @@ export class PlaybackFeed {
   private recentMsPerTick     : number[] = []
 
   /**
-   * @param currentModel the song shown now
+   * @param currentSong the song shown now
    * @param readableClient the client to read the screen from, null while reads must wait (not connected, busy, another song)
    * @param paused true while another song is loaded: transport messages are ignored
    */
   constructor(
     private readonly world: World,
-    private readonly currentModel: () => SongModel,
+    private readonly currentSong: () => SongContext,
     private readonly readableClient: () => M8Client | null,
     private readonly paused: () => boolean,
     private readonly log: DebugLog = debugLog,
   ) {
-    const layout              = world.layout as SongLayout
-    this.tracker              = new PlaybackTracker(currentModel(), layout.timeline)
-    this.trackedLayout        = layout
+    this.trackedSong          = currentSong()
+    this.tracker              = new PlaybackTracker(this.trackedSong)
     this.tracker.onCorrection = (track, predicted, actual, clocked, songRow) => {
       const difference = actual - predicted
       console.debug(
@@ -111,10 +110,11 @@ export class PlaybackFeed {
     }
     this.tracker.onEvent      = (event) => this.noteEvent(event)
     world.setPlayheadSource(() => {
-      // A new layout (another song, or edits folded in) means new step lengths.
-      if (world.layout && world.layout !== this.trackedLayout) {
-        this.trackedLayout = world.layout
-        this.tracker.setSong(this.currentModel(), world.layout.timeline)
+      // A new song (another one, or edits folded in) means new step lengths.
+      const song = this.currentSong()
+      if (song !== this.trackedSong) {
+        this.trackedSong = song
+        this.tracker.setSong(song)
       }
       return this.tracker.playheads(performance.now())
     })

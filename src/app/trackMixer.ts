@@ -2,8 +2,9 @@
 // the M8, its release ends it. The buttons show the notes held from here (mutes and solos made
 // on the M8 are not seen).
 
-import { MidiControl, type MidiInfo, type TrackToggle } from '../m8/midiControl'
+import { MidiControl, type MidiInfo } from '../m8/midiControl'
 import { debugLog } from '../model/debugLog'
+import type { TrackToggle } from '../model/live'
 import { TRACKS } from '../model/song'
 import type { World } from '../scene/world'
 import type { Hud } from '../ui/hud'

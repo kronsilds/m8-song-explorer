@@ -22,16 +22,17 @@ import {
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
-import type { TrackToggle } from '../m8/midiControl'
-import type { TrackPlayhead } from '../m8/playback'
-import type { ScreenEdit } from '../m8/screen/liveScreen'
 import { PHRASE_COLUMNS, TABLE_COLUMNS } from '../model/columns'
 import { hex2 } from '../model/hex'
+import type { DeviceEdit, TrackPlayhead, TrackToggle } from '../model/live'
 import { TablePlayback } from '../model/music/tablePlayback'
+import type { Palette } from '../model/palette'
 import { isPanelSelection, isWallCell, type PanelSelection, type Selection, sameSelection, selectionTrack } from '../model/selection'
-import { ROWS_PER_PHRASE, ROWS_PER_TABLE, type SongModel, TRACKS } from '../model/song'
+import { ROWS_PER_PHRASE, ROWS_PER_TABLE, TRACKS } from '../model/song'
+import type { SongContext } from '../model/songContext'
 import { phraseMoved, trackMoved } from '../model/stepMoves'
 import type { PhraseInstance } from '../model/timeline'
+import { DEFAULT_WALL_DEGREES } from '../model/viewOptions'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './camera/cameraAngles'
 import {
   type Align,
@@ -57,7 +58,6 @@ import { isTitlePlace, placeOf } from './instrumentFace'
 import {
   BAND_GAP,
   DEFAULT_PANEL_COLS,
-  DEFAULT_WALL_DEGREES,
   FRONT_W,
   HEADER_H,
   type Link,
@@ -79,7 +79,6 @@ import { CellMarker, type CellRect } from './markers/cellMarker'
 import { cellRects } from './markers/cellRects'
 import { PlayheadView, type ViewEdges } from './markers/playheadView'
 import { TablePlayheadView } from './markers/tablePlayheadView'
-import type { Palette } from './palette'
 import { easeFactor, linkCurve, smoothstep } from './shapes'
 import { RichText, type TextBlock, TextPool } from './text'
 import { FACE_WIDTH } from './track/instrumentFaceView'
@@ -153,13 +152,8 @@ const HALO_BOTTOM_PX      = 26
 /** Ease rate per second of the headers' glide to their height (the pose eases at 9). */
 const HEADER_GLIDE_RATE   = 15.5
 
-/** A part of the view a panel of the HUD covers, in pixels from the view's top-left corner. */
-export interface CoveredArea {
-  left  : number
-  top   : number
-  width : number
-  height: number
-}
+/** A part of the view a panel of the HUD covers, in pixels from the view's top-left corner (the HUD measures it). */
+export type CoveredArea = Pick<DOMRectReadOnly, 'left' | 'top' | 'width' | 'height'>
 
 /**
  * What a navigation shows (world points, where things settle): `box` whole when it fits on the
@@ -358,11 +352,12 @@ export class World implements PointerTarget {
   // ---------------------------------------------------------------------------
   // Content
 
-  setModel(model: SongModel, keepView = false): void {
+  /** Shows a song (another one, or the same one read again): the whole scene is built afresh. */
+  setSong(song: SongContext, keepView = false): void {
     const previous     = this.layout
     const hadLayout    = previous != null
-    this.layout        = new SongLayout(model, this.trimTables, this.panelColumns)
-    this.tablePlayback = new TablePlayback(model, this.layout.timeline, this.layout.effective)
+    this.layout        = new SongLayout(song, this.trimTables, this.panelColumns)
+    this.tablePlayback = new TablePlayback(song.model, song.timeline, song.effective)
     if (previous) {
       for (const track of this.layout.tracks) {
         for (const panel of track.panels) panel.flip = previous.tracks[track.track]?.panels.find((p) => p.table === panel.table)?.flip ?? 0
@@ -460,16 +455,16 @@ export class World implements PointerTarget {
    * takes over the old one's header, panel texts and faces. Panels keep their place, fade and
    * turn; texts that show the same stay, changed ones swap in once laid out; the camera stays.
    */
-  updateModel(model: SongModel): void {
+  updateSong(song: SongContext): void {
     const previous = this.layout
     if (!previous || this.trackViews.length !== TRACKS) {
-      this.setModel(model, true)
+      this.setSong(song, true)
       return
     }
-    const layout       = new SongLayout(model, this.trimTables, this.panelColumns)
+    const layout       = new SongLayout(song, this.trimTables, this.panelColumns)
     layout.adoptState(previous)
     this.layout        = layout
-    this.tablePlayback = new TablePlayback(model, layout.timeline, layout.effective)
+    this.tablePlayback = new TablePlayback(song.model, song.timeline, song.effective)
     const replaced     : TrackView[] = []
     this.trackViews    = this.trackViews.map((old, track) => {
       const lanes = layout.tracks[track]
@@ -513,14 +508,14 @@ export class World implements PointerTarget {
   /**
    * An item edited on the M8 shows its new values at once (the model holds them already): a
    * phrase's notes and step details, a table's panels, an instrument's panels and faces. Bars,
-   * links and panels that come or go follow with updateModel. An edit that moves things (a song
-   * cell, a chain's phrases) or changes many (the project, a scale, a groove) goes to it at once:
-   * true then (the whole scene is up to date).
+   * links and panels that come or go follow with updateSong. False for an edit that moves things
+   * (a song cell, a chain's phrases) or changes many (the project, a scale, a groove): nothing is
+   * shown, the scene needs the new song now (updateSong).
    */
-  showEdit(edit: ScreenEdit): boolean {
+  showEditInPlace(edit: DeviceEdit): boolean {
     const layout = this.layout
-    if (!layout) return false
-    let whole = false
+    // No scene yet: the next updateSong draws it.
+    if (!layout) return true
     if (edit.kind === 'phrase' && edit.id != null) {
       const keys = new Set((layout.timeline.byPhrase.get(edit.id) ?? []).flatMap((instance) => [`f:${instance.key}`, `w:${instance.key}`]))
       this.pool.refresh((block) => keys.has(block.key))
@@ -530,11 +525,10 @@ export class World implements PointerTarget {
       layout.forgetFace(edit.id)
       for (const view of this.trackViews) view.refreshInstrument(edit.id)
     } else {
-      this.updateModel(layout.model)
-      whole = true
+      return false
     }
     this.invalidate()
-    return whole
+    return true
   }
 
   /**
@@ -1209,13 +1203,14 @@ export class World implements PointerTarget {
     const cell   = focus.cell[0]
     const anchor = cell && cutAnchor(this.rig.goal, this.lens(), cell)
     if (!anchor || anchor === cell) return focus
-    const dy    = anchor.y - cell.y
-    const moved = (points: Vector3[]) => points.map((point) => point.clone().setY(point.y + dy))
-    return {
+    const dy      = anchor.y - cell.y
+    const moved   = (points: Vector3[]) => points.map((point) => point.clone().setY(point.y + dy))
+    const shifted : Focus = {
       box : moved(focus.box),
-      core: focus.core && moved(focus.core),
       cell: moved(focus.cell)
     }
+    if (focus.core) shifted.core = moved(focus.core)
+    return shifted
   }
 
   /**

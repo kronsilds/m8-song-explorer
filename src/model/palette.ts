@@ -1,10 +1,11 @@
-// Scene colours from the device theme. The 13 theme roles come from the Theme View (exact),
-// or from what any screen shows (background, titles, cursor), or from a fallback; the
-// colours of each column come from the screens read while exploring when available.
+// The explorer's colours (3D view and HUD) from the device theme. The 13 theme roles come from
+// the Theme View (exact), or from what any screen shows (background, titles, cursor), or from a
+// fallback; the colours of each column come from the screens read while exploring when available.
+// Pure colour arithmetic: nothing here draws.
 
 import type { M8ThemeRole } from '@yam8d/m8-sdk'
-import type { PhraseColumn, TableColumn } from '../model/columns'
-import type { ObservedColors } from '../model/song'
+import type { PhraseColumn, TableColumn } from './columns'
+import type { ObservedColors } from './song'
 
 export type ThemeColors = Record<M8ThemeRole, string>
 

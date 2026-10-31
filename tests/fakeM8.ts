@@ -156,11 +156,11 @@ export class FakeM8 implements M8Port {
       case 'project': {
         const scale = this.model.projectScale ?? 0
         lines       = projectScreen(this.model.name, this.model.tempo ?? null, {
-          transpose: this.model.projectTranspose,
-          groove   : this.model.projectGroove,
+          transpose: this.model.projectTranspose ?? null,
+          groove   : this.model.projectGroove ?? null,
           scale,
-          key      : this.model.projectKey,
-          scaleName: this.model.scales?.[scale]?.name
+          key      : this.model.projectKey ?? null,
+          scaleName: this.model.scales?.[scale]?.name ?? null
         })
         break
       }

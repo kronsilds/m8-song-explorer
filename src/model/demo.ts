@@ -449,14 +449,14 @@ export function demoSong(seed = 8): SongModel {
 
   // --- Instruments and tables ---------------------------------------------------
   for (const [id, name, type] of INSTRUMENTS) {
-    const sound           = INSTRUMENT_SOUNDS[id]
-    const inst            : Instrument = {
+    const sound = INSTRUMENT_SOUNDS[id]
+    const inst  : Instrument = {
       id,
       name,
       type,
-      lines: instrumentLines(id, type, name, sound?.values),
-      mods : sound ? instrumentModsLines(id, sound.mods) : undefined
+      lines: instrumentLines(id, type, name, sound?.values)
     }
+    if (sound) inst.mods = instrumentModsLines(id, sound.mods)
     model.instruments[id] = inst
     const table           : Table = {
       id,

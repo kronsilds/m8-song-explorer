@@ -5,10 +5,10 @@
 // lights the header of the instrument its note plays; a note left to chance (CHA) only once the
 // M8's track panel shows it played. A playhead out of sight lights a halo at the edge of the view.
 
-import type { TrackPlayhead } from '../../m8/playback'
+import type { TrackPlayhead } from '../../model/live'
+import type { Palette } from '../../model/palette'
 import { fxValues, TRACKS } from '../../model/song'
 import { FRONT_W, ROW_H, type SongLayout } from '../layout'
-import type { Palette } from '../palette'
 import { easeFactor, smoothstep } from '../shapes'
 import { FRONT_NOTES_W, FRONT_NOTES_X, type TrackView, WALL_STEPS_U, WALL_STEPS_W } from '../track/trackView'
 import { CellMarker, type CellRect } from './cellMarker'

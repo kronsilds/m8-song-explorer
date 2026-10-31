@@ -7,6 +7,7 @@ import { demoSong } from '../src/model/demo'
 import { grooveReports, summarizeTicks } from '../src/model/music/groove'
 import { FIRST_CONTENT_ROW, phraseScreen } from '../src/model/screens'
 import type { Groove } from '../src/model/song'
+import { buildSongContext } from '../src/model/songContext'
 import { buildTimeline } from '../src/model/timeline'
 import type { World } from '../src/scene/world'
 
@@ -227,7 +228,7 @@ describe('playback events', () => {
   const bandRow  = (songRow: number) => timeline.bands.find((b) => b.songRow === songRow)?.row as number
 
   test('a MIDI start places the tracks, Stop ends it, and a second start counts as a restart', () => {
-    const tracker   = new PlaybackTracker(model, timeline)
+    const tracker   = new PlaybackTracker(buildSongContext(model))
     const events    : PlaybackEvent[] = []
     tracker.onEvent = (event) => events.push(event)
     tracker.clockTick(600, 12000, 20)
@@ -263,16 +264,14 @@ describe('playback events', () => {
 
 describe('playback feed in the log', () => {
   test('play start context, transport, clock gaps, drifts and the stop end up in the events', async () => {
-    const model    = demoSong()
-    const timeline = buildTimeline(model)
-    const log      = new DebugLog({ eventLimit: 50 })
-    const world    = {
-      layout           : { timeline },
-      setPlayheadSource: () => {}
-    } as unknown as World
-    const feed     = new PlaybackFeed(world, () => model, () => null, () => false, log)
-    feed.appState  = () => ({ following: true })
-    let send       : (event: M8TransportEvent) => void = () => {}
+    const model        = demoSong()
+    const song         = buildSongContext(model)
+    const { timeline } = song
+    const log          = new DebugLog({ eventLimit: 50 })
+    const world        = { setPlayheadSource: () => {} } as unknown as World
+    const feed         = new PlaybackFeed(world, () => song, () => null, () => false, log)
+    feed.appState      = () => ({ following: true })
+    let send           : (event: M8TransportEvent) => void = () => {}
     feed.listenToClock({
       onTransport: (callback: (event: M8TransportEvent) => void) => {
         send = callback
@@ -381,18 +380,16 @@ describe('playback feed in the log', () => {
 })
 
 describe('log noise and context', () => {
-  const model    = demoSong()
-  const timeline = buildTimeline(model)
-  const songRow  = 3
-  const bandRow  = timeline.bands.find((b) => b.songRow === songRow)?.row as number
-  const at       = (ms: number) => performance.timeOrigin + ms
+  const model        = demoSong()
+  const song         = buildSongContext(model)
+  const { timeline } = song
+  const songRow      = 3
+  const bandRow      = timeline.bands.find((b) => b.songRow === songRow)?.row as number
+  const at           = (ms: number) => performance.timeOrigin + ms
 
   function playingFeed(log: DebugLog) {
-    const world = {
-      layout           : { timeline },
-      setPlayheadSource: () => {}
-    } as unknown as World
-    const feed  = new PlaybackFeed(world, () => model, () => null, () => false, log)
+    const world = { setPlayheadSource: () => {} } as unknown as World
+    const feed  = new PlaybackFeed(world, () => song, () => null, () => false, log)
     let send    : (event: M8TransportEvent) => void = () => {}
     feed.listenToClock({
       onTransport: (callback: (event: M8TransportEvent) => void) => {
@@ -535,7 +532,7 @@ describe('log noise and context', () => {
   })
 
   test('a reanchor says how far off the prediction was', () => {
-    const tracker   = new PlaybackTracker(model, timeline)
+    const tracker   = new PlaybackTracker(buildSongContext(model))
     const events    : PlaybackEvent[] = []
     tracker.onEvent = (event) => events.push(event)
     tracker.clockTick(600, 12000, 20)

@@ -3,7 +3,7 @@
 // track is muted without moving the cursor to it. The notes go out on the M8's own USB MIDI
 // output port, through Web MIDI from this page (yam8d's External Apps iframe allows "midi").
 
-export type TrackToggle = 'mute' | 'solo'
+import type { TrackToggle } from '../model/live'
 
 // Checked on the M8 (Model:02, fw 6.5): mute C-0..G-0 (12-19), solo G#0..D#1 (20-27).
 const FIRST_NOTE             : Record<TrackToggle, number> = {
