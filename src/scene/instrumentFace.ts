@@ -30,6 +30,8 @@ export const FACE_CHARS     = MODS_X + 2 * MOD_CARD_CHARS + MOD_CARD_GAP
 const MOD_LABEL_CHARS       = 5
 /** The mixer column's labels start here; left bars stop a blank before. */
 const MIXER_X               = 18
+/** Characters of each number of an FM operator's LEV/FB ('80/00'). */
+const PAIR_DIGITS           = 2
 /** Bars shorter than this are not drawn. */
 const MIN_BAR_CHARS         = 2
 
@@ -56,6 +58,8 @@ export interface FaceBar {
   bipolar: boolean
   /** A thin meter under the value instead of a bar after it (FM operator levels). */
   under  : boolean
+  /** The second number of a pair (the feedback of LEV/FB), drawn in the accent colour. */
+  second : boolean
   /** Slots (1-4) whose destination is this parameter. */
   slots  : number[]
   /** The slot whose card the bar is on (a modulator value), tinted in its colour. */
@@ -126,7 +130,8 @@ function lineRoles(text: string, cells: InstrumentCell[]): TextRole[] {
   for (const cell of cells) {
     const empty = /^[-:]+$/.test(cell.text)
     for (let i = 0; i < cell.text.length && cell.x + i < roles.length; i += 1) {
-      roles[cell.x + i] = empty ? 'empty' : cell.shape === 'option' && i >= 2 ? 'option' : 'value'
+      // The feedback of an FM LEV/FB ('80/00') has the colour of its meter.
+      roles[cell.x + i] = empty ? 'empty' : cell.shape === 'option' && i >= 2 ? 'option' : cell.operator && cell.text[2] === '/' && i >= 3 ? 'title' : 'value'
     }
   }
   return roles
@@ -165,6 +170,24 @@ function barsOf(cells: InstrumentCell[], row: number, page: InstrumentPage): Fac
     if ((cell.shape !== 'level' && cell.shape !== 'bipolar') || cell.value == null) continue
     const slots = page.slots.filter((slot) => slot.dest != null && slot.dest === cell.label).map((slot) => slot.slot)
     if (cell.operator) {
+      // LEV/FB '80/00' is two values: a meter under each number, the feedback's in the accent colour.
+      const pair = /^([0-9A-F]{2})\/([0-9A-F]{2})$/.exec(cell.text)
+      if (pair) {
+        for (const [i, digits] of [pair[1], pair[2]].entries()) {
+          bars.push({
+            col    : cell.x + i * (PAIR_DIGITS + 1),
+            row,
+            width  : PAIR_DIGITS,
+            level  : Number.parseInt(digits, 16) / 0xff,
+            bipolar: false,
+            under  : true,
+            second : i === 1,
+            slots  : i === 0 ? slots : [],
+            tint   : null
+          })
+        }
+        continue
+      }
       bars.push({
         col    : cell.x,
         row,
@@ -172,6 +195,7 @@ function barsOf(cells: InstrumentCell[], row: number, page: InstrumentPage): Fac
         level  : cell.value / 0xff,
         bipolar: false,
         under  : true,
+        second : false,
         slots,
         tint   : null
       })
@@ -187,6 +211,7 @@ function barsOf(cells: InstrumentCell[], row: number, page: InstrumentPage): Fac
       level  : cell.value / 0xff,
       bipolar: cell.shape === 'bipolar',
       under  : false,
+      second : false,
       slots,
       tint   : null
     })
@@ -249,6 +274,7 @@ function modCards(page: InstrumentPage, text: FaceText, places: FacePlace[], bar
         level  : cell.value / 0xff,
         bipolar: false,
         under  : false,
+        second : false,
         slots  : [],
         tint   : slot.slot
       })

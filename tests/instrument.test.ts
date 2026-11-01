@@ -219,6 +219,32 @@ describe('instrument face', () => {
     }
   })
 
+  test('the LEV/FB of an FM operator has a meter under each number', () => {
+    const face = layoutInstrumentFace({
+      id   : 4,
+      name : 'TEST',
+      type : 'FMSYNTH',
+      lines: FM_SCREEN.map((line) => line.replace('LEV/FB  80/00 80/00 80/00 80/00', 'LEV/FB  FF/40 80/00 80/00 80/00')),
+      mods : MODS_SCREEN
+    })
+    const row  = face.places.find((p) => p.cell.label === 'LEV/FB')?.row
+    const bars = face.bars.filter((bar) => bar.row === row && bar.under)
+    expect(bars).toHaveLength(8)
+    const [level, feedback] = bars
+    expect(level).toMatchObject({
+      col   : 8,
+      width : 2,
+      level : 1,
+      second: false
+    })
+    expect(feedback).toMatchObject({
+      col   : 11,
+      width : 2,
+      second: true
+    })
+    expect(feedback.level).toBeCloseTo(0x40 / 0xff)
+  })
+
   test('a parameter a modulator drives is marked with its slot', () => {
     const face = layoutInstrumentFace(demoSong().instruments[5])
     expect(face.bars.find((bar) => bar.slots.includes(3))).toBeDefined()
@@ -307,5 +333,106 @@ describe('instrument on the device', () => {
     }])
     expect(absorbScreen(model, deviceScreen(mods))).toBe(true)
     expect(instrumentPage(model.instruments[1]).slots[0].kind).toBe('LFO')
+  })
+})
+
+describe('instrument cell descriptions', () => {
+  const describe = (lines: string[], label: string, operator?: string, nth = 0) => {
+    const instrument = {
+      id  : 4,
+      name: 'TEST',
+      type: 'FMSYNTH',
+      lines,
+      mods: MODS_SCREEN
+    }
+    const model      = {
+      ...demoSong(),
+      instruments: { 4: instrument }
+    }
+    const cell       = instrumentPage(instrument).cells.filter((c) => c.label === label && c.operator === operator)[nth]
+    return describeSelection(buildSongContext(model), {
+      kind      : 'instParam',
+      instrument: 4,
+      screen    : 'inst',
+      line      : cell.line,
+      x         : cell.x,
+      table     : 0,
+      track     : 0
+    }).parts.map((p) => p.text).join(' | ')
+  }
+
+  test('the four FM operators of a row are described alike, each with its own value', () => {
+    for (const label of ['SHAPE', 'RATIO', 'LEV/FB']) {
+      const texts = ['A', 'B', 'C', 'D'].map((operator) => describe(FM_SCREEN, label, operator).replace(`operator ${operator}`, 'operator X'))
+      // Only the first sentence: the SDK words the info of shape A longer than B-D (fixed after 0.5.3).
+      const head  = (text: string) => text.replace(/: \S+/, ': V').split(' | ')[0]
+      for (const text of texts) expect(head(text)).toBe(head(texts[0]))
+    }
+    expect(describe(FM_SCREEN, 'SHAPE', 'D')).toContain('operator D: SIN')
+    expect(describe(FM_SCREEN, 'SHAPE', 'B')).toContain('operator B: W0F')
+    expect(describe(FM_SCREEN, 'LEV/FB', 'C')).toContain('80/00 (level 80, feedback 00)')
+    expect(describe(FM_SCREEN, 'MOD', 'A')).toMatch(/Slot 1 .* operator A: 1>RAT \| MOD1 RAT: adds/)
+    expect(describe(FM_SCREEN, 'MOD', 'A', 1)).toMatch(/Slot 2 .*operator A: \(empty\)/)
+  })
+
+  test('a Hypersynth chord is explained: intervals, chord names, notes over C-4', () => {
+    const lines      = instrumentLines(5, 'HYPERSYN', 'T').map((line) => line.replace('00> 00 00 00 00 00 00', '00> 00 04 07 0B 0E 11'))
+    const instrument = {
+      id  : 5,
+      name: 'T',
+      type: 'HYPERSYN',
+      lines,
+      mods: MODS_SCREEN
+    }
+    const cell       = instrumentPage(instrument).cells.find((c) => c.label === 'CHORD')
+    const facts      = Object.fromEntries(describeSelection(buildSongContext({
+      ...demoSong(),
+      instruments: { 5: instrument }
+    }), {
+      kind      : 'instParam',
+      instrument: 5,
+      screen    : 'inst',
+      line      : cell?.line ?? 0,
+      x         : cell?.x ?? 0,
+      table     : 0,
+      track     : 0
+    }).facts)
+    expect(facts.Intervals).toBe('0 +4 +7 +11 +14 +17')
+    expect(facts['Notes 1-3']).toMatch(/major chord/)
+    expect(facts['Over C-4']).toBe('C-4 E-4 G-4 B-4 D-5 F-5')
+    expect(facts['Chord bank']).toBe('00')
+  })
+
+  test('rows the SDK does not know are described', () => {
+    const lines = (type: string) => instrumentLines(5, type, 'T')
+    const at    = (type: string, label: string) => {
+      const instrument = {
+        id   : 5,
+        name : 'T',
+        type,
+        lines: lines(type),
+        mods : MODS_SCREEN
+      }
+      const cell       = instrumentPage(instrument).cells.find((c) => c.label === label)
+      if (!cell) throw new Error(label)
+      return describeSelection(buildSongContext({
+        ...demoSong(),
+        instruments: { 5: instrument }
+      }), {
+        kind      : 'instParam',
+        instrument: 5,
+        screen    : 'inst',
+        line      : cell.line,
+        x         : cell.x,
+        table     : 0,
+        track     : 0
+      }).parts.map((p) => p.text).join(' | ')
+    }
+    expect(at('SAMPLER', 'LOOP ST')).toMatch(/Loop Start/)
+    expect(at('SAMPLER', 'LENGTH')).toMatch(/Sample length/)
+    expect(at('HYPERSYN', 'SHAPE')).toMatch(/\(SHAPE\): 00 SAW/)
+    expect(at('HYPERSYN', 'CHORD')).toContain('00 > 00 00 00 00 00 00')
+    expect(at('MIDI OUT', 'CCA CC:VAL')).toMatch(/Custom CC \(CC:VAL\): ---:--/)
+    expect(at('EXTERNAL', 'CCA')).toMatch(/Custom CC \(CC:VAL\): 001:--/)
   })
 })

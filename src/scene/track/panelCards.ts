@@ -23,7 +23,7 @@ import {
 } from '../layout'
 import { type ColoredRect, easeFactor, rectangles, smoothstep } from '../shapes'
 import { disposeText, makeText, RichText, showsRich } from '../text'
-import { FACE_WIDTH, InstrumentFaceView } from './instrumentFaceView'
+import { FACE_HEADER_WIDTH, FACE_WIDTH, InstrumentFaceView } from './instrumentFaceView'
 import type { TrackTextBuilder } from './trackText'
 
 const PANEL_BACKGROUND_OPACITY = 0.92
@@ -482,7 +482,8 @@ export class PanelCards {
     const opacity      = FLASH_OPACITY * panel.flash ** 2 * alpha
     view.flash.visible = opacity > 0.002
     if (view.flash.visible) {
-      view.flash.scale.x                                 = view.width
+      // On the instrument face the modulator cards stand right of the header: the flash covers the header band only.
+      view.flash.scale.x                                 = this.shownFace(panel) === 'inst' ? Math.min(view.width, FACE_HEADER_WIDTH) : view.width
       ;(view.flash.material as MeshBasicMaterial).opacity = opacity
     }
     return panel.flash > 0

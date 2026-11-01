@@ -22,6 +22,7 @@ import {
   scalePitches,
   transposeSemitones,
 } from '../model/music/harmony'
+import { chordFacts } from '../model/music/hypersynthChord'
 import { noteNumber, PITCH_NAMES, pitchClass } from '../model/music/pitch'
 import { DEFAULT_TIC } from '../model/music/tablePlayback'
 import {
@@ -437,6 +438,7 @@ function describeInstrumentCell(model: SongModel, selection: InstParamSelection)
     }
   }
   if (cell.operator) facts.push(['Operator', cell.operator])
+  if (cell.label === 'CHORD') facts.push(...chordFacts(cell.text))
   for (const slot of modulatorsOf(page, cell.label)) facts.push(['Modulated by', `MOD${slot.slot} · ${modSummary(slot)}`])
   return {
     path : instrumentPath(model, selection.instrument, selection.track),

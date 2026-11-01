@@ -122,7 +122,7 @@ export class InstrumentFaceView {
       const top   = -bar.row * ROW_H - (bar.under ? UNDER_TOP : BAR_TOP)
       const h     = bar.under ? UNDER_HEIGHT : BAR_HEIGHT
       const slot  = bar.tint ?? bar.slots[0]
-      const color = slot ? mix(fill, this.slotColor(slot), bar.tint ? 0.5 : 0.35) : fill
+      const color = bar.second ? mix(fill, palette.title, 0.8) : slot ? mix(fill, this.slotColor(slot), bar.tint ? 0.5 : 0.35) : fill
       rects.push({
         x,
         y    : top,
