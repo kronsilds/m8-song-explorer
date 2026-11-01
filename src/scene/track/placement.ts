@@ -16,7 +16,7 @@ import { easeFactor, smoothstep } from '../shapes'
 import { FACE_WIDTH } from './instrumentFaceView'
 import { FACE_PAD_LEFT, FACE_PAD_TOP, flipPose, PANEL_TAB_ROOM } from './panelCards'
 import type { FoldSection } from './trackHeader'
-import { FOLD_SECTIONS, type WallFolds } from './wallFolds'
+import { FOLD_SECTIONS, type Folds, type WallFolds } from './wallFolds'
 
 /**
  * Room between the end of what a track unfolds (its step details, its wall of panels, or a panel
@@ -27,6 +27,9 @@ export const OPEN_GAP   = 4
 /** While a wall is unfolded, the tracks that are not leave between these yaws (looking along the wall). */
 const OTHERS_LEAVE_YAWS = [MathUtils.degToRad(34), MathUtils.degToRad(54)] as const
 const WALL_EASE_RATE    = 7
+/** A part unfolded this far or less counts as not shown, and one this far or more as unfolded. */
+const FADE_MIN          = 0.05
+const PANELS_STEADY     = 0.95
 
 export class TrackPlacement {
   /** How unfolded each part of each track's wall is (0..1), easing toward the folds. */
@@ -108,6 +111,22 @@ export class TrackPlacement {
   /** How far a track's wall slides back once it settles. */
   settledSlide(track: number): number {
     return this.wallSlide(this.folds.opened(track).fx ? 1 : 0)
+  }
+
+  /**
+   * How far the wall is slid back this frame, `shown` being last frame's. A part that unfolds fades
+   * in at the place it settles at (the gap beside it widens meanwhile), and one that folds fades out
+   * where it stands. The wall only glides when panels stay in view while the step details unfold or
+   * fold: they move along with it.
+   */
+  private slideShown(shown: number, fold: Folds, amounts: Record<FoldSection, number>, ease: number): number {
+    const target         = this.wallSlide(fold.fx ? 1 : 0)
+    const panelsFadingIn = fold.panels && amounts.panels < PANELS_STEADY
+    if (amounts.panels > FADE_MIN && !panelsFadingIn) {
+      const next = shown + (target - shown) * ease
+      return Math.abs(target - next) < 0.01 ? target : next
+    }
+    return !fold.fx && amounts.fx > FADE_MIN ? shown : target
   }
 
   /**
@@ -288,7 +307,7 @@ export class TrackPlacement {
         if (amounts[section] !== before) busy = true
       }
       const frontAlpha = this.folds.isUnfolded(track) ? 1 : staying
-      const slide      = this.wallSlide(amounts.fx)
+      const slide      = this.slideShown(view.slide, fold, amounts, ease)
       const wallLen    = this.content.layout?.tracks[track]?.wallLen ?? 0
       const before     = this.shownWallLen[track] ?? wallLen
       let shownLen     = before + (wallLen - before) * ease

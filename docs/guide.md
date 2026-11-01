@@ -38,11 +38,12 @@ What the explorer shows, and how it behaves while you use it. The keys and butto
   back as far as they need, within readable distances. Front centres on all the tracks and
   slides only as far as it takes to show the focused one; facing the front, Follow M8 and the
   arrows frame all the tracks the same way while they fit the screen (the track headers stay
-  clear of the top bar, even when it wraps onto more rows in a narrow window). A drag that
-  turns the view goes around the track it starts on, which stays where it is on screen. Panning moves
+  clear of the top bar, even when it wraps onto more rows in a narrow window). A right drag (or a
+  Shift + left drag; Shift flips a drag while it goes on) turns the view around the track it starts on, which stays where it is on screen. Panning moves
   parallel to the tracks, so the zoom never changes, and a pan drag keeps what it grabbed under
   the pointer (sideways; nearer things move faster). With nothing selected, the track in the
-  middle of the view is the focused one. Ctrl+wheel zooms toward the pointer.
+  middle of the view is the focused one. The wheel scrolls (Shift: sideways only), Ctrl+wheel zooms toward the pointer in finer steps the closer the view is.
+  A click on a track unfolds its wall until a click or navigation goes to another track (its FX / INS buttons keep it).
 
 ## Folding the wall
 

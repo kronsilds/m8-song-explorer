@@ -14,7 +14,7 @@ import type { TrackPlacement } from '../track/placement'
 import type { FoldSection } from '../track/trackHeader'
 import { HEADER_BOTTOM } from '../track/trackHeader'
 import { WALL_STEPS_U, WALL_STEPS_W } from '../track/trackView'
-import type { WallFolds } from '../track/wallFolds'
+import { FOLD_SECTIONS, type WallFolds } from '../track/wallFolds'
 import { FACING_FRONT_YAW, presetAngles, type TurnPreset, type ViewPreset } from './cameraAngles'
 import {
   type Align,
@@ -225,6 +225,20 @@ export class Navigator {
     const section: FoldSection | null = selection.kind !== 'step' ? 'panels' : selection.column !== 'inst' ? 'fx' : null
     if (!section || this.folds.opened(track)[section]) return
     this.folds.unfoldByNavigation(track, section)
+    this.revealTrack(track)
+    this.hooks.foldsChanged([track])
+  }
+
+  /**
+   * A click on a track: its whole wall (step details and panels) unfolds until a navigation or a
+   * click goes to another track, and comes into view. Parts its buttons keep unfolded stay so.
+   */
+  openTrack(track: number): void {
+    this.foldAutoExcept(track)
+    const opened = this.folds.opened(track)
+    const closed = FOLD_SECTIONS.filter((section) => !opened[section])
+    if (!closed.length) return
+    for (const section of closed) this.folds.unfoldByNavigation(track, section)
     this.revealTrack(track)
     this.hooks.foldsChanged([track])
   }

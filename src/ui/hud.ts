@@ -46,11 +46,11 @@ const element           = <K extends keyof HTMLElementTagNameMap>(tag: K, classN
 const HELP_HTML         = `
   <div class="help-title">NAVIGATE</div>
   <dl>
-    <dt>Drag</dt><dd>turn around the track under the pointer</dd>
-    <dt>Right drag · Shift drag</dt><dd>pan</dd>
+    <dt>Drag</dt><dd>pan</dd>
+    <dt>Right drag · Shift drag</dt><dd>turn around the track under the pointer (Shift flips a drag at once)</dd>
     <dt>FX · INS</dt><dd>buttons in a track header: unfold the step details (velocity, instrument, FX) · the instrument and table panels, from any angle; as many tracks as you like. A part the selection or the M8 cursor goes to unfolds by itself (only the label lights) and folds again when it leaves the track; its button keeps it. UNFOLD FX · INS in the top bar do it for every track</dd>
     <dt>+ · -</dt><dd>beside INS when a track's panels want more than two columns: add a column (up to four) · back to two</dd>
-    <dt>Wheel</dt><dd>scroll the song · Ctrl/pinch zooms</dd>
+    <dt>Wheel</dt><dd>scroll the song · Shift: sideways · Ctrl/pinch zooms</dd>
     <dt>Click · Double click</dt><dd>select · focus</dd>
     <dt>Arrows · PgUp/PgDn</dt><dd>move the selection · scroll 16 rows</dd>
     <dt>Shift+Arrows</dt><dd>a whole phrase up / down · the same cell in the next / previous track</dd>
@@ -143,7 +143,7 @@ export class Hud {
     this.help.addEventListener('click', () => this.help.classList.add('hidden'))
 
     const footer = element('footer', 'footer')
-    footer.append(this.hoverLine, element('div', 'hints', 'drag to turn · wheel to scroll · ctrl+wheel to zoom · click a cell · ? for keys'))
+    footer.append(this.hoverLine, element('div', 'hints', 'drag to pan · right drag to turn · wheel to scroll · ctrl+wheel to zoom · click a cell · ? for keys'))
 
     root.append(topBar, this.menu, this.info, this.progress, this.confirmBox, this.toast, this.help, footer)
     this.renderInfo(null)

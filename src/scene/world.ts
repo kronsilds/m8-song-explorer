@@ -734,8 +734,11 @@ export class World implements PointerTarget {
     this.onHover(selection)
   }
 
-  click(selection: Selection | null): void {
+  /** A click selects (nothing: clears) and opens the wall of the track pressed until a click goes to another track, unless its buttons keep it open. */
+  click(selection: Selection | null, clientX: number, clientY: number): void {
     this.select(selection, { reveal: false })
+    const track = selection ? selectionTrack(selection) : this.trackAt(clientX, clientY)
+    if (track != null) this.navigator.openTrack(track)
   }
 
   doubleClick(selection: Selection): void {
