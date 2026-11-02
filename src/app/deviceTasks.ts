@@ -121,19 +121,20 @@ export class DeviceTasks {
       let lastDrawAt = 0
       try {
         const explored          = await exploreSong(port, {
-          signal    : exploration.signal,
-          onProgress: (progress) => {
+          signal      : exploration.signal,
+          onProgress  : (progress) => {
             run.phase(progress.phase, progress.message)
             hud.showProgress(progress.message, progress.total ? progress.done / progress.total : null)
           },
-          onUpdate  : (model) => {
+          onUpdate    : (model) => {
             if (performance.now() - lastDrawAt < EXPLORE_REDRAW_MS) return
             lastDrawAt = performance.now()
             song.show(model, song.model.source === 'device')
             // Keep what was read if the page goes away mid-run.
             saveModel(model)
           },
-          log       : logTo('[explore]', run)
+          log         : logTo('[explore]', run),
+          onCursorMiss: (miss) => debugLog.event('cursor-miss', { ...miss })
         })
         explored.theme          = this.theme.exactTheme
         session.otherSongLoaded = false

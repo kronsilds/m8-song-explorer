@@ -16,6 +16,20 @@ export class ExploreCancelled extends Error {
 
 export class M8MoveError extends Error {}
 
+/** A cursor move whose navigateTo did not end on the asked cell, for the debug log. */
+export interface CursorMiss {
+  /** It answered true with the cursor elsewhere, answered false, or failed (a timeout). */
+  outcome   : 'wrong-cell' | 'refused' | 'error'
+  target    : { x: number; y: number }
+  /** Where the cursor was when the call ended. */
+  cursor    : { x: number; y: number } | null
+  view      : string | null
+  /** The cursor rectangle in M8 pixels, and whether the SDK took it for a selection. */
+  rect?     : { x: number; y: number; w: number; h: number } | null
+  selection?: boolean
+  error?    : string
+}
+
 /** Views yam8d can navigate between by name. */
 export const GRAPH_VIEWS = new Set([
   'song',
@@ -42,6 +56,7 @@ export interface DriverOptions {
   settleTimeoutMs?: number | undefined
   signal?         : AbortSignal | undefined
   log?            : ((message: string) => void) | undefined
+  onCursorMiss?   : ((miss: CursorMiss) => void) | undefined
 }
 
 const DEFAULT_POLL_MS           = 30
@@ -83,6 +98,7 @@ export class M8Driver {
   private readonly settleTimeoutMs: number
   private readonly signal         : AbortSignal | undefined
   private readonly log            : (message: string) => void
+  private readonly onCursorMiss   : (miss: CursorMiss) => void
   /** Option+Up/Down steps 16 items on Instrument and Table; turned off if the device disagrees. */
   private readonly bigStepsWork   : Record<'inst' | 'table', boolean> = {
     inst : true,
@@ -107,6 +123,7 @@ export class M8Driver {
     this.settleTimeoutMs = options.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.signal          = options.signal
     this.log             = options.log ?? (() => {})
+    this.onCursorMiss    = options.onCursorMiss ?? (() => {})
   }
 
   throwIfCancelled(): void {
@@ -252,7 +269,36 @@ export class M8Driver {
    */
   async moveCursor(x: number, y: number): Promise<void> {
     this.throwIfCancelled()
-    if (await this.port.navigateTo(x, y)) return
+    const target = { x, y }
+    let answer   : boolean
+    try {
+      answer = await this.port.navigateTo(x, y)
+    } catch (error) {
+      if (error instanceof ExploreCancelled) throw error
+      this.reportMiss({
+        outcome: 'error',
+        target,
+        cursor : null,
+        view   : null,
+        error  : error instanceof Error ? error.message : String(error)
+      })
+      throw error
+    }
+    // The SDK's answer is not taken on trust: a press that opens a view acts on wherever the cursor is.
+    const state = await this.port.getState()
+    const at    = state.cursorPos
+    if (answer && at && at.x === x && at.y === y) return
+    this.reportMiss({
+      outcome  : answer ? 'wrong-cell' : 'refused',
+      target,
+      cursor   : at ? {
+        x: at.x,
+        y: at.y
+      } : null,
+      view     : state.viewName ?? null,
+      rect     : state.cursorRect ?? null,
+      selection: state.selectionMode
+    })
     for (let step = 0; step < MAX_CURSOR_STEPS; step += 1) {
       const position = (await this.port.getState()).cursorPos
       if (!position) throw new M8MoveError('the cursor is not visible')
@@ -271,6 +317,12 @@ export class M8Driver {
       }
     }
     throw new M8MoveError(`could not reach (${x}, ${y})`)
+  }
+
+  private reportMiss(miss: CursorMiss): void {
+    const where = miss.cursor ? `(${miss.cursor.x}, ${miss.cursor.y})` : 'nowhere'
+    this.log(`navigateTo(${miss.target.x}, ${miss.target.y}) ${miss.outcome}: the cursor is at ${where} on ${miss.view ?? 'an unknown view'}${miss.rect ? ` (rect ${miss.rect.x},${miss.rect.y} ${miss.rect.w}x${miss.rect.h}${miss.selection ? ', selection mode' : ''})` : ''}${miss.error ? `: ${miss.error}` : miss.outcome === 'error' ? '' : '; finishing with arrows'}`)
+    this.onCursorMiss(miss)
   }
 
   private async waitForCursorMove(from: { x: number; y: number }): Promise<boolean> {

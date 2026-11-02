@@ -11,7 +11,7 @@ import type { ViewKind } from '../../model/live'
 import { referencedGrooves } from '../../model/music/groove'
 import { referencedScales } from '../../model/music/harmony'
 import { chainLength, emptyModel, SONG_ROWS, type SongModel, TRACKS, usedItems } from '../../model/song'
-import { type DriverOptions, ExploreCancelled, type ItemView, M8Driver, M8MoveError } from '../driver'
+import { type CursorMiss, type DriverOptions, ExploreCancelled, type ItemView, M8Driver, M8MoveError } from '../driver'
 import type { M8Port } from '../port'
 import { learnColumnColors } from '../screen/colorReader'
 import {
@@ -54,6 +54,7 @@ export interface ExploreOptions {
   pollMs?         : number | undefined
   settleTimeoutMs?: number | undefined
   log?            : ((message: string) => void) | undefined
+  onCursorMiss?   : ((miss: CursorMiss) => void) | undefined
 }
 
 /** One item step of the exploration: every listed item of one view kind, read in turn. */
@@ -116,7 +117,8 @@ class SongExplorer {
       pollMs         : options.pollMs,
       settleTimeoutMs: options.settleTimeoutMs,
       signal         : options.signal,
-      log            : this.log
+      log            : this.log,
+      onCursorMiss   : options.onCursorMiss
     })
   }
 
