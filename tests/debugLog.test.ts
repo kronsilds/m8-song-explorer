@@ -518,6 +518,23 @@ describe('log noise and context', () => {
     expect(report.problems[0].resolvedT).toBeGreaterThanOrEqual(report.problems[0].firstT)
   })
 
+  test('a connection that announces itself twice asks for the clock once', async () => {
+    const log      = new DebugLog()
+    const { feed } = playingFeed(log)
+    let asked      = 0
+    const client   = {
+      enableMidiTransport: async () => {
+        asked += 1
+        return { ok: true }
+      }
+    } as unknown as M8Client
+    await Promise.all([feed.enableClock(client), feed.enableClock(client)])
+    expect(asked).toBe(1)
+    expect((await log.report()).events.filter((event) => event.type === 'midi-clock')).toHaveLength(1)
+    await feed.enableClock(client)
+    expect(asked).toBe(2)
+  })
+
   test('a problem that comes back is no longer marked resolved', async () => {
     const { clock, log } = clockedLog()
     log.problem('midi-clock', 'refused')

@@ -28,25 +28,29 @@ export class ViewToggles {
     hud.setWallDegrees(wallDegrees)
   }
 
-  toggleDramatic(): void {
+  /** The toggles return the state they switched to. */
+  toggleDramatic(): boolean {
     const dramatic = !preferences.dramatic.get()
     preferences.dramatic.set(dramatic)
     this.world.setDramatic(dramatic)
     this.hud.setActive('dramatic', dramatic)
+    return dramatic
   }
 
-  togglePlayedNotes(): void {
+  togglePlayedNotes(): boolean {
     const playedNotes = !preferences.playedNotes.get()
     preferences.playedNotes.set(playedNotes)
     this.world.setPlayedNotes(playedNotes)
     this.hud.setActive('played', playedNotes)
+    return playedNotes
   }
 
-  toggleTrimTables(): void {
+  toggleTrimTables(): boolean {
     const trimTables = !preferences.trimTables.get()
     preferences.trimTables.set(trimTables)
     this.world.setTrimTables(trimTables)
     this.hud.setActive('trim', trimTables)
+    return trimTables
   }
 
   /** The Options panel's wall angle slider. */

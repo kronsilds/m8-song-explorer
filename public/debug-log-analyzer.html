@@ -120,6 +120,7 @@
   details summary { cursor: pointer; color: var(--blue); font-size: 12.5px; }
   details ul { margin: 4px 0 2px; padding-left: 18px; color: var(--muted); }
   details li { padding: 1px 0; overflow-wrap: anywhere; }
+  pre.screen { margin: 4px 0 6px; padding: 8px 10px; overflow-x: auto; background: var(--bg, transparent); border: 1px solid var(--line, #8884); border-radius: 6px; font: inherit; line-height: 1.25; white-space: pre; overflow-wrap: normal; color: var(--text, inherit); }
   .timeline { padding: 12px 16px 16px; display: grid; gap: 6px; }
   .lane { display: grid; grid-template-columns: 130px 1fr; align-items: center; gap: 10px; }
   .lane .name { color: var(--muted); font-size: 12.5px; }
@@ -387,7 +388,7 @@ function analyze(report) {
   if (tasks.length) {
     add('tasks', 'Other device tasks', tasks.map((t) => {
       const text = `${t.kind} at ${fmtT(t.t)} · ${fmtMs(t.durationMs)}`
-      return t.outcome === 'done' ? ok(text) : t.outcome === 'cancelled' ? warn(text, 'cancelled') : fail(text, t.result?.error || t.outcome, (t.messages || []).map((x) => x.text.split('\n')[0]))
+      return t.outcome === 'done' ? ok(text) : t.outcome === 'cancelled' ? warn(text, 'cancelled') : fail(text, t.result?.error || t.outcome, (t.messages || []).map((x) => x.text))
     }))
   }
 
@@ -519,7 +520,7 @@ function songSyncChecks(run, win) {
   }
   if (messages.some((t) => /changes declined/.test(t))) c.push(info('MIDI settings changes declined', 'You chose not to let the explorer set SYNC OUT / CC MAP CHAN.'))
   const notSet = messages.filter((t) => /(SYNC OUT|CC MAP CHAN) not set/.test(t))
-  if (notSet.length) c.push(fail('The explorer could not change a MIDI setting', 'The song keeps its old value.', notSet.map((t) => t.split('\n')[0])))
+  if (notSet.length) c.push(fail('The explorer could not change a MIDI setting', 'The song keeps its old value.', notSet))
 
   const syncOn = sync?.syncOut === TARGET_SYNC
   const plays = win.sessions
@@ -575,8 +576,8 @@ function exploreChecks(run, problems) {
   const notFound = count(/not read|not set|cursor is not on|cursor not moved/)
   const bigOff = count(/does not step 16/)
   const swapped = count(/swapped/)
-  if (failures.length) c.push(fail(`${plural(failures.length, 'view')} never settled`, 'The M8 did not show what was expected.', failures.map((t) => t.split('\n')[0])))
-  if (notFound.length) c.push(fail('Device operations that failed', '', notFound.map((t) => t.split('\n')[0])))
+  if (failures.length) c.push(fail(`${plural(failures.length, 'view')} never settled`, 'The M8 did not show what was expected.', failures))
+  if (notFound.length) c.push(fail('Device operations that failed', '', notFound))
   if (retries.length) c.push(warn(`${plural(retries.length, 'key press')} had to be repeated`, 'The M8 missed a press.', retries))
   if (bigOff.length) c.push(warn('Option+Up/Down big steps turned off', 'Tables / instruments were stepped one at a time (slow).', bigOff))
   if (swapped.length) c.push(info('Option+Up/Down direction learnt', '', swapped))
@@ -605,6 +606,12 @@ function lightEl(status) {
   return h('span', { class: `light ${status}`, role: 'img', 'aria-label': LABEL[status] })
 }
 
+/** A detail: its first line, and the lines after it (a screen the M8 showed) as they were, in a block. */
+function itemEl(text) {
+  const [first, ...rest] = String(text).split('\n')
+  return h('li', { class: 'mono' }, first, rest.length ? h('pre', { class: 'screen', text: rest.join('\n') }) : null)
+}
+
 function sectionEl(section) {
   const status = worst(section.checks)
   return h('section', { class: 'card', id: section.id },
@@ -615,7 +622,7 @@ function sectionEl(section) {
         h('span', { class: 'title', text: cItem.title }),
         h('span', { class: `tag ${cItem.status}`, text: LABEL[cItem.status] }),
         cItem.detail ? h('div', { class: 'detail', text: cItem.detail }) : null,
-        cItem.items.length ? h('details', { open: cItem.status === FAIL || cItem.status === WARN }, h('summary', { text: `${cItem.items.length} detail${cItem.items.length === 1 ? '' : 's'}` }), h('ul', {}, cItem.items.map((text) => h('li', { class: 'mono', text })))) : null,
+        cItem.items.length ? h('details', { open: cItem.status === FAIL || cItem.status === WARN }, h('summary', { text: `${cItem.items.length} detail${cItem.items.length === 1 ? '' : 's'}` }), h('ul', {}, cItem.items.map(itemEl))) : null,
       )))))
 }
 

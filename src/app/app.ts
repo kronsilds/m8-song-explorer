@@ -115,8 +115,9 @@ export class ExplorerApp {
     })
     const commands    = this.commands()
     this.hud.onAction = (action) => {
-      if (!SILENT_ACTIONS.includes(action)) debugLog.event('action', { action })
-      commands[action]()
+      const on = commands[action]()
+      // A toggle says which way it went; a plain button has no state.
+      if (!SILENT_ACTIONS.includes(action)) debugLog.event('action', typeof on === 'boolean' ? { action, on } : { action })
     }
     bindKeyboard(this.keyCommands(commands), (fromCursor) => this.play(fromCursor))
     this.exposeDebugHandle()
@@ -131,7 +132,8 @@ export class ExplorerApp {
   // ---------------------------------------------------------------------------
   // Commands
 
-  private commands(): Record<Action, () => void> {
+  /** What a button does; a toggle returns whether it is on now. */
+  private commands(): Record<Action, () => unknown> {
     const { world, hud, live, tasks, toggles } = this
     return {
       device    : () => void this.link.toggleDevice(),
@@ -158,7 +160,7 @@ export class ExplorerApp {
     }
   }
 
-  private keyCommands(command: Record<Action, () => void>): KeyCommands {
+  private keyCommands(command: Record<Action, () => unknown>): KeyCommands {
     const { world, session } = this
     return {
       ArrowUp           : () => world.moveSelection(-1, 0),

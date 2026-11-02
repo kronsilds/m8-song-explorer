@@ -83,6 +83,7 @@ export class PlaybackFeed {
     corrections: 0,
     reanchors  : 0
   }
+  private enablingClock       : Promise<void> | null = null
   private loggedBpm           : number | null = null
   /** The latest msPerTick the clock reported, restarted after a pause (a new clock, maybe another tempo). */
   private recentMsPerTick     : number[] = []
@@ -317,8 +318,20 @@ export class PlaybackFeed {
     }
   }
 
-  /** Asks for the clock: yam8d forwards it, a standalone page opens the M8's MIDI input itself. */
-  async enableClock(client: M8Client): Promise<void> {
+  /**
+   * Asks for the clock: yam8d forwards it, a standalone page opens the M8's MIDI input itself.
+   * Calls that come while one is open share it (a connection announces itself twice).
+   */
+  enableClock(client: M8Client): Promise<void> {
+    if (this.enablingClock) return this.enablingClock
+    const enabling     = this.askForClock(client).finally(() => {
+      if (this.enablingClock === enabling) this.enablingClock = null
+    })
+    this.enablingClock = enabling
+    return enabling
+  }
+
+  private async askForClock(client: M8Client): Promise<void> {
     try {
       const result = await client.enableMidiTransport()
       console.info('[transport]', result.ok ? 'listening to the M8 MIDI clock' : `no MIDI clock: ${result.error}`)
