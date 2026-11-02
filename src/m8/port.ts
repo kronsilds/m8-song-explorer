@@ -13,7 +13,8 @@ export interface M8Port {
   keyDown(keys: M8KeyName[]): Promise<void>
   /** Releases every key. */
   keyUp(): Promise<void>
-  navigateTo(x: number, y: number): Promise<void>
+  /** Walks the cursor to screen cell (x, y); true when it is there when the call ends. */
+  navigateTo(x: number, y: number): Promise<boolean>
   navigateToView(view: string): Promise<boolean>
 }
 

@@ -303,7 +303,14 @@ export class FakeM8 implements M8Port {
     return true
   }
 
-  async navigateTo(x: number, y: number): Promise<void> {
+  /** Like the SDK: true when the cursor is on the cell afterwards. */
+  async navigateTo(x: number, y: number): Promise<boolean> {
+    this.jumpTo(x, y)
+    const cursor = this.cursor()
+    return cursor.x === x && cursor.y === y
+  }
+
+  private jumpTo(x: number, y: number): void {
     this.lastKeyAt = Date.now()
     switch (this.view) {
       case 'project':

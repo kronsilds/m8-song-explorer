@@ -248,11 +248,11 @@ export class M8Driver {
 
   /**
    * Puts the cursor on screen cell (x, y), counted like cursorPos (margin included).
-   * yam8d's navigateTo does the walking; arrows finish the job if it stops short.
+   * The SDK's navigateTo does the walking and says whether it got there; arrows finish the job if it stops short.
    */
   async moveCursor(x: number, y: number): Promise<void> {
     this.throwIfCancelled()
-    await this.port.navigateTo(x, y)
+    if (await this.port.navigateTo(x, y)) return
     for (let step = 0; step < MAX_CURSOR_STEPS; step += 1) {
       const position = (await this.port.getState()).cursorPos
       if (!position) throw new M8MoveError('the cursor is not visible')
