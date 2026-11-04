@@ -5,7 +5,11 @@ import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/700.css'
 import './style.css'
 
+import { inject } from '@vercel/analytics'
 import { ExplorerApp } from './app/app'
+
+// Initialize Vercel Web Analytics
+inject()
 
 const app = await ExplorerApp.start(document.getElementById('app') as HTMLElement)
 void app.connect()
