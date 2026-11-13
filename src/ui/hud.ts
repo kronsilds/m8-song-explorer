@@ -36,6 +36,24 @@ export type Action =
 /** A toolbar or menu button: its action, label and tooltip. */
 type ButtonSpec = [action: Action, label: string, title: string]
 
+const PART_LABELS: Record<CellDescription['parts'][number]['kind'], string> = {
+  field     : 'Selected value',
+  fxInfo    : 'Command',
+  fxTarget  : 'Command',
+  meaning   : 'What it does',
+  fxLane    : 'Playback',
+  relative  : 'Relative effect',
+  optionInfo: 'Selected option',
+  fieldInfo : 'About this setting',
+  fileInfo  : 'File action',
+  instrument: 'Instrument type',
+  section   : 'Section',
+  scale     : 'Scale',
+  track     : 'Track',
+  location  : 'Location',
+  line      : 'M8 row'
+}
+
 const element           = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] => {
   const created = document.createElement(tag)
   if (className) created.className = className
@@ -295,8 +313,8 @@ export class Hud {
 
   private buildInfoPanel(pinned: boolean): void {
     this.info.classList.toggle('pinned', pinned)
-    this.infoTab.append(element('span', 'info-tab-kicker', 'SELECTION'), this.infoTabTitle)
-    this.infoTab.title = 'Hover to open · click to pin'
+    this.infoTab.append(element('span', 'info-tab-kicker', 'CELL DETAILS'), this.infoTabTitle)
+    this.infoTab.title = 'Hover to preview · click to keep open'
     this.infoTab.addEventListener('click', () => this.togglePin())
     this.info.append(this.infoTab, this.infoBody)
   }
@@ -408,7 +426,10 @@ export class Hud {
   private togglePin(): void {
     const pinned = this.info.classList.toggle('pinned')
     const button = this.info.querySelector('.info-pin')
-    if (button) button.textContent = pinned ? 'Unpin' : 'Pin'
+    if (button) {
+      button.textContent = pinned ? 'Unpin' : 'Pin'
+      button.setAttribute('title', pinned ? 'Let the panel close when the pointer leaves' : 'Keep this panel open')
+    }
     this.onInfoPinned(pinned)
     this.onCoveredAreas(this.coveredAreas())
   }
@@ -426,13 +447,19 @@ export class Hud {
       this.info.classList.add('flash')
     }
     const pin = element('button', 'info-pin', this.info.classList.contains('pinned') ? 'Unpin' : 'Pin')
+    pin.title = this.info.classList.contains('pinned') ? 'Let the panel close when the pointer leaves' : 'Keep this panel open'
     pin.addEventListener('click', () => this.togglePin())
     const head = element('div', 'info-head')
-    head.append(element('div', 'info-kicker', 'SELECTION'), pin)
+    head.append(element('div', 'info-kicker', 'CELL DETAILS'), pin)
     if (!description) {
-      const placeholder =
-        'Click a note, an FX cell, a table row or an instrument value. The FX and INS buttons in a track header unfold its FX columns and its instrument panels; INST › on a panel (or key I) turns it over to its instrument.'
-      body.append(head, element('div', 'info-placeholder', placeholder))
+      const placeholder = element('div', 'info-placeholder')
+      placeholder.append(
+        element('div', 'info-empty-title', 'Nothing selected'),
+        element('p', '', 'Select a note, FX cell, table cell, or instrument setting to see what it does.'),
+        element('p', 'info-empty-hint', 'Use FX in a track header to show step details, and INS to show instruments and tables.'),
+        element('p', 'info-empty-hint', 'On an instrument panel, choose INST › or press I to see its settings.'),
+      )
+      body.append(head, placeholder)
       return
     }
     const path = element('div', 'info-path')
@@ -442,22 +469,18 @@ export class Hud {
     })
     body.append(head, path, element('div', 'info-title', description.title))
     if (description.parts.length) {
-      const list = element('ul', 'info-parts')
-      for (const part of description.parts) {
-        const item = element('li', `part part-${part.kind}`)
-        item.append(element('span', 'part-kind', part.kind), element('span', 'part-text', part.text))
-        list.append(item)
-      }
+      const list = element('dl', 'info-list info-parts')
+      for (const part of description.parts) list.append(element('dt', '', PART_LABELS[part.kind]), element('dd', `part-${part.kind}`, part.text))
       body.append(list)
     }
     if (description.facts.length) {
-      const facts = element('dl', 'info-facts')
+      const facts = element('dl', 'info-list info-facts')
       for (const [label, value] of description.facts) facts.append(element('dt', '', label), element('dd', '', value))
       body.append(facts)
     }
     const show    = element('button', 'tool primary show', 'Show on M8  ↵')
     show.disabled = !canShow
-    show.title    = canShow ? 'Move the M8 to this cell' : 'Connect through yam8d to drive the M8'
+    show.title    = canShow ? 'Open this cell on the connected M8 (Enter)' : 'Connect an M8 to open this cell on the device'
     show.addEventListener('click', () => this.onAction('show'))
     body.append(show)
   }

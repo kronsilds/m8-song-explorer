@@ -54,5 +54,30 @@ test('table cells and instrument headers', () => {
     track     : 3
   })
   expect(h.facts).toContainEqual(['Type', 'MACROSYN'])
-  expect(h.facts.find(([k]) => k === 'Played on tracks')?.[1]).toBe('4')
+  expect(h.facts.find(([k]) => k === 'Used on tracks')?.[1]).toBe('4')
 })
+
+test('missing modulator settings explain how to read them', () => {
+  const model = demoSong()
+  delete model.instruments[3].mods
+  const description = describeSelection(buildSongContext(model), {
+    kind      : 'instrument',
+    instrument: 3,
+    table     : 3,
+    track     : 3
+  })
+  expect(description.facts).toContainEqual(['Modulators', 'Settings unavailable. Explore the song again to read the modulators.'])
+})
+
+test('an unused table says that the song never triggers it', () => {
+  const description = describeSelection(buildSongContext(demoSong()), {
+    kind      : 'table',
+    table     : 0xff,
+    row       : 0,
+    column    : 'transpose',
+    track     : 0,
+    instrument: null
+  })
+  expect(description.facts).toContainEqual(['Playback triggered by', 'Not triggered anywhere in this song.'])
+})
+

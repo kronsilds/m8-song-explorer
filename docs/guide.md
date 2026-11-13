@@ -82,8 +82,8 @@ What the explorer shows, and how it behaves while you use it. The keys and butto
   panel turns out of the wall to face the front, and its table crossfades into the instrument
   face, by itself while the M8 shows that instrument (Instrument or Inst. Mods view), and
   back when it leaves; the `INST ›` / `‹ TABLE` tab above the panel, or key `I`, turns it by
-  hand. Every value is a cell: the Selection panel explains it as the SDK reads it on the device,
-  with what modulates it, or the whole modulator for a modulator value. With Auto select the M8
+  hand. Every value is a cell: the Cell Details panel explains it in clear language from the SDK's
+  technical reading of the device, with what modulates it, or the whole modulator for a modulator value. With Auto select the M8
   cursor's value is selected as it moves, on the panel of the track the M8 came from (else the
   nearest track using it). Going to a panel cell (Auto select, Follow M8, the arrows) brings its
   whole card into view as it settles, as large as the face it turns to: the view slides along the
@@ -93,9 +93,9 @@ What the explorer shows, and how it behaves while you use it. The keys and butto
 - **Table cells** in the Selection panel also say how the table plays (`src/model/music/tableWalk.ts`):
   its speed (the `TIC` the song starts it at most often, in rows per step and in ms at the
   project tempo), what starts it (notes, `TBX` steps, which tracks), where the selected cell's
-  column goes after the note (`loops rows 0–3, 4 ticks, 83 ms per pass`, or `plays rows 0–F once
-  and stops on row F`), a `Not played` line when that column never reaches the row, and the
-  chord its N column spells (`0 +3 +7 +12 st: minor chord`) with the notes it makes from the
+  column goes after the note (`N/V playback`: `Loops rows 0–3; each pass takes 4 ticks, 83 ms`, or
+  `Plays rows 0–F once, then stops on row F after 15 ticks, 313 ms`), a `Selected row` line when that
+  column never reaches the row, and the chord its N column spells (`0, +3, +7, +12 semitones · minor chord`) with the notes it makes from the
   first note that starts it (only on a scale that lets every note through, since the N column
   may count scale steps on other scales). It follows the [table playback rules](playback.md#table-playback).
 - **Many instruments at once**: panels that would overlap tile into extra columns deeper along the
@@ -121,15 +121,16 @@ What the explorer shows, and how it behaves while you use it. The keys and butto
   not the transpose colour, when only the scale moved it). **Played notes** (`T`) switches back
   to the notes as written. Instruments with `TRANSP.` OFF keep their
   notes. The track's scale is the project SCALE (with its Scale view KEY) until an `SCA` on the
-  track or an `SCG` on any track changes it (`SCA XY`: key X, scale Y). The Selection panel shows
-  the track scale, what a note plays (`D-4 (F-4 -2, scale +1) · 4th of A MINOR`) and its scale
-  detune; a written note only the scale moved (no transpose) is titled `Note E-4 → F-4 (scale)` and
-  gets a `Quantized` line saying it is not in the scale; when the scale lets every note through it guesses the key the phrase's notes fit
-  (`fits C major`) instead.
-- **Semantics**: clicking any cell shows what it means (the panel is a tab on the right edge:
-  hover to open it, click the tab or Pin to keep it open). The cell is drawn on a screen the way the M8
-  draws it and the SDK reads it as if the device cursor were on it, so FX values, REP lanes,
-  relative commands and ARP intervals are explained as on the device.
+  track or an `SCG` on any track changes it (`SCA XY`: key X, scale Y). The Cell Details panel shows
+  the track scale, the written and played notes, each transpose or scale adjustment, and the note's scale
+  degree. A written note only the scale moved (no transpose) is titled `Note E-4 → F-4 (scale)` and gets
+  a `Scale adjustment` line saying it is outside the scale. When the scale lets every note through, the
+  panel guesses the key the phrase's notes fit (`likely key C major`) instead.
+- **Semantics**: clicking any cell shows what it does (the Cell Details panel is a tab on the right edge:
+  hover to preview it, click the tab or Pin to keep it open). The cell is drawn on a screen the way the M8
+  draws it and the SDK reads it as if the device cursor were on it, so FX values, REP lanes, relative commands
+  and ARP intervals keep their device meaning. The panel uses clearer labels and sentences; the SDK's technical
+  `describeContextParts()` output remains available unchanged to SDK consumers.
 - **Device theme**: colours come from the M8. The background, title and cursor colours are read from
   any screen; *Read theme* (see [Read theme](exploration.md#read-theme)) opens System Settings ›
   Theme and takes the 13 exact colours; the colour of each column is learnt from the screens read

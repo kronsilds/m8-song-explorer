@@ -1,8 +1,8 @@
-// What a selected cell means, in the SDK's words: the cell is drawn on a screen the way the
-// M8 draws it and the SDK reads it as if the device cursor were on it, so FX values,
-// REP lanes, relative commands and ARP intervals are explained exactly as on the device.
+// What a selected cell means: the SDK's technical reading, adapted for the panel. The cell is drawn on a
+// screen the way the M8 draws it and the SDK reads it as if the device cursor were on it, so FX values,
+// REP lanes, relative commands and ARP intervals keep their device meaning.
 
-import { describeContextParts, getSemanticContext, type M8DescriptionPart, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
+import { getSemanticContext, type M8DescriptionPart, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import { COLUMN_X, fxLaneOf, phraseColumnX, tableColumnX } from '../model/columns'
 import type { CellDescription, Fact } from '../model/description'
 import { hex2, hexDigit } from '../model/hex'
@@ -41,6 +41,7 @@ import type { Selection } from '../model/selection'
 import { emptyTable, type FxCell, type SongModel, type Table } from '../model/song'
 import { effectiveInstrumentAt, type SongContext } from '../model/songContext'
 import type { PhraseInstance } from '../model/timeline'
+import { selectionParts } from './selectionCopy'
 
 type StepSelection = Extract<Selection, { kind: 'step' }>
 type ChainSelection = Extract<Selection, { kind: 'chain' }>
@@ -99,7 +100,7 @@ function sdkParts(viewName: string, title: string, lines: string[], x: number, r
     height: SCREEN_HEIGHT,
     lines
   })
-  return context ? describeContextParts(context).filter((part) => part.kind !== 'location') : []
+  return context ? selectionParts(context) : []
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +114,8 @@ function instrumentLabel(model: SongModel, id: number | null): string {
 
 const fxTitle = (lane: number, fx: FxCell | null | undefined): string => `FX${lane + 1} · ${fx?.cmd ?? '---'} ${hex2(fx?.val ?? null, '00')}`
 
-const plural  = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`
+const plural       = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`
+const semitoneText = (value: number): string => `${formatTranspose(value)} ${Math.abs(value) === 1 ? 'semitone' : 'semitones'}`
 
 // ---------------------------------------------------------------------------
 // Phrase steps and chain rows
@@ -173,7 +175,7 @@ class PhraseCellDescriber {
   private addPhraseFacts(): void {
     const { instance, model, harmony, facts } = this
     const uses                                = Object.values(model.chains).filter((chain) => chain.rows.some((row) => row.phrase === instance.phrase)).length
-    facts.push(['Phrase used in', plural(uses, 'chain')])
+    facts.push(['Phrase usage', plural(uses, 'chain')])
     // The track's scale (read from the Scale view) where the phrase starts; the key the notes
     // fit is a guess, shown when the scale lets every note through.
     const choice   = this.scales.at(instance.track, instance.row)
@@ -181,16 +183,16 @@ class PhraseCellDescriber {
     if (model.scales) facts.push(['Track scale', `${scaleLabel(model, choice)}${allNotes ? ' (all notes)' : ''}`])
     const keyGuess = allNotes && harmony.key
     if (harmony.pitches.length)
-      facts.push(['Phrase notes', [pitchList(harmony.pitches), keyGuess && `fits ${keyName(keyGuess)}`].filter(Boolean).join(' · ')])
-    if (this.projectSemitones) facts.push(['Project transpose', `${formatTranspose(this.projectSemitones)} st`])
-    if (this.chainSemitones) facts.push(['Chain transpose', `${formatTranspose(this.chainSemitones)} st (TSP ${hex2(this.chainTransposeRaw)})`])
+      facts.push(['Notes in phrase', [pitchList(harmony.pitches), keyGuess && `likely key ${keyName(keyGuess)}`].filter(Boolean).join(' · ')])
+    if (this.projectSemitones) facts.push(['Project transpose', semitoneText(this.projectSemitones)])
+    if (this.chainSemitones) facts.push(['Chain transpose', `${semitoneText(this.chainSemitones)} (TSP ${hex2(this.chainTransposeRaw)})`])
     if (this.transposed && harmony.pitches.length) {
       const playedPitches = (this.phrase?.steps ?? []).flatMap((step, s) => {
         const played = noteNumber(playedNote(model, step.note, this.chainSemitones, null, this.scales.at(instance.track, instance.row + s)).note)
         return played == null || noteNumber(step.note) == null ? [] : [played % 12]
       })
       const shift         = this.chainSemitones + this.projectSemitones
-      facts.push(['Played as', [pitchList(playedPitches), keyGuess && keyName(keyGuess, shift)].filter(Boolean).join(' · ')])
+      facts.push(['Notes after transpose', [pitchList(playedPitches), keyGuess && `likely key ${keyName(keyGuess, shift)}`].filter(Boolean).join(' · ')])
     }
   }
 
@@ -212,7 +214,7 @@ class PhraseCellDescriber {
     const parts  = phrase
       ? sdkParts('phrase', `PHRASE ${hex2(phrase.id)}`, phraseScreen(phrase), phraseColumnX(selection.column), selection.step, width)
       : []
-    if (effectiveInstrument != null) facts.unshift(['Instrument playing', instrumentLabel(model, effectiveInstrument)])
+    if (effectiveInstrument != null) facts.unshift(['Instrument', instrumentLabel(model, effectiveInstrument)])
     return {
       path,
       title: this.stepTitle(selection, played),
@@ -247,19 +249,18 @@ class PhraseCellDescriber {
     const degree    = this.degreeText(written, played)
     const detuned   = Math.trunc(played.detune)
     const how       = [
-      played.shift ? `${writtenText} ${formatTranspose(played.shift)}` : writtenText,
-      played.snapped ? `scale ${formatTranspose(played.snapped)}` : null,
-      detuned ? `scale offset ${formatTranspose(detuned)}` : null
+      played.shift ? `${writtenText} transposed by ${semitoneText(played.shift)}` : `Written as ${writtenText}`,
+      played.snapped ? `adjusted by ${semitoneText(played.snapped)} to fit the scale` : null,
     ]
       .filter(Boolean)
-      .join(', ')
+      .join('; ')
     if (played.snapped && !played.shift && played.transposes) {
-      facts.push(['Quantized', `${writtenText} is not in ${scaleLabel(this.model, played.scale)}: no transpose, the scale moves it ${formatTranspose(played.snapped)} st up to ${played.note ?? 'out of range'}`])
+      facts.push(['Scale adjustment', `${writtenText} is outside ${scaleLabel(this.model, played.scale)}. With no transpose active, the scale moves it up by ${semitoneText(played.snapped)} to ${played.note ?? 'out of range'}.`])
     }
-    if (this.transposed && !played.transposes) facts.push(['Plays', `${writtenText} (instrument TRANSP. OFF: not transposed)`])
-    else if (played.shift || played.snapped || detuned) facts.push(['Plays', `${played.sounding ?? 'out of range'} (${how})${degree ? ` · ${degree}` : ''}`])
-    else if (degree) facts.push(['Degree', degree])
-    if (played.detune) facts.push(['Scale detune', `${played.detune > 0 ? '+' : ''}${played.detune.toFixed(2)} st`])
+    if (this.transposed && !played.transposes) facts.push(['Played note', `${writtenText}; TRANSP. is OFF, so chain and project transposition do not apply.`])
+    else if (played.shift || played.snapped || detuned) facts.push(['Played note', `${played.sounding ?? 'Out of range'} (${how})`])
+    if (degree) facts.push(['Scale degree', degree])
+    if (played.detune) facts.push(['Scale detune', `${played.detune > 0 ? '+' : ''}${played.detune.toFixed(2)} ${Math.abs(played.detune) === 1 ? 'semitone' : 'semitones'}`])
   }
 
   /** '4th of A MINOR': the place of the played note among the scale's notes from the key; '' when unknown. */
@@ -337,33 +338,34 @@ function tableFacts(model: SongModel, selection: TableSelection, table: Table, s
   const uses                        = tableUses(model, song.timeline, song.effective, selection.table)
   const { tic, others, instrument } = tableTic(model, selection.table, uses)
   const tempo                       = model.tempo ?? null
-  const also                        = others.length ? ` (also started at TIC ${others.map((other) => hex2(other)).join(', ')})` : ''
-  facts.push(['Speed', `TIC ${hex2(tic)}: ${ticText(tic, tempo)}${also}`])
-  if (instrument != null) facts.push(['Instrument TIC', `TBL.TIC ${hex2(instrument)} of instrument ${hex2(selection.table)}, which the song never starts this table at`])
+  const also                        = others.length ? ` Other triggers use TIC ${others.map((other) => hex2(other)).join(', ')}.` : ''
+  facts.push(['Playback speed', `TIC ${hex2(tic)}: ${ticText(tic, tempo)}.${also}`])
+  if (instrument != null) facts.push(['Instrument default speed', `TBL.TIC ${hex2(instrument)} on instrument ${hex2(selection.table)}. The song always triggers this table at a different speed.`])
   const notes    = uses.filter((use) => !use.aux).length
   const auxSteps = uses.length - notes
   const tracks   = [...new Set(uses.map((use) => use.track + 1))].sort()
-  facts.push(['Started by', uses.length
-    ? `${[notes && plural(notes, 'note'), auxSteps && plural(auxSteps, 'TBX step')].filter(Boolean).join(', ')} on track${tracks.length === 1 ? '' : 's'} ${tracks.join(', ')}`
-    : 'nothing in the song'])
-  const walk            = walkTable(table.rows, tic)
+  const triggers = [notes && plural(notes, 'note'), auxSteps && plural(auxSteps, 'TBX step')].filter(Boolean).join(' and ')
+  facts.push(['Playback triggered by', uses.length
+    ? `${triggers} on track${tracks.length === 1 ? '' : 's'} ${tracks.join(', ')}`
+    : 'Not triggered anywhere in this song.'])
+  const walk = walkTable(table.rows, tic)
   if (!walk) return facts
   const lane   = fxLaneOf(selection.column)?.lane
-  const column = lane == null ? 'N and V' : `FX${lane + 1}`
+  const column = lane == null ? 'N/V' : `FX${lane + 1}`
   const cursor = walk.cursors[lane == null ? 0 : lane + 1]
-  facts.push([column, describeWalk(cursor, walk.unit, tempo)])
+  facts.push([`${column} playback`, describeWalk(cursor, walk.unit, tempo)])
   if (cursor.kind !== 'still' && !playedRows(cursor).includes(selection.row)) {
-    facts.push(['Not played', `${column} never ${lane == null ? 'reach' : 'reaches'} row ${hexDigit(selection.row)}`])
+    facts.push(['Selected row', `${column} playback never reaches row ${hexDigit(selection.row)}.`])
   }
   // The transposes the N column plays, in order: a chord when it spells one.
   const main      = walk.cursors[0]
   const semitones = (main.loop.length ? main.loop : main.intro).map((row) => transposeSemitones(table.rows[row]?.transpose))
   if (new Set(semitones).size > 1) {
     const chord = chordName(semitones)
-    facts.push(['N column', `${intervalsText(semitones)} st${chord ? `: ${chord}` : ''}`])
+    facts.push(['N-column intervals', `${intervalsText(semitones).split(' ').join(', ')} semitones${chord ? ` · ${chord}` : ''}`])
     const start    = uses.find((use) => noteNumber(use.note) != null && chromaticAt(model, song, use))
     const arpeggio = start?.note ? arpeggioText(start.note, semitones) : null
-    if (start?.note && arpeggio) facts.push([`On ${start.note}`, arpeggio])
+    if (start?.note && arpeggio) facts.push([`Notes from ${start.note}`, arpeggio])
   }
   return facts
 }
@@ -404,7 +406,7 @@ function instrumentParts(stored: string[], screen: InstrumentScreen, cell: Instr
     height: SCREEN_HEIGHT,
     lines
   })
-  return context ? describeContextParts(context).filter((part) => part.kind !== 'location') : []
+  return context ? selectionParts(context) : []
 }
 
 const slotFact = (slot: ModSlot): Fact => [`MOD${slot.slot}`, modSummary(slot)]
@@ -428,7 +430,7 @@ function describeInstrumentCell(model: SongModel, selection: InstParamSelection)
     if (slot) {
       facts.push(slotFact(slot))
       // MOD AMT / RATE / BOTH act on the next slot (4 on 1).
-      if (slot.dest?.startsWith('MOD')) facts.push(['Modulates', `MOD${(slot.slot % 4) + 1} (${slot.dest})`])
+      if (slot.dest?.startsWith('MOD')) facts.push(['Target modulator', `MOD${(slot.slot % 4) + 1} (${slot.dest})`])
     }
     return {
       path : instrumentPath(model, selection.instrument, selection.track, 'Modulators', `MOD${cell.slot ?? '?'}`),
@@ -439,7 +441,7 @@ function describeInstrumentCell(model: SongModel, selection: InstParamSelection)
   }
   if (cell.operator) facts.push(['Operator', cell.operator])
   if (cell.label === 'CHORD') facts.push(...chordFacts(cell.text))
-  for (const slot of modulatorsOf(page, cell.label)) facts.push(['Modulated by', `MOD${slot.slot} · ${modSummary(slot)}`])
+  for (const slot of modulatorsOf(page, cell.label)) facts.push(['Modulators', `MOD${slot.slot} · ${modSummary(slot)}`])
   return {
     path : instrumentPath(model, selection.instrument, selection.track),
     title: `${label} · ${cell.text}`,
@@ -454,16 +456,16 @@ function describeInstrumentPanel(model: SongModel, selection: InstrumentSelectio
   if (instrument?.type) facts.push(['Type', instrument.type])
   if (instrument?.name) facts.push(['Name', instrument.name])
   const tracks = tracksPlaying(model, selection.instrument)
-  if (tracks.length) facts.push(['Played on tracks', tracks.join(', ')])
+  if (tracks.length) facts.push(['Used on tracks', tracks.join(', ')])
   if (instrument) {
     const page   = instrumentPage(instrument)
     const header = (label: string) => page.cells.find((cell) => cell.label === label)?.text
     const transp = header('TRANSP')
-    if (transp) facts.push(['Transpose', `${transp} (scales, chain and project transpose ${transp === 'ON' ? 'apply' : 'do not apply'})`])
+    if (transp) facts.push(['TRANSP.', transp === 'ON' ? 'Scale, chain, and project transposition apply.' : 'Scale, chain, and project transposition do not apply.'])
     const tic = header('TBL.TIC')
-    if (tic) facts.push(['Table tick', tic])
+    if (tic) facts.push(['Table speed (TBL.TIC)', tic])
     for (const slot of page.slots) if (slot.dest) facts.push(slotFact(slot))
-    if (!instrument.mods?.length) facts.push(['Modulators', 'not read yet (explore the song again)'])
+    if (!instrument.mods?.length) facts.push(['Modulators', 'Settings unavailable. Explore the song again to read the modulators.'])
   }
   const isInstrument = selection.instrument != null
   return {

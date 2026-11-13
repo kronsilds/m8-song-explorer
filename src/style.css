@@ -255,18 +255,19 @@ body,
   --tab: 30px;
   position: absolute;
   left: 0;
-  top: 50%;
+  /* Anchored low like the Selection panel, so the tab sits at the bottom of the left edge. */
+  bottom: 40px;
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   /* Closed: only the tab shows on the left edge; hover (or a click on the tab) slides it out. */
-  transform: translate(calc(-100% + var(--tab)), -50%);
+  transform: translateX(calc(-100% + var(--tab)));
   transition: transform 0.22s ease;
   z-index: 2;
 }
 
 .menu:hover,
 .menu.pinned {
-  transform: translate(0, -50%);
+  transform: none;
 }
 
 .menu-tab {
@@ -412,6 +413,51 @@ body,
   max-height: calc(100vh - 300px);
 }
 
+/* A slim scrollbar in the panel's colours, without arrow buttons: the thumb lights up on hover.
+   Chromium and Safari take the ::-webkit-scrollbar rules (which also drop the arrows); the standard
+   properties are the fallback elsewhere, since Chromium ignores the webkit rules once they are set. */
+@supports selector(::-webkit-scrollbar) {
+  .info-body::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .info-body::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  .info-body::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .info-body::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border: 3px solid transparent;
+    border-radius: 6px;
+    background-clip: padding-box;
+  }
+
+  .info-body:hover::-webkit-scrollbar-thumb {
+    background: var(--label);
+    background-clip: padding-box;
+  }
+
+  .info-body::-webkit-scrollbar-thumb:hover {
+    background: var(--title);
+    background-clip: padding-box;
+  }
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .info-body {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+
+  .info-body:hover {
+    scrollbar-color: var(--label) transparent;
+  }
+}
+
 .info-head {
   display: flex;
   justify-content: space-between;
@@ -443,8 +489,25 @@ body,
 }
 
 .info-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   color: var(--label);
   line-height: 1.6;
+}
+
+.info-placeholder p {
+  margin: 0;
+}
+
+.info-empty-title {
+  color: var(--value);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.info-empty-hint {
+  font-size: 11px;
 }
 
 .info-path {
@@ -469,23 +532,16 @@ body,
   color: var(--value);
 }
 
-.info-parts {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.part {
+/* Parts (the SDK's reading) and facts (the explorer's) share one label/value layout. */
+.info-list {
   display: grid;
-  grid-template-columns: 64px 1fr;
-  gap: 8px;
+  grid-template-columns: 84px 1fr;
+  gap: 6px 8px;
+  margin: 0;
   line-height: 1.5;
 }
 
-.part-kind {
+.info-list dt {
   font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -493,41 +549,29 @@ body,
   padding-top: 2px;
 }
 
-.part-text {
+.info-list dd {
+  margin: 0;
   color: var(--value);
 }
 
-.part-meaning .part-text,
-.part-fxLane .part-text {
-  color: var(--link);
-}
-
-.part-relative .part-text {
-  color: var(--table-link);
-}
-
-.part-fxInfo .part-text,
-.part-fieldInfo .part-text,
-.part-line .part-text {
-  color: var(--label);
-}
-
 .info-facts {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 12px;
-  margin: 0;
   padding-top: 8px;
   border-top: 1px solid var(--line);
 }
 
-.info-facts dt {
+.info-list dd.part-relative {
+  color: var(--table-link);
+}
+
+.info-list dd.part-fxInfo,
+.info-list dd.part-fieldInfo,
+.info-list dd.part-line {
   color: var(--label);
 }
 
-.info-facts dd {
-  margin: 0;
-  color: var(--value);
+.info-list dd.part-meaning,
+.info-list dd.part-fxLane {
+  color: var(--link);
 }
 
 .show {

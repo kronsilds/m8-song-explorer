@@ -39,7 +39,7 @@ describe('walking a table', () => {
     })
     // The other lanes do not obey FX1's HOP: they play all 16 rows.
     expect(walk.cursors[2].loop).toHaveLength(16)
-    expect(describeWalk(walk.cursors[0], 'tick', 120)).toBe('loops rows 0–3, 4 ticks, 83 ms per pass')
+    expect(describeWalk(walk.cursors[0], 'tick', 120)).toBe('Loops rows 0–3; each pass takes 4 ticks, 83 ms')
   })
 
   test('a table LFO made of CUT and REP rows, at 200 Hz', () => {
@@ -48,14 +48,14 @@ describe('walking a table', () => {
     expect(walk.unit).toBe('fast')
     expect(walk.cursors[1].loop).toEqual([0, 1, 2, 3, 4, 5])
     expect(walk.cursors[1].loopUnits).toBe(24)
-    expect(describeWalk(walk.cursors[1], 'fast', null)).toBe('loops rows 0–5, 120 ms per pass')
+    expect(describeWalk(walk.cursors[1], 'fast', null)).toBe('Loops rows 0–5; each pass takes 120 ms')
   })
 
   test('a HOP onto its own row plays the table once', () => {
     const walk = walked(table([], [15, 0, 'HOP', 0x0f]), 1)
     expect(walk.cursors[0].kind).toBe('stop')
     expect(walk.cursors[1].intro).toHaveLength(16)
-    expect(describeWalk(walk.cursors[1], 'tick', 120)).toBe('plays rows 0–F once and stops on row F, 15 ticks, 313 ms after the note')
+    expect(describeWalk(walk.cursors[1], 'tick', 120)).toBe('Plays rows 0–F once, then stops on row F after 15 ticks, 313 ms')
   })
 
   test('HOP XY repeats a stretch X times, then the table runs on', () => {
@@ -73,7 +73,7 @@ describe('walking a table', () => {
   test('TIC 00 counts notes, the maps pick a row and are not walked', () => {
     const walk = walked(ARPEGGIO, 0x00)
     expect(walk.unit).toBe('note')
-    expect(describeWalk(walk.cursors[0], 'note', null)).toBe('loops rows 0–3, 4 notes per pass')
+    expect(describeWalk(walk.cursors[0], 'note', null)).toBe('Loops rows 0–3; each pass takes 4 notes')
     expect(walkTable(ARPEGGIO, 0xfe)).toBeNull()
   })
 })
@@ -112,10 +112,10 @@ describe('the selection panel on a table cell', () => {
       track     : 0,
       instrument: 0
     }).facts)
-    expect(facts.Speed).toMatch(/^TIC [0-9A-F]{2}: one row every/)
-    expect(facts['Started by']).toMatch(/note/)
-    expect(facts['N and V']).toMatch(/^loops rows 0–3/)
-    expect(facts['Not played']).toBe('N and V never reach row 6')
-    expect(facts['N column']).toBe('0 +3 +7 +12 st: minor chord')
+    expect(facts['Playback speed']).toMatch(/^TIC [0-9A-F]{2}: one row every/)
+    expect(facts['Playback triggered by']).toMatch(/note/)
+    expect(facts['N/V playback']).toMatch(/^Loops rows 0–3/)
+    expect(facts['Selected row']).toBe('N/V playback never reaches row 6.')
+    expect(facts['N-column intervals']).toBe('0, +3, +7, +12 semitones · minor chord')
   })
 })

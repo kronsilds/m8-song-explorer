@@ -195,17 +195,17 @@ export function describeWalk(walk: CursorWalk, unit: WalkUnit, tempo: number | n
   const units = (n: number) => unitsText(n, unit, tempo)
   switch (walk.kind) {
     case 'still':
-      return 'runs at a TIC of its own that has no rows to time (a map, or 200 Hz)'
+      return 'Uses its own TIC mode (a map or 200 Hz), so there is no timed sequence of rows'
     case 'stop': {
       const last = hexDigit(walk.intro[walk.intro.length - 1])
-      if (walk.intro.length === 1) return `stays on row ${last}`
-      return `plays rows ${rowRuns(walk.intro)} once and stops on row ${last}, ${units(walk.introUnits)} after the note`
+      if (walk.intro.length === 1) return `Stays on row ${last}`
+      return `Plays rows ${rowRuns(walk.intro)} once, then stops on row ${last} after ${units(walk.introUnits)}`
     }
     case 'long':
-      return `plays rows ${rowRuns(walk.intro)} without repeating soon`
+      return `Plays rows ${rowRuns(walk.intro)} without repeating soon`
     case 'loop': {
-      const loop = `loops rows ${rowRuns(walk.loop)}, ${units(walk.loopUnits)} per pass`
-      return walk.intro.length ? `plays rows ${rowRuns(walk.intro)}, then ${loop}` : loop
+      const loop = `Loops rows ${rowRuns(walk.loop)}; each pass takes ${units(walk.loopUnits)}`
+      return walk.intro.length ? `Plays rows ${rowRuns(walk.intro)}, then loops rows ${rowRuns(walk.loop)}; each pass takes ${units(walk.loopUnits)}` : loop
     }
   }
 }

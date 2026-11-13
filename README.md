@@ -14,8 +14,8 @@ instruments → tables) and shows it as a 3D tracker:
   N column spells.
 - **Follow the M8**: the cursor is highlighted wherever it goes, edits made on the device are
   folded back in, and the explorer checks (and offers to set) the MIDI sync the playheads need.
-- **Explained as you go**: click any cell and the Selection panel says what it means, as the
-  device and the SDK read it; the colours come from the M8's own theme.
+- **Explained as you go**: click any cell and the Cell Details panel says what it does in clear language,
+  using the SDK's technical reading of the device; the colours come from the M8's own theme.
 
 ## Run it
 

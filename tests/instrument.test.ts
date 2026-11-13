@@ -304,7 +304,7 @@ describe('instrument on the device', () => {
     })
     expect(cutoff.title).toBe('CUTOFF · B0')
     expect(cutoff.parts.map((p) => p.text).join(' ')).toMatch(/Filter Cutoff/)
-    expect(cutoff.facts.find(([label]) => label === 'Modulated by')?.[1]).toMatch(/^MOD3 · ADSR ENV/)
+    expect(cutoff.facts.find(([label]) => label === 'Modulators')?.[1]).toMatch(/^MOD3 · ADSR ENV to CUTOFF/)
     const page    = instrumentPage(model.instruments[5])
     const attack  = page.slots[2].cells.ATK
     const modCell = describeSelection(buildSongContext(model), {
@@ -397,9 +397,9 @@ describe('instrument cell descriptions', () => {
       table     : 0,
       track     : 0
     }).facts)
-    expect(facts.Intervals).toBe('0 +4 +7 +11 +14 +17')
-    expect(facts['Notes 1-3']).toMatch(/major chord/)
-    expect(facts['Over C-4']).toBe('C-4 E-4 G-4 B-4 D-5 F-5')
+    expect(facts['Intervals (semitones)']).toBe('0 +4 +7 +11 +14 +17')
+    expect(facts['First three notes']).toMatch(/major chord/)
+    expect(facts['Example notes from C-4']).toBe('C-4 E-4 G-4 B-4 D-5 F-5')
     expect(facts['Chord bank']).toBe('00')
   })
 

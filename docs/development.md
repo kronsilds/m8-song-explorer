@@ -36,6 +36,11 @@ the same one to the 3D view, the playback tracker, the device cursor and the cel
 An edit made on the M8 changes the model in place; the app builds a new context when the edit
 reaches the whole scene (at once for an edit that moves things, else once the screen is quiet).
 
+Cell Details copy is an explorer presentation layer. `m8/semantics.ts` gets the SDK's technical
+`describeContextParts()` reading, and `m8/selectionCopy.ts` adapts it for the panel without changing
+the SDK package or its technical API. Keep device commands, values and behavioral meanings intact
+when improving the panel's wording.
+
 Each large part is a small front that hands its work to parts with one job each:
 
 - `app/app.ts` (`ExplorerApp`) only wires: the song shown (`shownSong.ts`), the connection

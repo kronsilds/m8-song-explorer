@@ -137,7 +137,7 @@ export function modShape(slot: ModSlot): Point[] {
 /** A short description of a modulator's shape, for the Selection panel. */
 export function modSummary(slot: ModSlot): string {
   const value = (label: string) => slot.cells[label]?.text ?? '--'
-  const parts : string[] = [slot.type ?? '?', `→ ${slot.dest ?? 'OFF'}`, `AMT ${value('AMT')}`]
+  const parts : string[] = [`${slot.type ?? '?'} to ${slot.dest ?? 'OFF'}`, `AMT ${value('AMT')}`]
   switch (slot.kind) {
     case 'AHD':
       parts.push(`ATK ${value('ATK')}`, `HOLD ${value('HOLD')}`, `DEC ${value('DEC')}`)
