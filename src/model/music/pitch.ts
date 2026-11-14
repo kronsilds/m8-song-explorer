@@ -4,8 +4,8 @@ export const PITCH_NAMES          = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 
 
 export const SEMITONES_PER_OCTAVE = 12
 
-/** Highest note the M8 plays (G-A). */
-export const HIGHEST_NOTE         = 10 * SEMITONES_PER_OCTAVE + 7
+/** Highest note the M8 plays (G-B). */
+export const HIGHEST_NOTE         = 11 * SEMITONES_PER_OCTAVE + 7
 
 /** Any semitone count folded into a pitch class 0..11 (0 = C). */
 export const pitchClass           = (semitones: number): number => ((semitones % SEMITONES_PER_OCTAVE) + SEMITONES_PER_OCTAVE) % SEMITONES_PER_OCTAVE
