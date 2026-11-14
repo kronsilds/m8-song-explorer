@@ -22,7 +22,7 @@ import {
   scalePitches,
   transposeSemitones,
 } from '../model/music/harmony'
-import { chordFacts } from '../model/music/hypersynthChord'
+import { chordFacts, chordOverNoteFacts, hypersynthSettings, scaleShapeOf } from '../model/music/hypersynthChord'
 import { noteNumber, PITCH_NAMES, pitchClass } from '../model/music/pitch'
 import { DEFAULT_TIC } from '../model/music/tablePlayback'
 import {
@@ -157,7 +157,8 @@ class PhraseCellDescriber {
       `Chain ${hex2(instance.chain)} row ${hexDigit(instance.chainRow)}`,
       `Phrase ${hex2(instance.phrase)}`,
     ]
-    this.addPhraseFacts()
+    // The phrase's usage, scale and transposes say nothing about a velocity, instrument or FX cell.
+    if (this.selection.kind === 'chain' || this.selection.column === 'note') this.addPhraseFacts()
     if (this.selection.kind === 'chain') {
       const chain = model.chains[instance.chain]
       const parts = chain ? sdkParts('chain', `CHAIN ${hex2(chain.id)}`, chainScreen(chain), COLUMN_X.chain.phrase, instance.chainRow, 2) : []
@@ -185,7 +186,7 @@ class PhraseCellDescriber {
     if (harmony.pitches.length)
       facts.push(['Notes in phrase', [pitchList(harmony.pitches), keyGuess && `likely key ${keyName(keyGuess)}`].filter(Boolean).join(' · ')])
     if (this.projectSemitones) facts.push(['Project transpose', semitoneText(this.projectSemitones)])
-    if (this.chainSemitones) facts.push(['Chain transpose', `${semitoneText(this.chainSemitones)} (TSP ${hex2(this.chainTransposeRaw)})`])
+    if (this.chainSemitones) facts.push(['Chain transpose', `${semitoneText(this.chainSemitones)}`])
     if (this.transposed && harmony.pitches.length) {
       const playedPitches = (this.phrase?.steps ?? []).flatMap((step, s) => {
         const played = noteNumber(playedNote(model, step.note, this.chainSemitones, null, this.scales.at(instance.track, instance.row + s)).note)
@@ -207,7 +208,10 @@ class PhraseCellDescriber {
       effectiveInstrument,
       this.scales.at(instance.track, instance.row + selection.step),
     )
-    if (selection.column === 'note' && written != null) this.addNoteFacts(step?.note ?? null, written, played)
+    if (selection.column === 'note' && written != null) {
+      this.addNoteFacts(step?.note ?? null, written, played)
+      this.addChordFacts(effectiveInstrument, played)
+    }
     path.push(`Step ${hexDigit(selection.step)}`)
     const phrase = this.phrase
     const width  = selection.column === 'note' ? 3 : 2
@@ -248,19 +252,28 @@ class PhraseCellDescriber {
     const { facts } = this
     const degree    = this.degreeText(written, played)
     const detuned   = Math.trunc(played.detune)
-    const how       = [
-      played.shift ? `${writtenText} transposed by ${semitoneText(played.shift)}` : `Written as ${writtenText}`,
-      played.snapped ? `adjusted by ${semitoneText(played.snapped)} to fit the scale` : null,
-    ]
-      .filter(Boolean)
-      .join('; ')
-    if (played.snapped && !played.shift && played.transposes) {
-      facts.push(['Scale adjustment', `${writtenText} is outside ${scaleLabel(this.model, played.scale)}. With no transpose active, the scale moves it up by ${semitoneText(played.snapped)} to ${played.note ?? 'out of range'}.`])
-    }
-    if (this.transposed && !played.transposes) facts.push(['Played note', `${writtenText}; TRANSP. is OFF, so chain and project transposition do not apply.`])
-    else if (played.shift || played.snapped || detuned) facts.push(['Played note', `${played.sounding ?? 'Out of range'} (${how})`])
+    // The title already shows the note that sounds; this says why it differs from the written one.
+    const reasons   = [
+      played.shift ? `transposed by ${semitoneText(played.shift)}` : null,
+      played.snapped ? `${played.shift ? 'then ' : `${writtenText} is outside the scale, so it is `}moved up ${semitoneText(played.snapped)} to fit ${scaleLabel(this.model, played.scale)}` : null,
+      detuned && !played.snapped && !played.shift ? 'detuned by the scale' : null,
+    ].filter(Boolean)
+    if (this.transposed && !played.transposes) facts.push(['Transposition', 'Off for this instrument (TRANSP. OFF): chain and project transposes do not apply.'])
+    else if (reasons.length) facts.push(['Why it changes', `${reasons.join(', ').replace(/^./, (letter) => letter.toUpperCase())}${played.sounding ? '' : '. Out of range'}.`])
     if (degree) facts.push(['Scale degree', degree])
     if (played.detune) facts.push(['Scale detune', `${played.detune > 0 ? '+' : ''}${played.detune.toFixed(2)} ${Math.abs(played.detune) === 1 ? 'semitone' : 'semitones'}`])
+  }
+
+  /** The chord a Hypersynth plays over the note as played, and its place in the scale (or in the guessed key). */
+  private addChordFacts(instrument: number | null, played: ReturnType<typeof playedNote>): void {
+    const settings = hypersynthSettings(this.model.instruments[instrument ?? -1])
+    const note     = noteNumber(played.note)
+    if (!settings || note == null) return
+    const shape = scaleShapeOf(this.model, played.scale, settings.scale)
+    const named = this.model.scales?.[settings.scale || played.scale.scale]?.name ?? ''
+    const guess = this.harmony.key
+    const key   = shape ? null : guess && { root: pitchClass(guess.root + played.shift), steps: guess.steps, name: `${guess.scale} (guessed)` }
+    this.facts.push(...chordOverNoteFacts(settings.chord, note, shape ?? (key ? { root: key.root, steps: key.steps } : null), key ? key.name : named))
   }
 
   /** '4th of A MINOR': the place of the played note among the scale's notes from the key; '' when unknown. */
@@ -308,8 +321,23 @@ function describeTableCell(model: SongModel, selection: TableSelection, song: So
     path,
     title,
     parts,
-    facts: tableFacts(model, selection, table, song)
+    facts: [...(selection.column === 'transpose' ? tableChordFacts(model, selection, row?.transpose ?? null, song) : []), ...tableFacts(model, selection, table, song)]
   }
+}
+
+/** The chord a Hypersynth plays when this row's N transposes the note that starts the table (the first note of the song that does). */
+function tableChordFacts(model: SongModel, selection: TableSelection, transpose: number | null, song: SongContext): Fact[] {
+  const settings = hypersynthSettings(model.instruments[selection.instrument ?? -1])
+  if (!settings) return []
+  const start = tableUses(model, song.timeline, song.effective, selection.table).find((use) => !use.aux && noteNumber(use.note) != null)
+  const base  = start && noteNumber(start.note)
+  if (!start || base == null) return []
+  const shift  = transposeSemitones(transpose)
+  const choice = song.scales.at(start.track, start.row)
+  const shape  = scaleShapeOf(model, choice, settings.scale)
+  const name   = model.scales?.[settings.scale || choice.scale]?.name ?? ''
+  const over   = `over ${start.note}${shift ? ` ${formatTranspose(shift)}` : ''}`
+  return chordOverNoteFacts(settings.chord, base + shift, shape, name).map(([label, value]): Fact => [label, `${value} (${over})`])
 }
 
 /** The TIC the song starts a table at most often, else its instrument's TBL.TIC; and the other TICs it is started at. */
@@ -340,29 +368,29 @@ function tableFacts(model: SongModel, selection: TableSelection, table: Table, s
   const tempo                       = model.tempo ?? null
   const also                        = others.length ? ` Other triggers use TIC ${others.map((other) => hex2(other)).join(', ')}.` : ''
   facts.push(['Playback speed', `TIC ${hex2(tic)}: ${ticText(tic, tempo)}.${also}`])
-  if (instrument != null) facts.push(['Instrument default speed', `TBL.TIC ${hex2(instrument)} on instrument ${hex2(selection.table)}. The song always triggers this table at a different speed.`])
+  if (instrument != null) facts.push(['Instrument default speed', `TBL.TIC ${hex2(instrument)} on instrument ${hex2(selection.table)}, but the song always starts this table at another speed.`])
   const notes    = uses.filter((use) => !use.aux).length
   const auxSteps = uses.length - notes
   const tracks   = [...new Set(uses.map((use) => use.track + 1))].sort()
-  const triggers = [notes && plural(notes, 'note'), auxSteps && plural(auxSteps, 'TBX step')].filter(Boolean).join(' and ')
+  const triggers = [notes && plural(notes, 'note'), auxSteps && plural(auxSteps, 'extra start (TBX)')].filter(Boolean).join(' and ')
   facts.push(['Playback triggered by', uses.length
     ? `${triggers} on track${tracks.length === 1 ? '' : 's'} ${tracks.join(', ')}`
     : 'Not triggered anywhere in this song.'])
   const walk = walkTable(table.rows, tic)
   if (!walk) return facts
   const lane   = fxLaneOf(selection.column)?.lane
-  const column = lane == null ? 'N/V' : `FX${lane + 1}`
+  const column = lane == null ? 'Note and volume' : `FX${lane + 1}`
   const cursor = walk.cursors[lane == null ? 0 : lane + 1]
   facts.push([`${column} playback`, describeWalk(cursor, walk.unit, tempo)])
   if (cursor.kind !== 'still' && !playedRows(cursor).includes(selection.row)) {
-    facts.push(['Selected row', `${column} playback never reaches row ${hexDigit(selection.row)}.`])
+    facts.push(['This row', `Never played: ${column.toLowerCase()} playback does not reach row ${hexDigit(selection.row)}.`])
   }
   // The transposes the N column plays, in order: a chord when it spells one.
   const main      = walk.cursors[0]
   const semitones = (main.loop.length ? main.loop : main.intro).map((row) => transposeSemitones(table.rows[row]?.transpose))
-  if (new Set(semitones).size > 1) {
+  if (lane == null && new Set(semitones).size > 1) {
     const chord = chordName(semitones)
-    facts.push(['N-column intervals', `${intervalsText(semitones).split(' ').join(', ')} semitones${chord ? ` · ${chord}` : ''}`])
+    facts.push(['Note intervals', `${intervalsText(semitones).split(' ').join(', ')} semitones${chord ? ` · ${chord}` : ''}`])
     const start    = uses.find((use) => noteNumber(use.note) != null && chromaticAt(model, song, use))
     const arpeggio = start?.note ? arpeggioText(start.note, semitones) : null
     if (start?.note && arpeggio) facts.push([`Notes from ${start.note}`, arpeggio])

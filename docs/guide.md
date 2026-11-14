@@ -123,8 +123,10 @@ What the explorer shows, and how it behaves while you use it. The keys and butto
   notes. The track's scale is the project SCALE (with its Scale view KEY) until an `SCA` on the
   track or an `SCG` on any track changes it (`SCA XY`: key X, scale Y). The Cell Details panel shows
   the track scale, the written and played notes, each transpose or scale adjustment, and the note's scale
-  degree. A written note only the scale moved (no transpose) is titled `Note E-4 → F-4 (scale)` and gets
-  a `Scale adjustment` line saying it is outside the scale. When the scale lets every note through, the
+  degree. A written note only the scale moved (no transpose) is titled `Note E-4 → F-4 (scale)`, and a
+  `Why it changes` line says it is outside the scale. On a Hypersynth note, `Chord played`, `Chord notes`
+  and `Chord in scale` give the chord it plays (`Dm7 · D minor 7th chord`, `ii of C major`). The same
+  facts show on the N cell of a Hypersynth's table. When the scale lets every note through, the
   panel guesses the key the phrase's notes fit (`likely key C major`) instead.
 - **Semantics**: clicking any cell shows what it does (the Cell Details panel is a tab on the right edge:
   hover to preview it, click the tab or Pin to keep it open). The cell is drawn on a screen the way the M8

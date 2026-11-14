@@ -76,7 +76,7 @@ test('a transposed step says what it plays, quantized to the track scale', () =>
     step    : 0,
     column  : 'note'
   })
-  expect(d0.facts.find(([k]) => k === 'Chain transpose')?.[1]).toBe('-2 semitones (TSP FE)')
+  expect(d0.facts.find(([k]) => k === 'Chain transpose')?.[1]).toBe('-2 semitones')
   // An earlier lead phrase's SCA 91 put the track in A minor: a note moved out of it goes up into it.
   const minor = new Set([9, 11, 0, 2, 4, 5, 7])
   const step  = steps.findIndex((s, i) => i >= 1 && noteNumber(s.note) != null && !minor.has(((noteNumber(s.note) as number) - 2) % 12))
@@ -90,7 +90,8 @@ test('a transposed step says what it plays, quantized to the track scale', () =>
     column  : 'note'
   })
   expect(d.title).toBe(`Note ${note} → ${expected}`)
-  expect(d.facts.find(([k]) => k === 'Played note')?.[1]).toBe(`${expected} (${note} transposed by -2 semitones; adjusted by +1 semitone to fit the scale)`)
+  expect(d.facts.find(([k]) => k === 'Why it changes')?.[1]).toBe('Transposed by -2 semitones, then moved up +1 semitone to fit 01 MINOR · key A · SCA.')
+  expect(d.facts.some(([k]) => k === 'Plays as' || k === 'Played note')).toBe(false)
   expect(d.facts.find(([k]) => k === 'Scale degree')?.[1]).toBe('5th of A MINOR')
   expect(d.facts.find(([k]) => k === 'Track scale')?.[1]).toBe('01 MINOR · key A · SCA')
 })
@@ -372,9 +373,8 @@ test('the selection says when only the scale moved a written note', () => {
       column  : 'note'
     })
     // The demo has no SCA that would change the track's scale before this step on every track: skip those.
-    if (!d.facts.some(([k]) => k === 'Scale adjustment')) continue
-    expect(d.title).toContain('(scale)')
-    expect(d.facts.find(([k]) => k === 'Scale adjustment')?.[1]).toContain('With no transpose active')
+    if (!d.title.includes('(scale)')) continue
+    expect(d.facts.find(([k]) => k === 'Why it changes')?.[1]).toContain('is outside the scale, so it is moved up')
     return
   }
   throw new Error('no note outside the triad on an untransposed phrase in the demo')

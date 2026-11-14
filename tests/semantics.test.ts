@@ -25,6 +25,28 @@ test('an ARP value is read as intervals by the SDK', () => {
   expect(text(d)).toMatch(/semitones/)
 })
 
+test('phrase-wide facts show on the note and chain cells, not on velocity, instrument or FX cells', () => {
+  const phrase = instanceOf((p) => model.phrases[p].steps.some((s) => s.note && s.note !== 'OFF'))
+  const step   = model.phrases[phrase.phrase].steps.findIndex((s) => s.note && s.note !== 'OFF')
+  const labels = (column: 'note' | 'vel' | 'inst' | 'fx1cmd' | 'fx3val') =>
+    describeSelection(buildSongContext(model), {
+      kind    : 'step',
+      instance: phrase,
+      step,
+      column
+    }).facts.map(([label]) => label)
+  expect(labels('note')).toContain('Phrase usage')
+  for (const column of ['vel', 'inst', 'fx1cmd', 'fx3val'] as const) {
+    expect(labels(column)).not.toContain('Phrase usage')
+    expect(labels(column)).not.toContain('Notes in phrase')
+  }
+  const chain = describeSelection(buildSongContext(model), {
+    kind    : 'chain',
+    instance: phrase
+  })
+  expect(chain.facts.map(([label]) => label)).toContain('Phrase usage')
+})
+
 test('an empty cell under a REP knows the lane is still running', () => {
   const riser = instanceOf((p) => model.phrases[p].steps[1].fx[0].cmd === 'REP')
   const d     = describeSelection(buildSongContext(model), {

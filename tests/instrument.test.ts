@@ -397,10 +397,10 @@ describe('instrument cell descriptions', () => {
       table     : 0,
       track     : 0
     }).facts)
-    expect(facts['Intervals (semitones)']).toBe('0 +4 +7 +11 +14 +17')
-    expect(facts['First three notes']).toMatch(/major chord/)
-    expect(facts['Example notes from C-4']).toBe('C-4 E-4 G-4 B-4 D-5 F-5')
-    expect(facts['Chord bank']).toBe('00')
+    expect(facts.Chord).toContain('0 +4 +7 +11 +14 +17 semitones above the played note')
+    expect(facts['Voices 1–3']).toBe('0 +4 +7: major chord')
+    expect(facts['Voices 4–6']).toBe('+11 +14 +17: diminished chord')
+    expect(facts.Bank).toBe('00')
   })
 
   test('rows the SDK does not know are described', () => {
