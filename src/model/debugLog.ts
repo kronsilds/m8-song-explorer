@@ -14,7 +14,7 @@ export interface LogEvent extends EventData {
   type: string
 }
 
-export type RunKind = 'explore' | 'sync' | 'theme'
+export type RunKind = 'explore' | 'sync' | 'theme' | 'chords'
 export type RunOutcome = 'running' | 'done' | 'cancelled' | 'failed'
 
 export interface LogRun {

@@ -22,7 +22,7 @@ import {
   scalePitches,
   transposeSemitones,
 } from '../model/music/harmony'
-import { chordFacts, chordOverNoteFacts, hypersynthSettings, scaleShapeOf } from '../model/music/hypersynthChord'
+import { chordBankAt, chordFacts, chordOfBank, chordOverNoteFacts, hypersynthSettings, scaleShapeOf } from '../model/music/hypersynthChord'
 import { noteNumber, PITCH_NAMES, pitchClass } from '../model/music/pitch'
 import { type RepRow, repeatLanes, repeatText } from '../model/music/repeats'
 import { DEFAULT_TIC } from '../model/music/tablePlayback'
@@ -211,10 +211,10 @@ class PhraseCellDescriber {
       effectiveInstrument,
       this.scales.at(instance.track, instance.row + selection.step),
     )
-    if (selection.column === 'note' && written != null) {
-      this.addNoteFacts(step?.note ?? null, written, played)
-      this.addChordFacts(effectiveInstrument, played)
-    }
+    if (selection.column === 'note' && written != null) this.addNoteFacts(step?.note ?? null, written, played)
+    // The chord shows on the note, and on a CRD command, which picks its bank.
+    const lane = fxLaneOf(selection.column)?.lane
+    if (selection.column === 'note' || (lane != null && step?.fx[lane]?.cmd === 'CRD')) this.addChordFacts(effectiveInstrument, selection.step)
     this.addCarriedRepeat(selection)
     path.push(`Step ${hexDigit(selection.step)}`)
     const phrase = this.phrase
@@ -275,11 +275,30 @@ class PhraseCellDescriber {
     if (played.detune) facts.push(['Scale detune', `${played.detune > 0 ? '+' : ''}${played.detune.toFixed(2)} ${Math.abs(played.detune) === 1 ? 'semitone' : 'semitones'}`])
   }
 
-  /** The chord a Hypersynth plays over the note as played, and its place in the scale (or in the guessed key). */
-  private addChordFacts(instrument: number | null, played: ReturnType<typeof playedNote>): void {
-    const settings = hypersynthSettings(this.model.instruments[instrument ?? -1])
-    const note     = noteNumber(played.note)
-    if (!settings || note == null) return
+  /**
+   * The chord a Hypersynth plays on a step: over the note the step plays, or the last one above it
+   * in the phrase (a CRD on a row without a note). Its voices are rounded to the scale; its place is
+   * given in that scale, or in the guessed key. A CRD in force picks the bank; a bank other than
+   * the one the Instrument view shows is known once "Read chord banks" has read it.
+   */
+  private addChordFacts(instrument: number | null, stepIndex: number): void {
+    const source   = this.model.instruments[instrument ?? -1]
+    const settings = hypersynthSettings(source)
+    if (!settings) return
+    const steps = this.phrase?.steps
+    const bank  = chordBankAt(steps, stepIndex)
+    const chord = bank == null ? settings.chord : chordOfBank(source, bank)
+    if (bank != null) {
+      const unknown = `its notes are not known: only bank ${settings.chord.bank}, the one the Instrument view shows, has been read. Read chord banks (Options) reads the others from the M8`
+      this.facts.push(['Chord bank', `${hex2(bank)}, picked by a CRD command${chord ? '' : ` (${unknown})`}`])
+    }
+    if (!chord) return
+    let noteStep = stepIndex
+    while (noteStep > 0 && noteNumber(steps?.[noteStep]?.note ?? null) == null) noteStep -= 1
+    const { instance, model } = this
+    const played              = playedNote(model, steps?.[noteStep]?.note ?? null, this.chainSemitones, instrument, this.scales.at(instance.track, instance.row + noteStep))
+    const note                = noteNumber(played.note)
+    if (note == null) return
     const shape = scaleShapeOf(this.model, played.scale, settings.scale)
     const named = this.model.scales?.[settings.scale || played.scale.scale]?.name ?? ''
     const guess = this.harmony.key
@@ -288,10 +307,12 @@ class PhraseCellDescriber {
       steps: guess.steps,
       name : `${guess.scale} (guessed)`
     }
-    this.facts.push(...chordOverNoteFacts(settings.chord, note, shape ?? (key ? {
+    const facts = chordOverNoteFacts(chord, note, shape ?? (key ? {
       root : key.root,
       steps: key.steps
-    } : null), key ? key.name : named))
+    } : null), key ? key.name : named, shape != null)
+    const over  = noteStep === stepIndex ? '' : ` (over ${played.note}, step ${hexDigit(noteStep)})`
+    this.facts.push(...facts.map(([label, value]): Fact => [label, label === 'Chord played' ? `${value}${over}` : value]))
   }
 
   /** '4th of A MINOR': the place of the played note among the scale's notes from the key; '' when unknown. */

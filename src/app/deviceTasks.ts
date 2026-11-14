@@ -1,16 +1,18 @@
 // What the explorer runs on the M8, one task at a time and only when the user asks (with a
 // confirmation where it presses Edit): exploring the song, the MIDI sync check, reading the theme,
-// showing the selection on the device. The buttons follow while a task runs, and the live view
+// reading the Hypersynth chord banks, showing the selection on the device. The buttons follow while a task runs, and the live view
 // catches up after.
 
 import { ExploreCancelled } from '../m8/driver'
 import type { M8Port } from '../m8/port'
+import { readChordBanks } from '../m8/tasks/chordReader'
 import { exploreSong, moveToSongTop } from '../m8/tasks/explorer'
 import { type ChannelPlan, planChannel, readMidiSync, SYNC_OUT_TARGET, setCcMapChannel, setMidiSyncOut } from '../m8/tasks/midiSync'
 import { deviceTargetOf, showOnDevice } from '../m8/tasks/showOnDevice'
 import { readDeviceTheme } from '../m8/tasks/themeReader'
 import { debugLog, type RunHandle } from '../model/debugLog'
-import { lastSongRow, type MidiSync } from '../model/song'
+import { hypersynthsWithChordCommands } from '../model/music/hypersynthChord'
+import { lastSongRow, type MidiSync, type SongModel } from '../model/song'
 import { rememberSong, saveModel, saveTheme } from '../model/storage'
 import type { World } from '../scene/world'
 import type { Hud } from '../ui/hud'
@@ -26,7 +28,9 @@ import type { TrackMixer } from './trackMixer'
 const EXPLORE_REDRAW_MS = 1200
 
 const CONFIRM_EXPLORE =
-  'The M8 will walk through the Song, Chain, Phrase, Instrument, Table, Scale and Groove views to read the whole song. It only presses arrows, Shift+arrows and Option+arrows, so nothing is edited; at the end it opens Project › MIDI SETTINGS (Edit on that entry) to check the sync setting, then puts the cursor on the first cell of the Song view. Keep your hands off the M8 until it finishes; Cancel stops it and keeps what was read.'
+  'The M8 will walk through the Song, Chain, Phrase, Instrument, Table, Scale and Groove views to read the whole song. It only presses arrows, Shift+arrows and Option+arrows, so nothing is edited. If the song uses a CRD command, it then reads the 16 chord banks of each Hypersynth (Edit held + Left / Right on the chord bank number, which is put back). At the end it opens Project › MIDI SETTINGS (Edit on that entry) to check the sync setting, then puts the cursor on the first cell of the Song view. Keep your hands off the M8 until it finishes; Cancel stops it and keeps what was read.'
+const CONFIRM_CHORDS  =
+  'On each Hypersynth the M8 will open the Instrument view, put the cursor on the chord bank number of the CHORD line, and step it through 00 to 0F with Edit held + Left / Right (after checking the cursor is on it) to read every bank. The bank each instrument had is put back at the end, so nothing is changed. Keep your hands off the M8 until it finishes.'
 const CONFIRM_THEME   =
   'The M8 will open Project › System Settings › Theme (Edit is pressed on SYSTEM SETTINGS and on EDIT THEME, after checking the cursor is on them), read the 13 colours, then leave with Option and go back to the current view.'
 
@@ -139,6 +143,7 @@ export class DeviceTasks {
         explored.theme          = this.theme.exactTheme
         session.otherSongLoaded = false
         if (!exploration.signal.aborted) {
+          await this.readChordsOf(port, explored, hypersynthsWithChordCommands(explored), run, exploration.signal)
           explored.midiSync = await this.checkMidiSync(port, run)
           await this.returnToSongTop(port, run)
         }
@@ -299,6 +304,53 @@ export class DeviceTasks {
         run.finish('failed', { error: messageOf(error) })
         hud.notify(`Could not read the theme: ${messageOf(error)}`, 'warn', 8000)
       }
+    })
+  }
+
+  /**
+   * Reads the 16 chord banks of the given Hypersynths into `model`; each instrument's bank is put
+   * back. A failure is reported and leaves the banks unread. Returns how many were read.
+   */
+  private async readChordsOf(port: M8Port, model: SongModel, instruments: number[], run: RunHandle, signal?: AbortSignal): Promise<number> {
+    if (!instruments.length) return 0
+    this.hud.showProgress('Reading the chord banks…', null)
+    run.phase('chords', 'Reading the Hypersynth chord banks')
+    try {
+      const banks = await readChordBanks(port, instruments, {
+        log: logTo('[chords]', run),
+        ...(signal ? { signal } : {})
+      })
+      for (const [id, chords] of banks) {
+        const instrument = model.instruments[id]
+        if (instrument) instrument.chords = chords
+      }
+      return banks.size
+    } catch (error) {
+      if (error instanceof ExploreCancelled) throw error
+      run.message(`[chords] not read: ${messageOf(error)}`)
+      debugLog.problem('chords', `chord banks not read: ${messageOf(error)}`)
+      this.hud.notify(`Could not read the chord banks: ${messageOf(error)}`, 'warn', 8000)
+      return 0
+    }
+  }
+
+  /** Reads the 16 chord banks of every Hypersynth of the song once the user confirms; each instrument's bank is put back. */
+  async readChords(): Promise<void> {
+    const { session, song, hud } = this
+    if (!session.port || session.task) return
+    const hypersynths = Object.values(song.model.instruments).filter((instrument) => instrument.type === 'HYPERSYN').map((instrument) => instrument.id)
+    if (!hypersynths.length) {
+      hud.notify('This song has no Hypersynth instrument')
+      return
+    }
+    if (!(await hud.confirm('READ THE CHORD BANKS', CONFIRM_CHORDS, 'Read chord banks'))) return
+    await this.run('chords', async (port) => {
+      const run  = debugLog.startRun('chords', { instruments: hypersynths })
+      const read = await this.readChordsOf(port, song.model, hypersynths, run)
+      run.finish(read ? 'done' : 'failed', { read })
+      if (!read) return
+      saveModel(song.model)
+      hud.notify(`Chord banks read for ${read} Hypersynth${read === 1 ? '' : 's'}`)
     })
   }
 

@@ -15,6 +15,7 @@ export type Action =
   | 'explore'
   | 'cancel'
   | 'theme'
+  | 'chords'
   | 'follow'
   | 'autoselect'
   | 'front'
@@ -248,7 +249,12 @@ export class Hud {
       ['trim', 'Trim tables', 'Tables show their rows down to the last one with something in it; an empty table shows only its title'],
       this.buildWallSlider(),
     )
-    section('M8', ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'], this.buildChannelPicker())
+    section(
+      'M8',
+      ['theme', 'Read theme', 'Open the Theme View on the M8 and use its exact colours'],
+      ['chords', 'Read chord banks', 'Read the 16 chord banks of every Hypersynth from the M8, so a CRD command can be named as a chord'],
+      this.buildChannelPicker(),
+    )
     section(
       'SONG FILE',
       ['export', 'Export', 'Save the explored song as JSON'],

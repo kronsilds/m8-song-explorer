@@ -32,7 +32,7 @@ import { TrackMixer } from './trackMixer'
 import { ViewToggles } from './viewToggles'
 
 /** Actions whose own events say more than "the button was pressed". */
-const SILENT_ACTIONS : Action[] = ['help', 'follow', 'autoselect', 'explore', 'theme']
+const SILENT_ACTIONS : Action[] = ['help', 'follow', 'autoselect', 'explore', 'theme', 'chords']
 
 export class ExplorerApp {
   private readonly hud      : Hud
@@ -140,6 +140,7 @@ export class ExplorerApp {
       explore   : () => void tasks.explore(),
       cancel    : () => tasks.cancel(),
       theme     : () => void tasks.readTheme(),
+      chords    : () => void tasks.readChords(),
       follow    : () => live.toggleFollow(),
       autoselect: () => live.toggleAutoSelect(),
       front     : () => world.view('front'),
@@ -245,6 +246,7 @@ export class ExplorerApp {
     const connected              = session.port != null
     hud.setEnabled('explore', connected && !session.task)
     hud.setEnabled('theme', connected && !session.task)
+    hud.setEnabled('chords', connected && !session.task)
     hud.setEnabled('follow', connected)
     hud.setActive('follow', live.following)
     hud.setEnabled('autoselect', connected)

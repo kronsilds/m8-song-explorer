@@ -55,14 +55,16 @@ export interface Table {
 }
 
 export interface Instrument {
-  id   : number
-  name : string | null
+  id     : number
+  name   : string | null
   /** As the TYPE row shows it: 'SAMPLER', 'FMSYNTH', 'NONE'... */
-  type : string | null
+  type   : string | null
   /** Instrument view rows (title to the last parameter, no margin), as the device shows them. */
-  lines: string[]
+  lines  : string[]
   /** Inst. Mods view rows (title to the last modulator), when read. */
-  mods?: string[]
+  mods?  : string[]
+  /** A Hypersynth's chord banks, when read: the CHORD value of each bank 00-0F ('01> 00 0B 10 15 -- --'), '' for one not read. */
+  chords?: string[]
 }
 
 /** One interval row of a Scale view: semitones above the key. */

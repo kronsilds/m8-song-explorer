@@ -6,7 +6,7 @@ import type { M8Client } from '@yam8d/m8-sdk'
 import type { M8Port } from '../m8/port'
 
 /** What runs on the device: one thing at a time. */
-export type DeviceTask = 'explore' | 'theme' | 'sync' | 'show'
+export type DeviceTask = 'explore' | 'theme' | 'chords' | 'sync' | 'show'
 
 export class DeviceSession {
   client          : M8Client | null = null

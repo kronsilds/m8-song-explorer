@@ -3,6 +3,7 @@
 
 import { getSemanticContext, type M8Screen, type M8State, SCREEN_MARGIN } from '@yam8d/m8-sdk'
 import type { DeviceEdit } from '../../model/live'
+import { rememberedChordBanks } from '../../model/music/hypersynthChord'
 import { type SongModel, TRACKS } from '../../model/song'
 import {
   isPage,
@@ -129,6 +130,9 @@ function absorbInstrument(model: SongModel, view: ScreenView): boolean {
   if (!instrument || (known && sameJson(known.lines, instrument.lines) && known.name === instrument.name && known.type === instrument.type)) return false
   // The Instrument view does not show the modulators: the ones read from Inst. Mods stay.
   if (known?.mods) instrument.mods = known.mods
+  // A Hypersynth whose bank number was stepped on the device: each bank it shows is kept.
+  const chords = rememberedChordBanks(known, instrument)
+  if (chords) instrument.chords = chords
   model.instruments[instrument.id] = instrument
   return true
 }

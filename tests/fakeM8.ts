@@ -44,38 +44,43 @@ export interface FakeOptions {
 }
 
 export class FakeM8 implements M8Port {
-  view              : View = 'mixer'
-  songTop           = 0
-  songRow           = 0
-  songTrack         = 0
-  chain             = 0
-  chainRow          = 0
-  chainCol          = 0
-  phrase            = 0
-  phraseRow         = 0
-  phraseCol         = 0
-  inst              = 0x10
-  table             = 0x10
-  scale             = 0x03
-  groove            = 0x02
+  view               : View = 'mixer'
+  songTop            = 0
+  songRow            = 0
+  songTrack          = 0
+  chain              = 0
+  chainRow           = 0
+  chainCol           = 0
+  phrase             = 0
+  phraseRow          = 0
+  phraseCol          = 0
+  inst               = 0x10
+  table              = 0x10
+  scale              = 0x03
+  groove             = 0x02
   /** Cursor on the label/value views (Project, MIDI Settings), in screen cells. */
-  free              = {
+  free               = {
     x: 14,
     y: 5
   }
-  syncOut           = 0
+  syncOut            = 0
   /** CC MAP CHAN and SONG ROW CUE CHAN: 0 is ALL, else the channel. */
-  ccMapChan         = 0
-  songRowCueChan    = 0
-  private held      : M8KeyName[] = []
+  ccMapChan          = 0
+  songRowCueChan     = 0
+  /** Hypersynth chord banks by instrument id (CHORD values by bank), and the bank each one shows. */
+  chordBanks         : Record<number, string[]> = {}
+  chordBank          : Record<number, number> = {}
+  /** Cursor on the Instrument view once moved there, in screen cells. */
+  private instCursor : { x: number; y: number } | null = null
+  private held       : M8KeyName[] = []
   /** Keys that would edit or play: the explorer must never send them. */
-  forbidden         : string[] = []
-  presses           = 0
+  forbidden          : string[] = []
+  presses            = 0
   /** Presses dropped through missedPresses. */
-  missed            = 0
-  private pending   = 0
-  private reads     = 0
-  private lastKeyAt = 0
+  missed             = 0
+  private pending    = 0
+  private reads      = 0
+  private lastKeyAt  = 0
 
   constructor(
     readonly model: SongModel,
@@ -111,14 +116,18 @@ export class FakeM8 implements M8Port {
       case 'phrase':
         lines = phraseScreen(this.model.phrases[this.phrase], this.chainRow)
         break
-      case 'inst':
-        lines = instrumentScreen(this.model.instruments[this.inst] ?? {
+      case 'inst': {
+        lines        = instrumentScreen(this.model.instruments[this.inst] ?? {
           id   : this.inst,
           name : null,
           type : 'NONE',
           lines: []
         })
+        const banks  = this.chordBanks[this.inst]
+        const chordY = lines.findIndex((line) => /chord/i.test(line))
+        if (banks && chordY >= 0) lines[chordY] = ` CHORD   ${banks[this.chordBank[this.inst] ?? 0]}`
         break
+      }
       case 'instmods':
         lines = instrumentModsScreen(this.model.instruments[this.inst] ?? {
           id   : this.inst,
@@ -225,6 +234,10 @@ export class FakeM8 implements M8Port {
 
   /** Cursor cell (x counted with the margin, like cursorPos) and its width. */
   cursor(): { x: number; y: number; w: number } {
+    if (this.view === 'inst' && this.instCursor) return {
+      ...this.instCursor,
+      w: 2
+    }
     switch (this.view) {
       case 'song':
         return {
@@ -317,6 +330,9 @@ export class FakeM8 implements M8Port {
       case 'midisettings':
         this.free = { x, y }
         return
+      case 'inst':
+        this.instCursor = { x, y }
+        return
       case 'song': {
         const row   = this.songTop + y - FIRST_CONTENT_ROW
         const track = [...Array(8).keys()].find((t) => x - 1 >= COLUMN_X.song.track(t) && x - 1 < COLUMN_X.song.track(t) + 2)
@@ -344,6 +360,11 @@ export class FakeM8 implements M8Port {
     this.held      = [...keys]
     const onValue  = (y: number, x: number) => this.view === 'midisettings' && this.free.y === y && this.free.x === x
     const side     = pressed.includes('right') ? 1 : pressed.includes('left') ? -1 : 0
+    // Edit held + Left / Right on the chord bank number of a Hypersynth steps the bank (00 to 0F, no wrap).
+    if (this.view === 'inst' && keys.includes('edit') && this.chordBanks[this.inst] && this.instCursor?.x === 9 && /chord/i.test(this.lines()[this.instCursor.y] ?? '')) {
+      if (side) this.chordBank[this.inst] = Math.max(0, Math.min(15, (this.chordBank[this.inst] ?? 0) + side))
+      return
+    }
     if (side === 1 && keys.includes('edit') && onValue(7, 15)) this.syncOut = Math.min(SYNC_OUT_VALUES.length - 1, this.syncOut + 1)
     else if (side && keys.includes('edit') && onValue(8, 16)) this.ccMapChan = Math.max(0, Math.min(16, this.ccMapChan + side))
     else if (pressed.some((k) => k !== 'edit')) this.forbidden.push(`${this.view}: hold ${keys.join('+')}`)
