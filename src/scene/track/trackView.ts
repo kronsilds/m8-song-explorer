@@ -6,6 +6,7 @@
 import { Group, type InstancedMesh, type LineBasicMaterial, type LineSegments, type MeshBasicMaterial, Vector3 } from 'three'
 import { fxColumn } from '../../model/columns'
 import { transposeSemitones } from '../../model/music/harmony'
+import { repeatLanes, repeatRuns } from '../../model/music/repeats'
 import { mix, type Palette } from '../../model/palette'
 import { ROWS_PER_PHRASE, type SongModel } from '../../model/song'
 import type { PhraseInstance } from '../../model/timeline'
@@ -223,6 +224,19 @@ export class TrackView {
       }
       tree.push(...this.treeBrackets(model, instance, y))
 
+      // A REP's wedge: a thin strip beside its lane over the rows it covers.
+      repeatLanes(layout.song).get(instance.key)?.forEach((rows, lane) => {
+        for (const [first, last] of repeatRuns(rows)) {
+          wallShades.push({
+            x    : SIDE_U0 + SIDE_FIELDS[fxColumn(lane, 'cmd')][0] * CHAR_W - 0.17,
+            y    : y - first * ROW_H - BAR_INSET,
+            w    : 0.07,
+            h    : (last - first + 1) * ROW_H - 2 * BAR_INSET,
+            z    : 0.01,
+            color: palette.repeat
+          })
+        }
+      })
       const steps = model.phrases[instance.phrase]?.steps
       steps?.forEach((step, s) => {
         const barY = y - s * ROW_H - BAR_INSET
@@ -268,7 +282,7 @@ export class TrackView {
         parent: this.side,
         x     : SIDE_U0,
         layer : 'wall',
-        build : () => this.text.sideText(this.layout.model.phrases[instance.phrase]?.steps)
+        build : () => this.text.sideText(this.layout.model.phrases[instance.phrase]?.steps, repeatLanes(this.layout.song).get(instance.key))
       })
     })
 

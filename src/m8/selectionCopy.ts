@@ -36,7 +36,9 @@ function panelText(part: M8DescriptionPart): string {
 /** The SDK's technical reading, adapted for the Selection panel without changing its meaning. */
 export function selectionParts(context: M8SemanticContext): M8DescriptionPart[] {
   return describeContextParts(context)
-    .filter((part) => part.kind !== 'location')
+    // The SDK follows a REP on the screen alone, without the instrument's own value; the explorer's
+    // 'Repeat' fact (repeats.ts) knows that value and gives the computed one.
+    .filter((part) => part.kind !== 'location' && part.kind !== 'fxLane')
     .map((part) => ({
       ...part,
       text: panelText(part)

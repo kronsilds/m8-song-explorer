@@ -5,6 +5,7 @@ import { fxColumn } from '../../model/columns'
 import { hex2, hexDigit } from '../../model/hex'
 import { tableTicOf } from '../../model/instrumentPage'
 import { formatTranspose, playedNote, transposeSemitones } from '../../model/music/harmony'
+import { type RepRow, repeatedCell } from '../../model/music/repeats'
 import type { CellColors, Palette } from '../../model/palette'
 import { allFxCells, FX_LANES, type FxCell, fxValues, type PhraseStep, ROWS_PER_PHRASE, ROWS_PER_TABLE, type TableRow } from '../../model/song'
 import type { PhraseInstance } from '../../model/timeline'
@@ -57,7 +58,7 @@ export class TrackTextBuilder {
   }
 
   /** Velocity, instrument and FX of each step, for the wall. */
-  sideText(steps: PhraseStep[] | undefined): RichText {
+  sideText(steps: PhraseStep[] | undefined, repeats?: RepRow[][]): RichText {
     const { palette } = this
     const rich        = new RichText()
     for (let s = 0; s < ROWS_PER_PHRASE; s += 1) {
@@ -65,7 +66,7 @@ export class TrackTextBuilder {
       const step = steps?.[s]
       addValue(rich, hex2(step?.vel ?? null), step?.vel != null, palette.phrase.vel).add(' ', palette.empty)
       addValue(rich, hex2(step?.inst ?? null), step?.inst != null, palette.phrase.inst)
-      this.addFxLanes(rich, step?.fx, palette.phrase)
+      this.addFxLanes(rich, step?.fx, palette.phrase, repeats?.map((lane) => lane[s]), s === 0)
     }
     return rich
   }
@@ -121,12 +122,23 @@ export class TrackTextBuilder {
     return false
   }
 
-  private addFxLanes(rich: RichText, fx: FxCell[] | undefined, colors: Record<ReturnType<typeof fxColumn>, CellColors>): void {
+  /** `repeats`: each lane's REP state on this row; an empty cell under a running REP shows its command with the value the REP has reached, or with the shift and its sign ('+PIT0C') when the instrument's own value is not known: inferred, not stored. */
+  private addFxLanes(rich: RichText, fx: FxCell[] | undefined, colors: Record<ReturnType<typeof fxColumn>, CellColors>, repeats?: (RepRow | undefined)[], firstRow = false): void {
     for (let lane = 0; lane < FX_LANES; lane += 1) {
       const cell             = fx?.[lane]
+      const repeat           = repeats?.[lane]
       const [command, value] = fxCellText(cell)
       const filled           = !!cell?.cmd
-      rich.add(' ', this.palette.empty)
+      const shown            = !filled && repeat?.event === 'continue' ? repeatedCell(repeat) : null
+      // In front of the cell: the sign of a shift, else the '^' the M8 marks a lane with when its REP
+      // comes in from the previous phrase (on the phrase's first row).
+      if (shown?.[0]) rich.add(shown[0], this.palette.repeat)
+      else if (firstRow && repeat?.carried && repeat.active) rich.add('^', this.palette.repeat)
+      else rich.add(' ', this.palette.empty)
+      if (shown) {
+        rich.add(shown[1] + shown[2], this.palette.repeat)
+        continue
+      }
       addValue(rich, command, filled, colors[fxColumn(lane, 'cmd')])
       addValue(rich, value, filled, colors[fxColumn(lane, 'val')])
     }

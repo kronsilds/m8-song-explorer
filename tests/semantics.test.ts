@@ -55,7 +55,7 @@ test('an empty cell under a REP knows the lane is still running', () => {
     step    : 4,
     column  : 'fx1cmd'
   })
-  expect(text(d)).toMatch(/REP still active/)
+  expect(d.facts.find(([label]) => label === 'Repeat')?.[1]).toMatch(/REP .* per row is still shifting/)
 })
 
 test('table cells and instrument headers', () => {

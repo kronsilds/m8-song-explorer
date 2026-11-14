@@ -24,6 +24,7 @@ import {
 } from '../model/music/harmony'
 import { chordFacts, chordOverNoteFacts, hypersynthSettings, scaleShapeOf } from '../model/music/hypersynthChord'
 import { noteNumber, PITCH_NAMES, pitchClass } from '../model/music/pitch'
+import { type RepRow, repeatLanes, repeatText } from '../model/music/repeats'
 import { DEFAULT_TIC } from '../model/music/tablePlayback'
 import {
   arpeggioText,
@@ -54,9 +55,9 @@ export function describeSelection(song: SongContext, selection: Selection): Cell
   const { model } = song
   switch (selection.kind) {
     case 'step':
-      return new PhraseCellDescriber(model, selection, song.scales).describe(effectiveInstrumentAt(song, selection.instance.key, selection.step))
+      return new PhraseCellDescriber(model, selection, song.scales, repeatLanes(song).get(selection.instance.key)).describe(effectiveInstrumentAt(song, selection.instance.key, selection.step))
     case 'chain':
-      return new PhraseCellDescriber(model, selection, song.scales).describe(null)
+      return new PhraseCellDescriber(model, selection, song.scales, undefined).describe(null)
     case 'table':
       return describeTableCell(model, selection, song)
     case 'instrument':
@@ -133,6 +134,8 @@ class PhraseCellDescriber {
     private readonly model: SongModel,
     private readonly selection: StepSelection | ChainSelection,
     private readonly scales: ScaleMap,
+    /** REP state per FX lane and step of the phrase here (what the previous phrase hands over included). */
+    private readonly repeats: RepRow[][] | undefined,
   ) {
     this.instance          = selection.instance
     this.chainTransposeRaw = model.chains[this.instance.chain]?.rows[this.instance.chainRow]?.transpose ?? 0
@@ -212,6 +215,7 @@ class PhraseCellDescriber {
       this.addNoteFacts(step?.note ?? null, written, played)
       this.addChordFacts(effectiveInstrument, played)
     }
+    this.addCarriedRepeat(selection)
     path.push(`Step ${hexDigit(selection.step)}`)
     const phrase = this.phrase
     const width  = selection.column === 'note' ? 3 : 2
@@ -225,6 +229,13 @@ class PhraseCellDescriber {
       parts,
       facts
     }
+  }
+
+  /** What a REP does to its parameter on this row, in decimal (a step is in quarters); a REP from the previous phrase is the '^^' lane of the M8, which the SDK cannot see on the drawn screen. */
+  private addCarriedRepeat(selection: StepSelection): void {
+    const lane = fxLaneOf(selection.column)?.lane
+    const text = lane == null ? null : repeatText(this.repeats?.[lane]?.[selection.step])
+    if (text) this.facts.push(['Repeat', text])
   }
 
   private stepTitle(selection: StepSelection, played: ReturnType<typeof playedNote>): string {
@@ -272,8 +283,15 @@ class PhraseCellDescriber {
     const shape = scaleShapeOf(this.model, played.scale, settings.scale)
     const named = this.model.scales?.[settings.scale || played.scale.scale]?.name ?? ''
     const guess = this.harmony.key
-    const key   = shape ? null : guess && { root: pitchClass(guess.root + played.shift), steps: guess.steps, name: `${guess.scale} (guessed)` }
-    this.facts.push(...chordOverNoteFacts(settings.chord, note, shape ?? (key ? { root: key.root, steps: key.steps } : null), key ? key.name : named))
+    const key   = shape ? null : guess && {
+      root : pitchClass(guess.root + played.shift),
+      steps: guess.steps,
+      name : `${guess.scale} (guessed)`
+    }
+    this.facts.push(...chordOverNoteFacts(settings.chord, note, shape ?? (key ? {
+      root : key.root,
+      steps: key.steps
+    } : null), key ? key.name : named))
   }
 
   /** '4th of A MINOR': the place of the played note among the scale's notes from the key; '' when unknown. */

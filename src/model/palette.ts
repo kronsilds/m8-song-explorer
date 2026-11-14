@@ -57,6 +57,8 @@ export interface Palette {
   transpose  : string
   /** A written note the scale moved by itself (no transpose): the note it plays. */
   quantized  : string
+  /** A REP's bracket, and the command and value it repeats in the empty cells under it (inferred, not stored). */
+  repeat     : string
   /** Option names after their number on the instrument face ('01LOWPASS'). */
   option     : string
   /** The four modulator slots of an instrument, and the parameters they drive. */
@@ -168,6 +170,7 @@ export function makePalette(theme: Partial<ThemeColors> | null, observed: Observ
     phraseLabel: readable(observed.chain?.phrase?.filled ?? info),
     transpose  : readable(roles.meterMid),
     quantized  : readable(roles.meterPeak),
+    repeat     : readable(mix(roles.textTitles, roles.textValue, 0.2)),
     option     : mix(value, info, 0.45),
     mods       : [readable(roles.playMarkers), readable(roles.meterMid), readable(roles.meterPeak), readable(roles.textTitles)]
   }
