@@ -2,7 +2,8 @@
 // how far into it, and a serial that changes as each step starts, also when a HOP or a loop plays
 // a step again) starts the table of every note it plays and drives it on by the ticks of its
 // steps. A track has the table of its last note, and the aux table a TBX started beside it. See
-// tableRun.ts for how a table moves (TIC 00: a row per note).
+// tableRun.ts for how a table moves (TIC 00: a row per note). A step with an instrument and no
+// note plays the last note again, and counts as a note here.
 //
 // Some steps are left to chance: a CHA XY plays the note, and the FX left of it, X times in 15
 // (the FX right of it Y times), and an RND in a lane picks the value of the command last used in
@@ -52,7 +53,7 @@ export interface TableStart {
 export interface StepTables {
   /** A TBX on the step: the aux table it starts, or null when it stops it (TBX 00). Undefined without a TBX. */
   aux?     : TableStart | null
-  /** The note starts the table of its instrument (or the one a TBL names). */
+  /** The note (or an instrument alone, which plays the last note again) starts the table of its instrument (or the one a TBL names). */
   primary  : TableStart | null
   /** A note off: the instrument's table stops. */
   off      : boolean
@@ -95,7 +96,8 @@ export function stepTables(model: SongModel, step: PhraseStep, instrument: numbe
     table: aux,
     tic  : tic ?? own
   }
-  if (step.note && !out.off && instrument != null) {
+  // An instrument written without a note plays the track's last note again, so it starts the table like a note.
+  if ((step.note || step.inst != null) && !out.off && instrument != null) {
     const [table] = fxValues(step.fx, 'TBL')
     out.primary   = {
       table: table ?? instrument,
@@ -320,7 +322,8 @@ export class TablePlayback {
     const tables = stepTables(this.model, step, this.effective.get(instance.key)?.[index] ?? null, steps.slice(0, index))
     // A step still waiting is decided by now: what the panel showed so far.
     if (state.pending) this.settle(state)
-    const note   = noteNumber(step.note)
+    // An instrument alone plays the last note again.
+    const note   = noteNumber(step.note) ?? (tables.primary ? state.note : null)
     if (tables.chance < ALWAYS || tables.thoChance < ALWAYS) {
       state.pending = {
         tables,

@@ -101,6 +101,32 @@ describe('table playback', () => {
     expect(tables.cursors(0)).toEqual([])
   })
 
+  test('an instrument without a note plays the last note again: it starts the table again', () => {
+    const tables = playback(song('02', (steps) => {
+      note(steps[0])
+      steps[2].inst = 5
+    }))
+    tables.update(0, head(0, 0, 0.5))
+    tables.update(0, head(1, 1, 0.9))
+    expect(tables.cursors(0)[0].main).toBeGreaterThan(0)
+    tables.update(0, head(2, 2, 0.01))
+    expect(tables.cursors(0)[0].main).toBe(0)
+  })
+
+  test('TIC 00: an instrument without a note moves the table a row like a note', () => {
+    const tables = playback(song('00', (steps) => {
+      note(steps[0])
+      steps[1].inst = 5
+      steps[2].inst = 5
+    }))
+    tables.update(0, head(0, 0))
+    expect(tables.cursors(0)[0].main).toBe(0)
+    tables.update(0, head(1, 1))
+    expect(tables.cursors(0)[0].main).toBe(1)
+    tables.update(0, head(2, 2))
+    expect(tables.cursors(0)[0].main).toBe(2)
+  })
+
   test('a step a HOP plays again starts its note\'s table again, wherever the playhead jumps', () => {
     const tables = playback(song('02', (steps) => {
       note(steps[1])
